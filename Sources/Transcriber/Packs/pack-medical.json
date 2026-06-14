@@ -1,0 +1,17 @@
+{
+  "id": "medical",
+  "name": "Medical",
+  "description": "Clinical encounters and therapy sessions — biases medical terminology and surfaces SOAP / DAP draft-note templates. Drafts only, never a medical record.",
+  "vocabulary": [
+    "hypertension", "tachycardia", "bradycardia", "myocardial", "infarction", "dyspnea",
+    "edema", "hyperlipidemia", "diabetes mellitus", "metformin", "lisinopril", "atorvastatin",
+    "anamnesis", "differential diagnosis", "comorbidity", "prognosis", "etiology", "palpation",
+    "auscultation", "contraindication", "titrate", "PRN", "NPO", "vitals",
+    "subjective", "objective", "assessment", "plan", "follow-up", "referral"
+  ],
+  "templateIds": ["soap", "dap", "summary.detailed", "qa"],
+  "defaults": {
+    "defaultSummaryStyle": "detailed",
+    "featuredTemplateIds": ["soap", "dap"]
+  }
+}

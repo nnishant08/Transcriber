@@ -1,0 +1,17 @@
+{
+  "id": "education",
+  "name": "Education",
+  "description": "Lectures, seminars, and study sessions — surfaces flashcards, quizzes, and study-guide generators for turning a recording into study materials.",
+  "vocabulary": [
+    "hypothesis", "theorem", "corollary", "photosynthesis", "mitochondria", "eukaryote",
+    "derivative", "integral", "asymptote", "polynomial", "coefficient", "entropy",
+    "thermodynamics", "covalent", "ionic", "electron", "neutron", "isotope",
+    "syllabus", "midterm", "rubric", "thesis", "citation", "bibliography",
+    "Renaissance", "Enlightenment", "metaphor", "allegory", "syntax", "etymology"
+  ],
+  "templateIds": ["flashcards", "quiz", "studyguide", "summary.detailed"],
+  "defaults": {
+    "defaultSummaryStyle": "detailed",
+    "featuredTemplateIds": ["flashcards", "quiz", "studyguide"]
+  }
+}

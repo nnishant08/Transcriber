@@ -1,0 +1,17 @@
+{
+  "id": "finance-sales",
+  "name": "Finance & Sales",
+  "description": "Sales calls, pipeline reviews, and finance meetings — biases finance jargon and surfaces the objection log, meeting minutes, and executive summary.",
+  "vocabulary": [
+    "EBITDA", "ARR", "MRR", "churn", "runway", "burn rate",
+    "gross margin", "net revenue", "pipeline", "forecast", "quota", "upsell",
+    "cross-sell", "discount", "renewal", "procurement", "stakeholder", "decision maker",
+    "objection", "close rate", "conversion", "CAC", "LTV", "amortization",
+    "capex", "opex", "valuation", "due diligence", "term sheet", "cap table"
+  ],
+  "templateIds": ["objections", "minutes", "summary.executive", "decisions"],
+  "defaults": {
+    "defaultSummaryStyle": "executive",
+    "featuredTemplateIds": ["objections", "minutes"]
+  }
+}

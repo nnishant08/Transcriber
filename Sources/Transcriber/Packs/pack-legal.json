@@ -1,0 +1,17 @@
+{
+  "id": "legal",
+  "name": "Legal",
+  "description": "Depositions, client meetings, and case discussions — biases jargon and surfaces decision-log, Q&A, and minutes templates.",
+  "vocabulary": [
+    "deposition", "plaintiff", "defendant", "affidavit", "subpoena", "voir dire",
+    "discovery", "deponent", "stipulation", "indemnification", "tort", "liability",
+    "counsel", "litigation", "arbitration", "deposed", "exhibit", "redline",
+    "force majeure", "estoppel", "habeas corpus", "amicus", "interrogatory", "escrow",
+    "fiduciary", "jurisdiction", "precedent", "settlement", "injunction", "due diligence"
+  ],
+  "templateIds": ["decisions", "qa", "minutes", "summary.detailed"],
+  "defaults": {
+    "defaultSummaryStyle": "detailed",
+    "featuredTemplateIds": ["decisions", "qa"]
+  }
+}

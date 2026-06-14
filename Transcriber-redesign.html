@@ -1,0 +1,552 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Transcriber — UI redesign</title>
+<style>
+  :root{
+    --win-bg:#1d1e20;
+    --titlebar:#252629;
+    --surface:#26272b;
+    --surface-2:#303137;
+    --hairline:rgba(255,255,255,.08);
+    --hairline-2:rgba(255,255,255,.13);
+    --text:#f2f2f5;
+    --text-2:#a0a0a8;
+    --text-3:#6c6c74;
+    --record:#ff453a;
+    --record-soft:rgba(255,69,58,.16);
+    --accent:#7e76ec;
+    --accent-soft:rgba(126,118,236,.16);
+    --ok:#5dd6b0;
+    --font-ui:-apple-system,"SF Pro Text","SF Pro",system-ui,"Segoe UI",sans-serif;
+    --font-read:ui-serif,"New York","Iowan Old Style",Georgia,"Times New Roman",serif;
+    --font-mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+    --radius:11px;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0}
+  body{
+    font-family:var(--font-ui);
+    color:var(--text);
+    background:
+      radial-gradient(900px 600px at 18% -10%, #2a2540 0%, transparent 60%),
+      radial-gradient(900px 600px at 110% 120%, #1a2433 0%, transparent 55%),
+      #121214;
+    min-height:100vh;
+    padding:34px 24px 56px;
+    -webkit-font-smoothing:antialiased;
+    text-rendering:optimizeLegibility;
+  }
+  .sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);border:0}
+  .wrap{max-width:1080px;margin:0 auto}
+
+  /* ---- preview controls (mockup chrome, not part of the app) ---- */
+  .preview{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin:0 auto 24px;max-width:760px}
+  .preview .eyebrow{font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--text-3);font-weight:500;margin-right:2px}
+  .seg{display:inline-flex;background:rgba(255,255,255,.06);border:1px solid var(--hairline);border-radius:9px;padding:3px;gap:2px}
+  .seg button{
+    appearance:none;border:0;background:transparent;color:var(--text-2);
+    font-family:inherit;font-size:13px;font-weight:500;letter-spacing:.01em;
+    padding:6px 13px;border-radius:7px;cursor:pointer;transition:background .15s,color .15s;
+  }
+  .seg button:hover{color:var(--text)}
+  .seg button[aria-selected="true"]{background:var(--surface-2);color:var(--text);box-shadow:0 1px 0 rgba(0,0,0,.25)}
+  .seg button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+
+  /* ---- desktop stage ---- */
+  .stage{display:flex;gap:30px;align-items:flex-start;justify-content:center;flex-wrap:wrap}
+
+  /* ---- the app window ---- */
+  .window{
+    width:720px;max-width:100%;
+    background:var(--win-bg);
+    border:1px solid var(--hairline-2);
+    border-radius:var(--radius);
+    box-shadow:0 30px 80px -20px rgba(0,0,0,.7),0 0 0 .5px rgba(0,0,0,.5);
+    overflow:hidden;
+    display:flex;flex-direction:column;
+  }
+  .titlebar{
+    height:52px;flex:0 0 auto;display:flex;align-items:center;gap:14px;
+    padding:0 14px;background:var(--titlebar);
+    border-bottom:1px solid var(--hairline);
+  }
+  .lights{display:flex;gap:8px;flex:0 0 auto}
+  .lights i{width:12px;height:12px;border-radius:50%;display:block}
+  .lights .r{background:#ff5f57}.lights .y{background:#febc2e}.lights .g{background:#28c840}
+
+  .tb-body{flex:1;min-width:0;display:none;align-items:center;gap:10px}
+  .window[data-state="idle"] .tb-body--idle,
+  .window[data-state="downloading"] .tb-body--downloading,
+  .window[data-state="recording"] .tb-body--recording,
+  .window[data-state="summary"] .tb-body--summary{display:flex}
+
+  .app-title{font-size:13px;font-weight:500;color:var(--text-2);letter-spacing:.01em}
+  .spacer{flex:1}
+
+  /* source segmented control */
+  .source{display:inline-flex;background:rgba(255,255,255,.05);border:1px solid var(--hairline);border-radius:8px;padding:3px;gap:2px}
+  .source button{
+    appearance:none;border:0;background:transparent;color:var(--text-2);cursor:pointer;
+    font-family:inherit;font-size:12.5px;font-weight:500;display:inline-flex;align-items:center;gap:6px;
+    padding:5px 11px;border-radius:6px;transition:background .15s,color .15s;
+  }
+  .source button:hover{color:var(--text)}
+  .source button[aria-pressed="true"]{background:var(--surface-2);color:var(--text)}
+  .source svg{width:14px;height:14px}
+
+  /* round icon buttons in toolbar */
+  .iconbtn{
+    appearance:none;width:30px;height:30px;border-radius:8px;border:1px solid transparent;
+    background:transparent;color:var(--text-2);display:inline-flex;align-items:center;justify-content:center;cursor:pointer;
+    transition:background .15s,color .15s,border-color .15s;
+  }
+  .iconbtn:hover{background:rgba(255,255,255,.06);color:var(--text)}
+  .iconbtn svg{width:17px;height:17px}
+
+  /* summarize button */
+  .summarize{
+    appearance:none;display:inline-flex;align-items:center;gap:7px;cursor:pointer;
+    font-family:inherit;font-size:12.5px;font-weight:500;color:#cfcbff;
+    padding:6px 12px 6px 11px;border-radius:8px;
+    background:var(--accent-soft);border:1px solid rgba(126,118,236,.35);
+    position:relative;transition:background .15s,border-color .15s;
+  }
+  .summarize:hover{background:rgba(126,118,236,.24)}
+  .summarize svg{width:15px;height:15px}
+  .ai-spark{color:#b9a8ff}
+
+  /* live cluster (recording) */
+  .live{display:inline-flex;align-items:center;gap:11px}
+  .stop{
+    appearance:none;display:inline-flex;align-items:center;gap:8px;cursor:pointer;
+    font-family:inherit;font-size:12.5px;font-weight:500;color:#ff8079;
+    background:var(--record-soft);border:1px solid rgba(255,69,58,.4);
+    padding:6px 13px 6px 11px;border-radius:8px;transition:background .15s;
+  }
+  .stop:hover{background:rgba(255,69,58,.24)}
+  .stop .sq{width:9px;height:9px;border-radius:2px;background:var(--record)}
+  .timer{font-family:var(--font-mono);font-size:13px;color:var(--text);letter-spacing:.02em;font-variant-numeric:tabular-nums}
+  .meter{display:inline-flex;align-items:flex-end;gap:2.5px;height:18px}
+  .meter b{width:2.5px;border-radius:2px;background:var(--record);opacity:.85;height:4px;transform-origin:bottom;animation:vu 1s ease-in-out infinite}
+  .meter b:nth-child(1){animation-duration:.9s}
+  .meter b:nth-child(2){animation-duration:1.25s;animation-delay:.1s}
+  .meter b:nth-child(3){animation-duration:.7s;animation-delay:.2s}
+  .meter b:nth-child(4){animation-duration:1.05s;animation-delay:.05s}
+  .meter b:nth-child(5){animation-duration:.85s;animation-delay:.3s}
+  .meter b:nth-child(6){animation-duration:1.15s;animation-delay:.15s}
+  .meter b:nth-child(7){animation-duration:.75s;animation-delay:.25s}
+  .meter b:nth-child(8){animation-duration:1s;animation-delay:.08s}
+  @keyframes vu{0%,100%{transform:scaleY(.35)}50%{transform:scaleY(2.6)}}
+
+  .src-tag{display:inline-flex;align-items:center;gap:6px;font-size:12.5px;color:var(--text-2);font-weight:500}
+  .src-tag svg{width:14px;height:14px}
+
+  .back{
+    appearance:none;display:inline-flex;align-items:center;gap:6px;cursor:pointer;
+    background:transparent;border:0;color:var(--text-2);font-family:inherit;font-size:13px;font-weight:500;padding:4px;border-radius:6px;
+  }
+  .back:hover{color:var(--text)}
+  .back svg{width:16px;height:16px}
+  .sumtitle{display:inline-flex;align-items:center;gap:7px;font-size:13px;font-weight:500;color:var(--text)}
+  .sumtitle svg{width:15px;height:15px}
+
+  /* ---- canvas ---- */
+  .canvas{position:relative;height:432px;overflow:hidden}
+  .view{position:absolute;inset:0;display:none;flex-direction:column}
+  .window[data-state="idle"] .view--idle,
+  .window[data-state="downloading"] .view--downloading,
+  .window[data-state="recording"] .view--recording,
+  .window[data-state="summary"] .view--summary{display:flex}
+
+  /* idle + downloading: centered invite */
+  .center{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px;padding:24px;text-align:center}
+  .recbtn{
+    width:92px;height:92px;border-radius:50%;border:1.5px solid var(--text-3);
+    background:transparent;cursor:pointer;display:flex;align-items:center;justify-content:center;
+    transition:border-color .18s,transform .12s;
+  }
+  .recbtn:hover{border-color:var(--text-2);transform:scale(1.02)}
+  .recbtn:active{transform:scale(.98)}
+  .recbtn .dot{width:34px;height:34px;border-radius:50%;background:var(--record);transition:border-radius .18s,width .18s,height .18s}
+  .recbtn:hover .dot{box-shadow:0 0 0 6px var(--record-soft)}
+  .invite-h{font-size:18px;font-weight:500;color:var(--text);margin:0}
+  .invite-sub{font-size:13px;color:var(--text-2);margin:0;display:flex;align-items:center;gap:8px;justify-content:center;flex-wrap:wrap}
+  .invite-sub .dotsep{width:3px;height:3px;border-radius:50%;background:var(--text-3)}
+  kbd{
+    font-family:var(--font-ui);font-size:11px;color:var(--text-2);
+    background:rgba(255,255,255,.07);border:1px solid var(--hairline-2);border-bottom-width:2px;
+    border-radius:5px;padding:1px 6px;letter-spacing:.04em;
+  }
+
+  /* downloading ring */
+  .ring{width:92px;height:92px;display:block}
+  .ring circle{fill:none;stroke-width:5}
+  .ring .track{stroke:rgba(255,255,255,.1)}
+  .ring .bar{stroke:var(--accent);stroke-linecap:round;stroke-dasharray:251.2;stroke-dashoffset:70;transform:rotate(-90deg);transform-origin:center}
+  .ring text{fill:var(--text);font-family:var(--font-mono);font-size:17px;font-weight:500}
+
+  /* ---- transcript ---- */
+  .transcript{flex:1;overflow:auto;padding:26px 30px 30px}
+  .seg-row{display:grid;grid-template-columns:46px 1fr;gap:14px;margin:0 0 18px;max-width:600px}
+  .ts{font-family:var(--font-mono);font-size:11px;color:var(--text-3);padding-top:5px;font-variant-numeric:tabular-nums}
+  .seg-row p{font-family:var(--font-read);font-size:16.5px;line-height:1.72;color:var(--text);margin:0}
+  .hyp{color:var(--text-3)}
+  .caret{display:inline-block;width:2px;height:1.05em;background:var(--accent);margin-left:1px;vertical-align:-2px;animation:blink 1.1s steps(1) infinite;border-radius:1px}
+  @keyframes blink{0%,55%{opacity:1}56%,100%{opacity:0}}
+
+  /* inline captured slide */
+  .frame{max-width:340px;margin:2px 0 20px 60px}
+  .slide{
+    border:1px solid var(--hairline-2);border-radius:9px;overflow:hidden;background:#16181d;
+    box-shadow:0 6px 18px -8px rgba(0,0,0,.6);
+  }
+  .slide .bar{height:8px;background:linear-gradient(90deg,#5b6cf0,#8a63e8)}
+  .slide .body{padding:14px 16px 16px}
+  .slide .stitle{height:9px;width:55%;border-radius:3px;background:rgba(255,255,255,.5);margin-bottom:12px}
+  .slide .ln{height:6px;border-radius:3px;background:rgba(255,255,255,.16);margin-bottom:8px}
+  .slide .ln.w1{width:90%}.slide .ln.w2{width:78%}.slide .ln.w3{width:62%}
+  .frame-cap{display:flex;align-items:center;gap:8px;margin-top:9px;font-size:11.5px;color:var(--text-3)}
+  .frame-cap svg{width:13px;height:13px}
+  .ocr{margin-left:auto;display:inline-flex;align-items:center;gap:4px;color:var(--text-2);cursor:pointer}
+  .ocr svg{width:12px;height:12px}
+
+  /* ---- summary ---- */
+  .summary{flex:1;overflow:auto;padding:28px 34px 30px;position:relative}
+  .summary::before{content:"";position:absolute;top:0;left:0;right:0;height:2px;
+    background:linear-gradient(90deg,#ff8ad1,#9b8cff 50%,#5fd6c4);
+    background-size:200% 100%;animation:shimmer 6s linear infinite}
+  @keyframes shimmer{0%{background-position:0 0}100%{background-position:200% 0}}
+  .summary .lead{font-size:15.5px;line-height:1.6;color:var(--text);max-width:560px;margin:4px 0 20px}
+  .keylabel{font-size:11px;letter-spacing:.13em;text-transform:uppercase;color:var(--text-3);font-weight:500;margin:0 0 12px}
+  .points{list-style:none;padding:0;margin:0;max-width:560px;display:flex;flex-direction:column;gap:13px}
+  .points li{display:grid;grid-template-columns:18px 1fr;gap:11px;font-size:14px;line-height:1.55;color:var(--text-2)}
+  .points li svg{width:15px;height:15px;color:var(--accent);margin-top:3px}
+  .sumfoot{display:flex;align-items:center;gap:10px;margin-top:24px;padding-top:16px;border-top:1px solid var(--hairline)}
+  .ghost{
+    appearance:none;display:inline-flex;align-items:center;gap:7px;cursor:pointer;
+    font-family:inherit;font-size:12.5px;font-weight:500;color:var(--text-2);
+    background:transparent;border:1px solid var(--hairline-2);padding:6px 12px;border-radius:8px;transition:background .15s,color .15s;
+  }
+  .ghost:hover{background:rgba(255,255,255,.06);color:var(--text)}
+  .ghost svg{width:14px;height:14px}
+  .madeby{margin-left:auto;font-size:11.5px;color:var(--text-3);display:inline-flex;align-items:center;gap:6px}
+  .madeby svg{width:13px;height:13px}
+
+  /* ---- status bar ---- */
+  .statusbar{
+    height:30px;flex:0 0 auto;display:flex;align-items:center;padding:0 16px;
+    background:rgba(0,0,0,.22);border-top:1px solid var(--hairline);
+    font-size:11.5px;color:var(--text-3);gap:9px;
+  }
+  .sb-body{display:none;align-items:center;gap:9px;width:100%}
+  .window[data-state="idle"] .sb-body--idle,
+  .window[data-state="downloading"] .sb-body--downloading,
+  .window[data-state="recording"] .sb-body--recording,
+  .window[data-state="summary"] .sb-body--summary{display:flex}
+  .sb-dot{width:3px;height:3px;border-radius:50%;background:var(--text-3)}
+  .sb-right{margin-left:auto;display:inline-flex;align-items:center;gap:7px}
+  .listening{display:inline-flex;align-items:center;gap:6px;color:#ff8079}
+  .listening .pulse{width:7px;height:7px;border-radius:50%;background:var(--record);animation:pulse 1.4s ease-in-out infinite}
+  @keyframes pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.4;transform:scale(.8)}}
+
+  /* ---- menu-bar popover (secondary mock) ---- */
+  .mbcol{display:flex;flex-direction:column;align-items:flex-end;gap:0;width:288px;max-width:100%}
+  .menubar{
+    width:100%;height:26px;border-radius:7px 7px 0 0;background:rgba(40,41,45,.9);
+    border:1px solid var(--hairline);border-bottom:0;
+    display:flex;align-items:center;justify-content:flex-end;gap:14px;padding:0 12px;
+    backdrop-filter:blur(8px);
+  }
+  .menubar svg{width:14px;height:14px;color:var(--text-2)}
+  .menubar .activeicon{color:var(--text)}
+  .menubar .clock{font-size:11px;color:var(--text-2);font-variant-numeric:tabular-nums;margin-left:2px}
+  .popover{
+    width:100%;background:rgba(34,35,38,.97);border:1px solid var(--hairline-2);border-radius:12px;
+    box-shadow:0 24px 60px -16px rgba(0,0,0,.7);padding:7px;backdrop-filter:blur(20px);margin-top:8px;
+  }
+  .po-status{padding:8px 10px 10px;display:flex;align-items:center;gap:9px}
+  .po-status .ok{width:8px;height:8px;border-radius:50%;background:var(--ok)}
+  .po-status .t{font-size:13px;font-weight:500;color:var(--text)}
+  .po-status .s{font-size:11.5px;color:var(--text-3);margin-left:auto}
+  .po-source{margin:2px 6px 8px}
+  .po-source .source{width:100%;display:flex}
+  .po-source .source button{flex:1;justify-content:center}
+  .po-start{
+    margin:0 6px 6px;width:calc(100% - 12px);appearance:none;cursor:pointer;font-family:inherit;
+    display:flex;align-items:center;justify-content:center;gap:9px;font-size:13px;font-weight:500;color:#ff8079;
+    background:var(--record-soft);border:1px solid rgba(255,69,58,.4);border-radius:9px;padding:9px;
+  }
+  .po-start:hover{background:rgba(255,69,58,.24)}
+  .po-start .d{width:10px;height:10px;border-radius:50%;background:var(--record)}
+  .po-start kbd{margin-left:2px}
+  .po-div{height:1px;background:var(--hairline);margin:6px 8px}
+  .po-row{
+    display:flex;align-items:center;gap:11px;padding:8px 10px;border-radius:7px;cursor:pointer;
+    font-size:13px;color:var(--text);transition:background .12s;
+  }
+  .po-row:hover{background:var(--accent-soft)}
+  .po-row svg{width:15px;height:15px;color:var(--text-2)}
+  .po-row:hover svg{color:#cfcbff}
+  .po-row.quit{color:#ff8079}
+  .po-row.quit svg{color:#ff8079}
+  .po-foot{padding:8px 10px 4px;font-size:11px;color:var(--text-3);text-align:center}
+  .cap{font-size:11px;color:var(--text-3);margin:14px 4px 0;text-align:center;width:100%}
+
+  @media (max-width:760px){
+    .canvas{height:auto;min-height:380px}
+    .view{position:static}
+    .window[data-state] .view{display:none}
+    .window[data-state="idle"] .view--idle,
+    .window[data-state="downloading"] .view--downloading,
+    .window[data-state="recording"] .view--recording,
+    .window[data-state="summary"] .view--summary{display:flex}
+  }
+  @media (prefers-reduced-motion:reduce){
+    .meter b,.caret,.summary::before,.listening .pulse{animation:none}
+    .caret{opacity:1}
+  }
+</style>
+</head>
+<body>
+<h1 class="sr-only">Transcriber macOS app UI redesign mockup with four states and a menu-bar popover</h1>
+
+<!-- icon sprite -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-mic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></symbol>
+  <symbol id="i-speaker" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9v6h4l5 4V5L8 9H4z"/><path d="M16.5 8.5a5 5 0 0 1 0 7"/><path d="M19 6a8.5 8.5 0 0 1 0 12"/></symbol>
+  <symbol id="i-spark" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2l1.6 5.4L19 9l-5.4 1.6L12 16l-1.6-5.4L5 9l5.4-1.6L12 2z"/><path d="M19 14l.8 2.6 2.6.8-2.6.8L19 21l-.8-2.6-2.6-.8 2.6-.8L19 14z" opacity=".7"/></symbol>
+  <symbol id="i-gear" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3.2"/><path d="M12 2.5v2.6M12 18.9v2.6M21.5 12h-2.6M5.1 12H2.5M18.4 5.6l-1.8 1.8M7.4 16.6l-1.8 1.8M18.4 18.4l-1.8-1.8M7.4 7.4 5.6 5.6"/></symbol>
+  <symbol id="i-folder" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h6a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z"/></symbol>
+  <symbol id="i-copy" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h8"/></symbol>
+  <symbol id="i-refresh" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M20 11a8 8 0 1 0-1.5 5"/><path d="M20 4v5h-5"/></symbol>
+  <symbol id="i-back" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M15 6l-6 6 6 6"/></symbol>
+  <symbol id="i-image" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="8.5" cy="10" r="1.5"/><path d="M21 16l-5-5-7 7"/></symbol>
+  <symbol id="i-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></symbol>
+  <symbol id="i-window" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18"/></symbol>
+  <symbol id="i-x" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M6 6l12 12M18 6L6 18"/></symbol>
+  <symbol id="i-wave" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M4 12h2M9 7v10M14 4v16M19 9v6"/></symbol>
+  <symbol id="i-batt" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="8" width="16" height="9" rx="2"/><path d="M21 11v3"/><rect x="5" y="10" width="9" height="5" fill="currentColor" stroke="none"/></symbol>
+  <symbol id="i-wifi" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M5 12.5a10 10 0 0 1 14 0M8 15.5a6 6 0 0 1 8 0"/><circle cx="12" cy="18.5" r="1" fill="currentColor" stroke="none"/></symbol>
+</svg>
+
+<div class="wrap">
+
+  <div class="preview" role="group" aria-label="Preview state">
+    <span class="eyebrow">Preview state</span>
+    <div class="seg" role="tablist">
+      <button role="tab" aria-selected="false" data-state="downloading">First run</button>
+      <button role="tab" aria-selected="false" data-state="idle">Ready</button>
+      <button role="tab" aria-selected="true" data-state="recording">Recording</button>
+      <button role="tab" aria-selected="false" data-state="summary">Summary</button>
+    </div>
+  </div>
+
+  <div class="stage">
+
+    <!-- =================== APP WINDOW =================== -->
+    <section class="window" id="win" data-state="recording" aria-label="Transcriber window">
+      <div class="titlebar">
+        <div class="lights" aria-hidden="true"><i class="r"></i><i class="y"></i><i class="g"></i></div>
+
+        <!-- IDLE toolbar -->
+        <div class="tb-body tb-body--idle">
+          <span class="app-title">Transcriber</span>
+          <span class="spacer"></span>
+          <div class="source" role="group" aria-label="Audio source">
+            <button aria-pressed="false"><svg aria-hidden="true"><use href="#i-mic"/></svg>Mic</button>
+            <button aria-pressed="true"><svg aria-hidden="true"><use href="#i-speaker"/></svg>System</button>
+          </div>
+          <button class="iconbtn" aria-label="Open transcripts folder"><svg aria-hidden="true"><use href="#i-folder"/></svg></button>
+          <button class="iconbtn" aria-label="Settings"><svg aria-hidden="true"><use href="#i-gear"/></svg></button>
+        </div>
+
+        <!-- DOWNLOADING toolbar -->
+        <div class="tb-body tb-body--downloading">
+          <span class="app-title">Preparing model…</span>
+          <span class="spacer"></span>
+          <button class="iconbtn" aria-label="Settings"><svg aria-hidden="true"><use href="#i-gear"/></svg></button>
+        </div>
+
+        <!-- RECORDING toolbar -->
+        <div class="tb-body tb-body--recording">
+          <div class="live">
+            <button class="stop"><span class="sq" aria-hidden="true"></span>Stop</button>
+            <span class="timer">02:34</span>
+            <span class="meter" aria-hidden="true"><b></b><b></b><b></b><b></b><b></b><b></b><b></b><b></b></span>
+          </div>
+          <span class="spacer"></span>
+          <span class="src-tag"><svg aria-hidden="true"><use href="#i-speaker"/></svg>System audio</span>
+          <button class="summarize"><svg class="ai-spark" aria-hidden="true"><use href="#i-spark"/></svg>Summarize</button>
+          <button class="iconbtn" aria-label="Open transcripts folder"><svg aria-hidden="true"><use href="#i-folder"/></svg></button>
+          <button class="iconbtn" aria-label="Settings"><svg aria-hidden="true"><use href="#i-gear"/></svg></button>
+        </div>
+
+        <!-- SUMMARY toolbar -->
+        <div class="tb-body tb-body--summary">
+          <button class="back" onclick="setState('recording')"><svg aria-hidden="true"><use href="#i-back"/></svg>Transcript</button>
+          <span class="spacer"></span>
+          <span class="sumtitle"><svg class="ai-spark" aria-hidden="true"><use href="#i-spark"/></svg>Summary</span>
+          <span class="spacer"></span>
+          <button class="iconbtn" aria-label="Close summary" onclick="setState('recording')"><svg aria-hidden="true"><use href="#i-x"/></svg></button>
+        </div>
+      </div>
+
+      <div class="canvas">
+
+        <!-- IDLE -->
+        <div class="view view--idle">
+          <div class="center">
+            <button class="recbtn" aria-label="Start transcribing" onclick="setState('recording')"><span class="dot"></span></button>
+            <div>
+              <p class="invite-h">Start transcribing</p>
+              <p class="invite-sub">Capturing system audio <span class="dotsep"></span> base.en <span class="dotsep"></span> press <kbd>⌥ ⌘ T</kbd> anywhere</p>
+            </div>
+          </div>
+        </div>
+
+        <!-- DOWNLOADING -->
+        <div class="view view--downloading">
+          <div class="center">
+            <svg class="ring" viewBox="0 0 92 92" aria-hidden="true">
+              <circle class="track" cx="46" cy="46" r="40"/>
+              <circle class="bar" cx="46" cy="46" r="40"/>
+              <text x="46" y="52" text-anchor="middle">72%</text>
+            </svg>
+            <div>
+              <p class="invite-h">Downloading the base.en model</p>
+              <p class="invite-sub">108 MB of 150 MB <span class="dotsep"></span> one time only, then fully offline</p>
+            </div>
+          </div>
+        </div>
+
+        <!-- RECORDING (hero) -->
+        <div class="view view--recording">
+          <div class="transcript" id="tlist">
+            <div class="seg-row">
+              <span class="ts">00:00</span>
+              <p>Okay, let's pick up where we left off. Last time we covered replication; today the question is how a set of machines agrees on a single value when any of them can fail or fall behind.</p>
+            </div>
+
+            <div class="seg-row">
+              <span class="ts">01:47</span>
+              <p>The classic way to frame it is the two generals problem. Two armies can only win if they attack at the same moment, but the one channel they share might quietly drop a messenger.</p>
+            </div>
+
+            <div class="frame">
+              <div class="slide" role="img" aria-label="Captured slide: Consensus">
+                <div class="bar"></div>
+                <div class="body">
+                  <div class="stitle"></div>
+                  <div class="ln w1"></div><div class="ln w2"></div><div class="ln w3"></div>
+                </div>
+              </div>
+              <div class="frame-cap">
+                <svg aria-hidden="true"><use href="#i-image"/></svg>Slide captured · 01:52
+                <span class="ocr"><svg aria-hidden="true"><use href="#i-chev"/></svg>OCR text</span>
+              </div>
+            </div>
+
+            <div class="seg-row">
+              <span class="ts">02:21</span>
+              <p>So no fixed number of acknowledgements is ever enough to be certain — there is always one more message in flight. In practice we stop chasing certainty and design for <span class="hyp">a quorum, a majority that's enough to keep</span><span class="caret" aria-hidden="true"></span></p>
+            </div>
+          </div>
+        </div>
+
+        <!-- SUMMARY -->
+        <div class="view view--summary">
+          <div class="summary">
+            <p class="lead">A lecture on how a group of machines reaches agreement on a single value when any one of them can fail or lag behind.</p>
+            <p class="keylabel">Key points</p>
+            <ul class="points">
+              <li><svg aria-hidden="true"><use href="#i-check"/></svg>The problem is framed through the two generals: coordination is impossible to guarantee over a channel that can drop messages.</li>
+              <li><svg aria-hidden="true"><use href="#i-check"/></svg>No fixed number of acknowledgements proves certainty — there is always one more message that could be lost.</li>
+              <li><svg aria-hidden="true"><use href="#i-check"/></svg>Real systems trade certainty for a quorum: a majority agreeing is treated as good enough to commit.</li>
+              <li><svg aria-hidden="true"><use href="#i-check"/></svg>This connects directly back to last session's topic of replication.</li>
+            </ul>
+            <div class="sumfoot">
+              <button class="ghost"><svg aria-hidden="true"><use href="#i-copy"/></svg>Copy</button>
+              <button class="ghost"><svg aria-hidden="true"><use href="#i-refresh"/></svg>Regenerate</button>
+              <span class="madeby"><svg class="ai-spark" aria-hidden="true"><use href="#i-spark"/></svg>On-device · Apple Intelligence</span>
+            </div>
+          </div>
+        </div>
+
+      </div>
+
+      <div class="statusbar">
+        <div class="sb-body sb-body--idle">
+          <span>base.en</span><span class="sb-dot"></span><span>System audio</span>
+          <span class="sb-right"><span>Saves to ~/Desktop/Transcripts</span></span>
+        </div>
+        <div class="sb-body sb-body--downloading">
+          <span>Model not loaded</span>
+          <span class="sb-right"><span>Recording stays disabled until ready</span></span>
+        </div>
+        <div class="sb-body sb-body--recording">
+          <span>142 words</span><span class="sb-dot"></span><span>base.en</span><span class="sb-dot"></span><span>Visual capture on</span>
+          <span class="sb-right listening"><span class="pulse"></span>Listening</span>
+        </div>
+        <div class="sb-body sb-body--summary">
+          <span>Summary of 142 words</span>
+          <span class="sb-right"><span>~/Desktop/Transcripts/2026-06-09 14-32-08</span></span>
+        </div>
+      </div>
+    </section>
+
+    <!-- =================== MENU-BAR POPOVER =================== -->
+    <aside class="mbcol" aria-label="Menu bar popover">
+      <div class="menubar" aria-hidden="true">
+        <svg class="activeicon"><use href="#i-wave"/></svg>
+        <svg><use href="#i-batt"/></svg>
+        <svg><use href="#i-wifi"/></svg>
+        <span class="clock">2:34</span>
+      </div>
+      <div class="popover">
+        <div class="po-status">
+          <span class="ok" aria-hidden="true"></span>
+          <span class="t">Ready</span>
+          <span class="s">base.en</span>
+        </div>
+        <div class="po-source">
+          <div class="source" role="group" aria-label="Audio source">
+            <button aria-pressed="false"><svg aria-hidden="true"><use href="#i-mic"/></svg>Mic</button>
+            <button aria-pressed="true"><svg aria-hidden="true"><use href="#i-speaker"/></svg>System</button>
+          </div>
+        </div>
+        <button class="po-start"><span class="d" aria-hidden="true"></span>Start recording <kbd>⌥⌘T</kbd></button>
+        <div class="po-div"></div>
+        <div class="po-row"><svg aria-hidden="true"><use href="#i-window"/></svg>Open transcript window</div>
+        <div class="po-row"><svg aria-hidden="true"><use href="#i-folder"/></svg>Open transcripts folder</div>
+        <div class="po-row"><svg aria-hidden="true"><use href="#i-gear"/></svg>Settings…</div>
+        <div class="po-div"></div>
+        <div class="po-row quit"><svg aria-hidden="true"><use href="#i-x"/></svg>Quit Transcriber</div>
+        <div class="po-foot">Everything stays on this Mac</div>
+      </div>
+      <p class="cap">Menu-bar popover · also lives in the Dock</p>
+    </aside>
+
+  </div>
+</div>
+
+<script>
+  function setState(s){
+    document.getElementById('win').dataset.state = s;
+    document.querySelectorAll('.preview [role="tab"]').forEach(function(b){
+      b.setAttribute('aria-selected', b.dataset.state === s ? 'true' : 'false');
+    });
+    var t = document.getElementById('tlist');
+    if (s === 'recording' && t){ t.scrollTop = t.scrollHeight; }
+  }
+  document.querySelectorAll('.preview [role="tab"]').forEach(function(b){
+    b.addEventListener('click', function(){ setState(b.dataset.state); });
+  });
+  // start scrolled to the live tail
+  setState('recording');
+</script>
+</body>
+</html>

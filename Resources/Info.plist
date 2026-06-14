@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key>
+    <string>Transcriber</string>
+    <key>CFBundleDisplayName</key>
+    <string>Transcriber</string>
+    <key>CFBundleExecutable</key>
+    <string>Transcriber</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.nikhil.transcriber</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.0</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
+    <!-- macOS 14: FluidAudio (speaker diarization) sets the platform floor; matches Package.swift. -->
+    <key>LSMinimumSystemVersion</key>
+    <string>14.0</string>
+    <!-- Regular app: shows a Dock icon and an app-switcher entry, plus the menu-bar icon. -->
+    <key>LSUIElement</key>
+    <false/>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <!-- Permission prompt strings (App Sandbox is intentionally disabled for this personal tool). -->
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Transcriber uses the microphone to transcribe your speech locally on-device.</string>
+    <key>NSScreenCaptureUsageDescription</key>
+    <string>Transcriber captures system audio (via Screen Recording) to transcribe it locally on-device. No video is recorded.</string>
+    <!-- Calendar (optional, Feature C): read-only, on-device meeting detection for bot-free capture. -->
+    <key>NSCalendarsUsageDescription</key>
+    <string>Transcriber reads your calendar on-device to detect upcoming video meetings and offer a bot-free local recording. Nothing leaves this Mac.</string>
+    <key>NSCalendarsFullAccessUsageDescription</key>
+    <string>Transcriber reads your calendar on-device to detect upcoming video meetings and offer a bot-free local recording. Nothing leaves this Mac.</string>
+    <key>NSHumanReadableCopyright</key>
+    <string>Personal tool. On-device transcription via WhisperKit.</string>
+    <!-- Audio/video files can be opened with / dropped on Transcriber to import them (B1). -->
+    <key>CFBundleDocumentTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>Audio or Video</string>
+            <key>CFBundleTypeRole</key>
+            <string>Viewer</string>
+            <key>LSHandlerRank</key>
+            <string>Alternate</string>
+            <key>LSItemContentTypes</key>
+            <array>
+                <string>public.audio</string>
+                <string>public.movie</string>
+            </array>
+        </dict>
+    </array>
+</dict>
+</plist>
