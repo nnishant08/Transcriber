@@ -102,6 +102,7 @@ enum EngineStatus: Equatable {
     case idle
     case preparingModel(String)
     case recording
+    case paused
     case finalizing
     case error(String)
 
@@ -110,6 +111,7 @@ enum EngineStatus: Equatable {
         case .idle: return "Idle"
         case .preparingModel(let m): return m
         case .recording: return "Recording…"
+        case .paused: return "Paused"
         case .finalizing: return "Finalizing…"
         case .error(let e): return "Error: \(e)"
         }
@@ -138,6 +140,14 @@ enum UIState { case idle, downloading, recording, summary }
 final class RecordingHUD: ObservableObject {
     @Published var level: Float = 0
     @Published var elapsed: Int = 0
+    /// Seconds the capture has been delivering pure digital silence (0 = receiving audio).
+    /// Surfaced in the status bar so a dead capture is visible DURING the session instead of
+    /// being discovered afterwards as a transcript full of `[BLANK_AUDIO]`.
+    @Published var silentSeconds: Int = 0
+    /// Seconds of continuous QUIET (below the audible threshold, not necessarily digital zeros).
+    /// Drives the "auto-pausing in Ns" countdown; distinct from `silentSeconds`, which specifically
+    /// means "the capture handed us nothing at all".
+    @Published var quietSeconds: Int = 0
 }
 
 // MARK: - App model
@@ -152,6 +162,14 @@ final class AppModel: ObservableObject {
     @Published var isRecording: Bool = false
     @Published var status: EngineStatus = .idle
     @Published var lastSavedURL: URL?
+
+    /// Paused: the session is still open (still `isRecording`) but capture is gated off, so no
+    /// samples enter the recording and the timeline does not advance.
+    @Published var isPaused: Bool = false
+    @Published var pauseReason: PauseReason? = nil
+    /// Transient status line for capture events the user should see but never be blocked by
+    /// ("Output device changed — capture continues"). Auto-clears.
+    @Published var captureNotice: String? = nil
 
     // Live "settling" view: confirmed (timestamped) segments + the dimmed in-flight tail.
     @Published var displaySegments: [TranscriptSegment] = []
@@ -188,8 +206,31 @@ final class AppModel: ObservableObject {
     @Published var saveAudioEnabled: Bool {            // B3: persist source audio for playback (default ON)
         didSet { UserDefaults.standard.set(saveAudioEnabled, forKey: "saveAudioEnabled") }
     }
+    /// Capture system audio with a Core Audio process tap (macOS 14.2+) instead of ScreenCaptureKit.
+    /// ON by default: the SCK filter is display-scoped and silently drops any process without a
+    /// window on the captured display, while the tap hears the whole audio engine regardless of
+    /// window, display, output device, volume, or mute. Off ⇒ the original SCK path verbatim.
+    @Published var useProcessTap: Bool {
+        didSet { UserDefaults.standard.set(useProcessTap, forKey: "useProcessTap") }
+    }
     @Published var customVocabulary: [String] {        // C2: decoding bias terms ([] = exact no-op)
         didSet { UserDefaults.standard.set(customVocabulary, forKey: "customVocabulary") }
+    }
+    /// Auto-pause a recording after a stretch of silence, and auto-resume when audio returns.
+    /// ON by default: a muted call, a paused video, or a break between talkers otherwise records
+    /// minutes of nothing (and transcribes it as `[BLANK_AUDIO]`).
+    @Published var autoPauseEnabled: Bool {
+        didSet {
+            UserDefaults.standard.set(autoPauseEnabled, forKey: "autoPauseEnabled")
+            silence.enabled = autoPauseEnabled
+        }
+    }
+    /// How long silence must last before the automatic pause fires.
+    @Published var autoPauseSeconds: Double {
+        didSet {
+            UserDefaults.standard.set(autoPauseSeconds, forKey: "autoPauseSeconds")
+            silence.pauseAfter = autoPauseSeconds
+        }
     }
     /// Stage 2 / Feature B: the user's custom vocabulary UNIONED with every enabled vertical pack's
     /// vocabulary (deduped). With no user terms AND no enabled pack this is [] → promptTokens nil →
@@ -303,11 +344,35 @@ final class AppModel: ObservableObject {
     private let engine = TranscriptionEngine()
     private let mic = AudioCaptureMic()
     private let system = AudioCaptureSystem()
+    /// `AudioCaptureProcessTap` while the tap backend is the live system-audio source. Held as
+    /// `AnyObject` because the type is `@available(macOS 14.2)` and the deployment target is 14.0.
+    private var processTap: AnyObject?
     private var streamer: StreamingTranscriber?
     private var streamTask: Task<Void, Never>?
     private var busy = false
     private var hudTimer: Timer?
+    private var digitalSilenceSince: Date?
     private var recordingStart = Date()
+
+    // Pause / auto-pause / capture-health state (see CaptureControl.swift)
+    /// The valves every capture source pushes through. Pausing closes them; the watchdog reads
+    /// their level + last-delivery timestamps. nil outside a session.
+    private var micGate: CaptureGate?
+    private var systemGate: CaptureGate?
+    private var clock = SessionClock(t0: 0)
+    private var silence = SilenceMonitor()
+    private var micStall = StallMonitor()
+    private var systemStall = StallMonitor()
+    /// A recovery (capture restart) is in flight — suppresses the watchdog and re-entrancy.
+    private var recovering = false
+    /// Consecutive failed recoveries for the system source; a session is only ended after several.
+    private var systemRecoveryFailures = 0
+    /// Bounded rebuilds triggered by an alive-but-silent system capture (see `updateCaptureHealth`).
+    private var silentRebuilds = 0
+    private var lastSilentRebuildAt: TimeInterval = 0
+    private var noticeClearTask: Task<Void, Never>?
+    /// Error to show once the stop flow finishes (it owns `status` while finalizing).
+    private var pendingStopMessage: String?
 
     // Visual-capture session state
     private var visual: VisualCapture?
@@ -357,7 +422,10 @@ final class AppModel: ObservableObject {
         captureTarget = CaptureTarget(persisted: d.string(forKey: "captureTarget") ?? "main")
         ocrEnabled = (d.object(forKey: "ocrEnabled") as? Bool) ?? true
         saveAudioEnabled = (d.object(forKey: "saveAudioEnabled") as? Bool) ?? true
+        useProcessTap = (d.object(forKey: "useProcessTap") as? Bool) ?? true
         customVocabulary = (d.object(forKey: "customVocabulary") as? [String]) ?? []
+        autoPauseEnabled = (d.object(forKey: "autoPauseEnabled") as? Bool) ?? true
+        autoPauseSeconds = (d.object(forKey: "autoPauseSeconds") as? Double) ?? AudioActivity.defaultAutoPauseSeconds
         defaultSummaryStyle = SummaryStyle(rawValue: d.string(forKey: "defaultSummaryStyle") ?? "") ?? .tldr
         obsidianVaultPath = d.string(forKey: "obsidianVaultPath") ?? ""
         diarizationEnabled = d.bool(forKey: "diarizationEnabled")
@@ -377,16 +445,35 @@ final class AppModel: ObservableObject {
         WindowManager.shared.model = self
         debugLog("AppModel.init")
 
+        silence = SilenceMonitor(enabled: autoPauseEnabled, pauseAfter: autoPauseSeconds)
+
         // Global hotkeys — fire from any app (Carbon RegisterEventHotKey → no permission).
+        // Routed through `fireOnce` because the same physical press ALSO reaches the menu item's
+        // key equivalent while Transcriber is frontmost (see MenuCommands.swift): two paths, one
+        // intent. Buttons call toggle()/togglePause()/… directly and are unaffected.
         KeyboardShortcuts.onKeyDown(for: .toggleRecording) { [weak self] in
-            Task { @MainActor in self?.toggle() }
+            Task { @MainActor in self?.fireOnce("toggle") { self?.toggle() } }
+        }
+        KeyboardShortcuts.onKeyDown(for: .togglePause) { [weak self] in
+            Task { @MainActor in self?.fireOnce("pause") { self?.togglePause() } }
         }
         KeyboardShortcuts.onKeyDown(for: .grabFrame) { [weak self] in
-            Task { @MainActor in self?.grabFrame() }
+            Task { @MainActor in self?.fireOnce("grab") { self?.grabFrame() } }
         }
         KeyboardShortcuts.onKeyDown(for: .addBookmark) { [weak self] in
-            Task { @MainActor in self?.addBookmark() }
+            Task { @MainActor in self?.fireOnce("bookmark") { self?.addBookmark() } }
         }
+    }
+
+    /// Collapses the two keyboard paths (global Carbon hotkey + main-menu key equivalent) that fire
+    /// for a single press while the app is frontmost. Keyed per action, so ⌥⌘T and ⌥⌘B never mask
+    /// each other.
+    private var lastKeyFire: [String: Date] = [:]
+    func fireOnce(_ id: String, within: TimeInterval = 0.35, _ action: () -> Void) {
+        let now = Date()
+        if let last = lastKeyFire[id], now.timeIntervalSince(last) < within { return }
+        lastKeyFire[id] = now
+        action()
     }
 
     /// Called from AppDelegate at launch (a reliable hook, unlike @StateObject init timing).
@@ -443,7 +530,9 @@ final class AppModel: ObservableObject {
         encryptionBusy = true
         encryptionStatus = on ? "Encrypting existing sessions…" : "Decrypting existing sessions…"
         Task.detached(priority: .utility) {
-            var message: String
+            // `let` (not a mutated var) so the value crossing into the MainActor hop is a plain
+            // immutable capture — the var form is an error under the Swift 6 language mode.
+            let message: String
             do {
                 if on { try SessionIO.enableEncryption() } else { try SessionIO.disableEncryption() }
                 SearchIndex.shared.rebuildFromDisk()
@@ -559,6 +648,9 @@ final class AppModel: ObservableObject {
             // buffer start (== T0) and frame events are stamped CACurrentMediaTime() - T0.
             sessionStartDate = Date()
             sessionT0 = CACurrentMediaTime()
+            // The pause-aware view of that same clock: paused stretches are dropped from the audio,
+            // so bookmarks / slides / the timer must all be measured with them removed.
+            clock = SessionClock(t0: sessionT0)
 
             // Unified store: EVERY session is a folder (transcript.md + session.json). Visual sessions
             // also get an images/ subdir; audio-only sessions get just the folder.
@@ -598,23 +690,26 @@ final class AppModel: ObservableObject {
                 systemReceiver = engine.sink
             }
 
+            // Every capture pushes through a gate: the pause valve, and the probe the auto-pause +
+            // watchdog read. An OPEN gate forwards the exact array it was handed, so an unpaused
+            // session is byte-identical to one with no gate.
+            resetPauseState()
+            let micPort = CaptureGate(downstream: micReceiver)
+            let systemPort = CaptureGate(downstream: systemReceiver)
+            micGate = sessionSource.usesMic ? micPort : nil
+            systemGate = sessionSource.usesSystem ? systemPort : nil
+
             switch sessionSource {
             case .microphone:
-                try await mic.start(sink: micReceiver)
+                try await startMic(into: micPort)
                 if let v = visualObj { try await v.startOwnVideoStream() }
             case .systemAudio:
-                system.onStreamStopped = { [weak self] in
-                    Task { @MainActor in self?.handleSystemStreamStopped() }
-                }
-                try await system.start(sink: systemReceiver, visual: visualObj)
+                try await startSystem(into: systemPort, visual: visualObj)
             case .micPlusSystem:
                 // Visual (if on) rides the SYSTEM stream — same topology as system-audio + visual;
-                // the mic is a separate audio-only capture. If the system stream dies we finalize.
-                system.onStreamStopped = { [weak self] in
-                    Task { @MainActor in self?.handleSystemStreamStopped() }
-                }
-                try await system.start(sink: systemReceiver, visual: visualObj)
-                try await mic.start(sink: micReceiver)
+                // the mic is a separate audio-only capture.
+                try await startSystem(into: systemPort, visual: visualObj)
+                try await startMic(into: micPort)
             }
 
             if autoDetect {
@@ -633,6 +728,63 @@ final class AppModel: ObservableObject {
             await teardownCaptures()
             isRecording = false
             handle(error)
+        }
+    }
+
+    // MARK: Capture start / recovery
+    //
+    // Every capture is started through these two helpers, by `startFlow` AND by the recovery path,
+    // so a mid-session restart stands the source back up exactly the way it was first built.
+
+    /// Start the mic into `gate`, wiring the self-healing callbacks (a device switch rebuilds the
+    /// engine underneath us — the session must not notice beyond a status line).
+    private func startMic(into gate: CaptureGate) async throws {
+        mic.onRestart = { [weak self] reason in
+            Task { @MainActor in self?.noteCaptureEvent("Microphone reconnected (\(reason))") }
+        }
+        mic.onFailure = { [weak self] message in
+            Task { @MainActor in self?.noteCaptureEvent("Microphone unavailable: \(message)") }
+        }
+        try await mic.start(sink: gate)
+        micStall.start(now: CACurrentMediaTime())
+    }
+
+    /// Start system audio into `gate`: the process tap when it is available, else the ScreenCaptureKit
+    /// path verbatim. Both backends report an unexpected stop the same way, and both are recovered
+    /// (not finalized) by `recoverSystemCapture`.
+    private func startSystem(into gate: CaptureGate, visual: VisualCapture?) async throws {
+        if !startProcessTap(into: gate, visual: visual) {
+            system.onStreamStopped = { [weak self] in
+                Task { @MainActor in self?.handleSystemStreamStopped() }
+            }
+            try await system.start(sink: gate, visual: visual)
+        }
+        systemStall.start(now: CACurrentMediaTime())
+    }
+
+    /// Start system audio on the Core Audio process tap — the screen-independent backend that hears
+    /// every process regardless of window, display, output device, volume, or mute.
+    ///
+    /// Returns false (caller falls back to the verified ScreenCaptureKit path) when the toggle is
+    /// off, the OS predates the tap API, visual capture is on (frames ride the SCK stream, so that
+    /// topology must stay intact), or the tap itself can't be created.
+    private func startProcessTap(into receiver: any SampleReceiver, visual: VisualCapture?) -> Bool {
+        guard useProcessTap, visual == nil else { return false }
+        guard #available(macOS 14.2, *) else { return false }
+        let tap = AudioCaptureProcessTap()
+        tap.onStreamStopped = { [weak self] in
+            Task { @MainActor in self?.handleSystemStreamStopped() }
+        }
+        tap.onRestart = { [weak self] reason in
+            Task { @MainActor in self?.noteCaptureEvent("System audio reconnected (\(reason))") }
+        }
+        do {
+            try tap.start(sink: receiver)
+            processTap = tap
+            return true
+        } catch {
+            NSLog("[SystemAudio] process tap unavailable — using ScreenCaptureKit: \(error.localizedDescription)")
+            return false
         }
     }
 
@@ -706,7 +858,12 @@ final class AppModel: ObservableObject {
 
         pendingTitleSeed = nil
         autoStartedMeeting = nil
-        status = .idle
+        if let message = pendingStopMessage {
+            pendingStopMessage = nil
+            status = .error(message)
+        } else {
+            status = .idle
+        }
     }
 
     /// Finalize any session (audio-only or visual) into its folder: transcript.md + session.json
@@ -791,22 +948,37 @@ final class AppModel: ObservableObject {
 
     private func teardownCaptures() async {
         stopHUDTimer()
+        // Stopping from a paused state must not leak the pre-roll: that audio was captured while
+        // the user had recording held, so it is discarded rather than flushed into the session.
+        if isPaused {
+            micGate?.close()
+            systemGate?.close()
+        }
+        isPaused = false
+        pauseReason = nil
+        mic.onRestart = nil
+        mic.onFailure = nil
         mic.stop()
+        if #available(macOS 14.2, *), let tap = processTap as? AudioCaptureProcessTap { tap.stop() }
+        processTap = nil
         await system.stop()
         // Flush the mixer AFTER both captures stop, so the buffered tail reaches the sink before the
         // final pass reads it. No-op (nil) for single-source recordings.
         mixer?.flush()
         mixer = nil
+        micGate = nil
+        systemGate = nil
         await visual?.stop()
         visual = nil
     }
 
     // MARK: Live bookmarks (⌥⌘B)
 
-    /// Drop a bookmark at the current session time (seconds from T0). No-op when not recording.
+    /// Drop a bookmark at the current session time (seconds of RECORDED audio from T0 — paused
+    /// stretches excluded, so the marker lands where the audio actually is). No-op when not recording.
     func addBookmark() {
         guard isRecording else { return }
-        let t = max(0, CACurrentMediaTime() - sessionT0)
+        let t = clock.time(now: CACurrentMediaTime())
         sessionBookmarks.append(Bookmark(time: t, label: nil))
         lastBookmarkAt = t
         // Auto-dismiss the transient confirmation after a moment.
@@ -892,7 +1064,7 @@ final class AppModel: ObservableObject {
         case .prompt:
             meetingPrompt = candidate
             Notifier.notify(title: "Meeting starting",
-                            body: "“\(candidate.title)” — open Transcriber to start a bot-free recording.")
+                            body: "“\(candidate.title)” — open Said to start a bot-free recording.")
         case .autoStart:
             startMeetingRecording(candidate, auto: true)
         case .ignore:
@@ -923,21 +1095,107 @@ final class AppModel: ObservableObject {
         recordingStart = Date()
         hud.level = 0
         hud.elapsed = 0
+        hud.silentSeconds = 0
+        hud.quietSeconds = 0
+        digitalSilenceSince = nil
         hudTimer?.invalidate()
         // ~12 Hz: drives the meter (RMS of recent samples) and the mm:ss timer.
         hudTimer = Timer.scheduledTimer(withTimeInterval: 0.08, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated {
                 guard let self else { return }
-                self.hud.level = self.engine.sink.recentRMS()
-                self.hud.elapsed = Int(Date().timeIntervalSince(self.recordingStart))
+                let now = CACurrentMediaTime()
+                // While paused the sink stops growing, so its RMS would freeze at the last recorded
+                // block; read the live input level from the gates instead so the meter still moves
+                // (and visibly shows the audio that is about to trigger an auto-resume).
+                self.hud.level = self.isPaused ? min(1, self.inputLevel() * 8) : self.engine.sink.recentRMS()
+                self.hud.elapsed = Int(self.clock.time(now: now))
+                self.updateSilenceWatch()
+                self.updateAutoPause(now: now)
+                self.updateCaptureHealth(now: now)
             }
         }
+    }
+
+    /// The loudest live input across the active capture sources, measured BEFORE the pause gate —
+    /// this is what "is anyone talking / is anything playing" means, paused or not.
+    private func inputLevel() -> Float {
+        max(micGate?.level ?? 0, systemGate?.level ?? 0)
+    }
+
+    /// Auto-pause on silence, auto-resume on sound (both off when the setting is off). A manual
+    /// pause is never auto-resumed — `SilenceMonitor` enforces that.
+    private func updateAutoPause(now: TimeInterval) {
+        guard isRecording, !busy else { return }
+        let decision = silence.update(level: inputLevel(), now: now, paused: isPaused, reason: pauseReason)
+        let quiet = Int(silence.quietSeconds(now: now))
+        if hud.quietSeconds != quiet { hud.quietSeconds = quiet }
+        switch decision {
+        case .autoPause:
+            pauseRecording(auto: true)
+        case .autoResume:
+            resumeRecording()
+        case .none:
+            break
+        }
+    }
+
+    /// Watchdog: a live capture delivers buffers continuously (zero-filled when nothing plays), so
+    /// "no buffers at all" means the source broke — a device switch, a stream the OS tore down, an
+    /// engine that stopped. Rebuild it instead of letting the session quietly record nothing.
+    private func updateCaptureHealth(now: TimeInterval) {
+        guard isRecording, !busy, !recovering else { return }
+        if sessionSource.usesMic, let gate = micGate,
+           micStall.shouldRecover(lastDelivery: gate.lastDeliveryAt, now: now) {
+            recoverMicCapture(reason: "no microphone audio for \(Int(AudioActivity.stallSeconds))s")
+        }
+        if sessionSource.usesSystem, let gate = systemGate,
+           systemStall.shouldRecover(lastDelivery: gate.lastDeliveryAt, now: now) {
+            recoverSystemCapture(reason: "no system audio for \(Int(AudioActivity.stallSeconds))s")
+            return
+        }
+
+        // The failure a callback watchdog cannot see: the capture is alive and delivering, but every
+        // buffer is digital silence. That is what a mid-session output-device change can leave
+        // behind — and unlike a stall, the session looks perfectly healthy while recording nothing.
+        // Rebuilt at most twice per session, because genuinely silent audio looks identical; after
+        // that the status bar's "no system audio" warning stands on its own.
+        guard sessionSource.usesSystem, !isPaused, hud.silentSeconds >= 15, silentRebuilds < 2,
+              now - lastSilentRebuildAt >= 45 else { return }
+        silentRebuilds += 1
+        lastSilentRebuildAt = now
+        digitalSilenceSince = nil          // don't re-fire on the same stretch while it restarts
+        recoverSystemCapture(reason: "system audio has been silent for \(hud.silentSeconds)s")
+    }
+
+    /// Track how long the sink's tail has been all-zero. A live mic carries a noise floor, so
+    /// exact zeros mean the capture is running but carrying nothing — for Mic+System the mixer
+    /// sums both, so a working mic keeps this from firing when only system audio is silent.
+    private func updateSilenceWatch() {
+        // Paused sessions stop feeding the sink, so its tail is stale — the paused state is what
+        // the UI shows then, not a "dead capture" warning.
+        guard !isPaused else {
+            digitalSilenceSince = nil
+            if hud.silentSeconds != 0 { hud.silentSeconds = 0 }
+            return
+        }
+        guard engine.sink.recentAllZero() else {
+            digitalSilenceSince = nil
+            if hud.silentSeconds != 0 { hud.silentSeconds = 0 }
+            return
+        }
+        let since = digitalSilenceSince ?? Date()
+        digitalSilenceSince = since
+        let seconds = Int(Date().timeIntervalSince(since)) + 1   // +1: the all-zero window itself
+        if hud.silentSeconds != seconds { hud.silentSeconds = seconds }
     }
 
     private func stopHUDTimer() {
         hudTimer?.invalidate()
         hudTimer = nil
         hud.level = 0
+        hud.silentSeconds = 0
+        hud.quietSeconds = 0
+        digitalSilenceSince = nil
     }
 
     // MARK: AI summary (on-device)
@@ -1006,10 +1264,149 @@ final class AppModel: ObservableObject {
         Task { await visual?.stop(); visual = nil }
     }
 
-    /// Shared system-audio+visual stream died: the audio source is gone, so finalize gracefully.
+    /// The system-audio backend reported that it stopped. This used to end the session, which is
+    /// what made an output-device change or a stream hiccup look like "it just stopped transcribing".
+    /// Now it is a recoverable event: stand the capture back up and keep the session running.
     private func handleSystemStreamStopped() {
-        NSLog("[SystemAudio] stream stopped mid-session — finalizing")
-        if isRecording { stopRecording() }
+        guard isRecording else { return }
+        recoverSystemCapture(reason: "system audio stream stopped")
+    }
+
+    // MARK: Capture recovery (a broken source must not end a session)
+
+    /// Rebuild the system-audio capture in place, around whatever the audio hardware looks like NOW.
+    /// The session, the sink, the streamer, and every timestamp survive untouched — only the capture
+    /// object is replaced. Only after several consecutive failures (≈ the device is really gone) is
+    /// the session finalized, and then with an explicit error rather than a silent stop.
+    private func recoverSystemCapture(reason: String) {
+        guard isRecording, !recovering, let gate = systemGate else { return }
+        recovering = true
+        NSLog("[Recover] system audio: \(reason)")
+        noteCaptureEvent("Reconnecting system audio…")
+        let visualObj = visual
+        Task {
+            defer { recovering = false }
+
+            // Tear down whichever backend was live (both are safe to stop twice).
+            if #available(macOS 14.2, *), let tap = processTap as? AudioCaptureProcessTap { tap.stop() }
+            processTap = nil
+            system.onStreamStopped = nil
+            await system.stop()
+
+            // Let a device transition settle before rebuilding — an immediate retry during a
+            // switchover is the one most likely to fail.
+            try? await Task.sleep(nanoseconds: 400_000_000)
+            guard isRecording else { return }
+
+            do {
+                try await startSystem(into: gate, visual: visualObj)
+                // Stop can land during the (awaiting) restart. Teardown already ran by then, so a
+                // capture started here would outlive the session — undo it rather than leak it.
+                guard isRecording else {
+                    if #available(macOS 14.2, *), let tap = processTap as? AudioCaptureProcessTap { tap.stop() }
+                    processTap = nil
+                    await system.stop()
+                    return
+                }
+                systemRecoveryFailures = 0
+                noteCaptureEvent("System audio reconnected")
+            } catch {
+                systemRecoveryFailures += 1
+                NSLog("[Recover] system audio failed (\(systemRecoveryFailures)): \(error)")
+                if systemRecoveryFailures >= 4 {
+                    let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+                    noteCaptureEvent("System audio unavailable — finishing the session")
+                    // Surfaced by stopFlow once finalizing completes (it owns `status` until then),
+                    // so the reason the session ended is never lost behind a plain "Idle".
+                    pendingStopMessage = "System audio was lost: \(message)"
+                    stopRecording()
+                } else {
+                    noteCaptureEvent("System audio unavailable — retrying…")
+                }
+            }
+        }
+    }
+
+    /// Mic recovery is cheaper: `AudioCaptureMic` rebuilds itself around the new input device, so
+    /// this is only the watchdog's nudge for a stall that produced no notification at all.
+    private func recoverMicCapture(reason: String) {
+        guard isRecording else { return }
+        NSLog("[Recover] microphone: \(reason)")
+        mic.forceRestart(reason: reason)
+    }
+
+    /// Surface a capture event without interrupting anything. Auto-clears so the status bar
+    /// returns to its normal read.
+    private func noteCaptureEvent(_ message: String) {
+        captureNotice = message
+        noticeClearTask?.cancel()
+        noticeClearTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 6_000_000_000)
+            guard !Task.isCancelled else { return }
+            if self?.captureNotice == message { self?.captureNotice = nil }
+        }
+    }
+
+    // MARK: Pause / resume
+
+    /// Pause and resume from one control (button, ⌥⌘P, menu). No-op when not recording.
+    func togglePause() {
+        guard isRecording else { return }
+        if isPaused { resumeRecording() } else { pauseRecording() }
+    }
+
+    /// Stop feeding the recording without ending the session. Capture keeps running (so the level
+    /// is still measured and an auto-pause can hear audio return), but its samples are dropped —
+    /// the audio stays gapless and the transcript never accumulates silence.
+    func pauseRecording(auto: Bool = false) {
+        guard isRecording, !isPaused else { return }
+        isPaused = true
+        pauseReason = auto ? .silence : .manual
+        clock.pause(now: CACurrentMediaTime())
+        micGate?.close()
+        systemGate?.close()
+        visual?.setPaused(true, totalPaused: clock.totalPaused(now: CACurrentMediaTime()))
+        status = .paused
+        hud.level = 0
+        NSLog("[Pause] paused (\(auto ? "auto — silence" : "manual"))")
+    }
+
+    /// Resume recording.
+    ///
+    /// Pre-roll is replayed ONLY when the app paused itself: then the withheld second contains the
+    /// audio that triggered the resume, and dropping it would clip the first word. After a pause the
+    /// USER asked for, nothing captured during it is ever recorded — the app must not put audio into
+    /// a session that the user had deliberately stopped.
+    func resumeRecording() {
+        guard isRecording, isPaused else { return }
+        let now = CACurrentMediaTime()
+        let replayPreroll = (pauseReason == .silence)
+        clock.resume(now: now)
+        micGate?.open(flushPreroll: replayPreroll)
+        systemGate?.open(flushPreroll: replayPreroll)
+        visual?.setPaused(false, totalPaused: clock.totalPaused(now: now))
+        isPaused = false
+        pauseReason = nil
+        status = .recording
+        silence.reset()
+        hud.quietSeconds = 0
+        NSLog("[Pause] resumed")
+    }
+
+    private func resetPauseState() {
+        isPaused = false
+        pauseReason = nil
+        captureNotice = nil
+        noticeClearTask?.cancel()
+        noticeClearTask = nil
+        recovering = false
+        systemRecoveryFailures = 0
+        silentRebuilds = 0
+        lastSilentRebuildAt = 0
+        silence = SilenceMonitor(enabled: autoPauseEnabled, pauseAfter: autoPauseSeconds)
+        micStall = StallMonitor()
+        systemStall = StallMonitor()
+        hud.quietSeconds = 0
     }
 
     private func sessionMeta(audioFile: String? = nil, durationSeconds: Double? = nil,
@@ -1071,7 +1468,7 @@ final class AppModel: ObservableObject {
     private func handle(_ error: Error) {
         let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
         status = .error(message)
-        NSLog("[Transcriber] start failed: \(message)")
+        NSLog("[Said] start failed: \(message)")
 
         switch error {
         case CaptureError.micDenied:

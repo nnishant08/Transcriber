@@ -3,13 +3,13 @@
 <plist version="1.0">
 <dict>
     <key>CFBundleName</key>
-    <string>Transcriber</string>
+    <string>Said</string>
     <key>CFBundleDisplayName</key>
-    <string>Transcriber</string>
+    <string>Said</string>
     <key>CFBundleExecutable</key>
-    <string>Transcriber</string>
+    <string>Said</string>
     <key>CFBundleIdentifier</key>
-    <string>com.nikhil.transcriber</string>
+    <string>com.said.mac</string>
     <key>CFBundleVersion</key>
     <string>1</string>
     <key>CFBundleShortVersionString</key>
@@ -30,17 +30,17 @@
     <true/>
     <!-- Permission prompt strings (App Sandbox is intentionally disabled for this personal tool). -->
     <key>NSMicrophoneUsageDescription</key>
-    <string>Transcriber uses the microphone to transcribe your speech locally on-device.</string>
+    <string>Said uses the microphone to transcribe your speech locally on-device.</string>
     <key>NSScreenCaptureUsageDescription</key>
-    <string>Transcriber captures system audio (via Screen Recording) to transcribe it locally on-device. No video is recorded.</string>
+    <string>Said captures system audio (via Screen Recording) to transcribe it locally on-device. No video is recorded.</string>
     <!-- Calendar (optional, Feature C): read-only, on-device meeting detection for bot-free capture. -->
     <key>NSCalendarsUsageDescription</key>
-    <string>Transcriber reads your calendar on-device to detect upcoming video meetings and offer a bot-free local recording. Nothing leaves this Mac.</string>
+    <string>Said reads your calendar on-device to detect upcoming video meetings and offer a bot-free local recording. Nothing leaves this Mac.</string>
     <key>NSCalendarsFullAccessUsageDescription</key>
-    <string>Transcriber reads your calendar on-device to detect upcoming video meetings and offer a bot-free local recording. Nothing leaves this Mac.</string>
+    <string>Said reads your calendar on-device to detect upcoming video meetings and offer a bot-free local recording. Nothing leaves this Mac.</string>
     <key>NSHumanReadableCopyright</key>
     <string>Personal tool. On-device transcription via WhisperKit.</string>
-    <!-- Audio/video files can be opened with / dropped on Transcriber to import them (B1). -->
+    <!-- Audio/video files can be opened with / dropped on Said to import them (B1). -->
     <key>CFBundleDocumentTypes</key>
     <array>
         <dict>

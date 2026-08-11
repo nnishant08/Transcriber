@@ -23,8 +23,9 @@ struct SettingsView: View {
         Form {
             Section("Global Shortcuts") {
                 KeyboardShortcuts.Recorder("Toggle recording:", name: .toggleRecording)
+                KeyboardShortcuts.Recorder("Pause / resume:", name: .togglePause)
                 KeyboardShortcuts.Recorder("Add bookmark:", name: .addBookmark)
-                Text("Work from any app. Bookmark (⌥⌘B) drops a marker at the current moment while recording; markers show in the Session Viewer. Carbon hotkeys need no permission.")
+                Text("Work from any app. Pause (⌥⌘P) holds the session open and stops recording — paused time is left out of the audio and the transcript. Bookmark (⌥⌘B) drops a marker at the current moment while recording; markers show in the Session Viewer. Carbon hotkeys need no permission.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -99,6 +100,27 @@ struct SettingsView: View {
             }
 
             Section("Audio & accuracy") {
+                Toggle("Capture system audio at the audio engine (recommended)", isOn: $model.useProcessTap)
+                Text("Uses a Core Audio process tap, so every app is heard regardless of window, "
+                     + "display, output device (speakers / headphones / external), volume, or mute. "
+                     + "Turn off to use the older ScreenCaptureKit path, which only hears apps with a "
+                     + "window on the captured display. Requires macOS 14.2+; screenshot capture always "
+                     + "uses the ScreenCaptureKit path.")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+
+                Toggle("Auto-pause when there's no audio", isOn: $model.autoPauseEnabled)
+                if model.autoPauseEnabled {
+                    Stepper(value: $model.autoPauseSeconds, in: 5...600, step: 5) {
+                        Text("Pause after \(Int(model.autoPauseSeconds)) s of silence")
+                    }
+                }
+                Text("Recording pauses itself after a silent stretch and resumes automatically the "
+                     + "moment sound returns (with a short pre-roll, so the first word isn't clipped). "
+                     + "Handy when a call is muted, a video is paused, or a meeting takes a break — "
+                     + "the silence never reaches the transcript. A pause you trigger yourself (⌥⌘P) "
+                     + "stays paused until you resume it.")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+
                 Toggle("Save source audio with each session (enables playback)", isOn: $model.saveAudioEnabled)
                 Text("Saves a compact 16 kHz AAC file in the session folder so the Viewer can play it back and you can click a line to seek. ~0.5 MB/minute.")
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
@@ -234,7 +256,7 @@ struct SettingsView: View {
                              : "Fire \(Int(model.calendarLeadSeconds / 60)) min \(Int(model.calendarLeadSeconds.truncatingRemainder(dividingBy: 60))) s before start")
                     }
                 }
-                Text("Bot-free: nothing joins your call. When a calendar event with a video-meeting link (Zoom, Teams, Meet, Webex, Whereby) starts, Transcriber offers — or auto-starts — a local system-audio recording. Your calendar is read on-device only; needs the optional Calendar permission.")
+                Text("Bot-free: nothing joins your call. When a calendar event with a video-meeting link (Zoom, Teams, Meet, Webex, Whereby) starts, Said offers — or auto-starts — a local system-audio recording. Your calendar is read on-device only; needs the optional Calendar permission.")
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
 

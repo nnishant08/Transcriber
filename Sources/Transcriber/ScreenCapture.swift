@@ -78,6 +78,12 @@ final class VisualCapture: NSObject, SCStreamOutput, SCStreamDelegate {
     private var latestTime: TimeInterval = 0
     private var savedCount = 0
     private var stopped = false
+    /// Pause state, mirrored from AppModel. A paused recording drops audio samples, so frame
+    /// timestamps must be measured on the same pause-compressed timeline or slides would drift
+    /// ahead of the transcript by the length of every pause.
+    private var paused = false
+    private var pausedOffset: TimeInterval = 0
+    private var pauseBegan: TimeInterval = 0
 
     /// Called (off the main thread) when a frame is saved. `thumb` is a small UI copy.
     var onFrame: ((FrameEvent, CGImage) -> Void)?
@@ -102,8 +108,28 @@ final class VisualCapture: NSObject, SCStreamOutput, SCStreamDelegate {
             self.savedCount = 0
             self.detector.reset()
             self.latestFrame = nil
+            self.paused = false
+            self.pausedOffset = 0
             if self.mode == .interval { self.startIntervalTimer() }
         }
+    }
+
+    /// Pause/resume automatic capture. `totalPaused` is the session's accumulated paused time,
+    /// subtracted from every subsequent frame stamp so slides stay aligned with the audio.
+    /// The latest frame keeps updating while paused, so a manual ⌥⌘S grab still works.
+    func setPaused(_ value: Bool, totalPaused: TimeInterval) {
+        queue.async { [weak self] in
+            guard let self else { return }
+            if value, !self.paused { self.pauseBegan = CACurrentMediaTime() }
+            self.paused = value
+            self.pausedOffset = totalPaused
+        }
+    }
+
+    /// Paused time to subtract right now — grows during the pause itself, so a manual grab while
+    /// paused is stamped at the moment the recording actually stopped.
+    private var currentPausedOffset: TimeInterval {
+        paused ? pausedOffset + max(0, CACurrentMediaTime() - pauseBegan) : pausedOffset
     }
 
     /// MIC source: own a standalone video-only stream.
@@ -173,9 +199,9 @@ final class VisualCapture: NSObject, SCStreamOutput, SCStreamDelegate {
         // Detach so the frame is safe to retain past the IOSurface's recycle.
         let frame = cg.detachedCopy() ?? cg
         latestFrame = frame
-        latestTime = CACurrentMediaTime() - t0
+        latestTime = max(0, CACurrentMediaTime() - t0 - currentPausedOffset)
 
-        if mode == .onChange {
+        if !paused, mode == .onChange {
             let hash = dHash(frame)
             if detector.shouldCapture(hash: hash, now: latestTime) {
                 save(frame, at: latestTime)
@@ -214,7 +240,7 @@ final class VisualCapture: NSObject, SCStreamOutput, SCStreamDelegate {
         let timer = DispatchSource.makeTimerSource(queue: queue)
         timer.schedule(deadline: .now() + interval, repeating: interval)
         timer.setEventHandler { [weak self] in
-            guard let self, let img = self.latestFrame else { return }
+            guard let self, !self.paused, let img = self.latestFrame else { return }
             self.save(img, at: self.latestTime)
         }
         timer.resume()

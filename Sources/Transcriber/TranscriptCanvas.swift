@@ -29,9 +29,9 @@ struct TranscriptCanvas: View {
                 .padding(.horizontal, 30).padding(.vertical, 26)
             }
             .onAppear { if live { scrollToBottom(proxy) } }
-            .onChange(of: model.displaySegments.count) { _ in if live { scrollToBottom(proxy) } }
-            .onChange(of: model.hypothesisText) { _ in if live { scrollToBottom(proxy) } }
-            .onChange(of: model.capturedFrames.count) { _ in if live { scrollToBottom(proxy) } }
+            .onChange(of: model.displaySegments.count) { if live { scrollToBottom(proxy) } }
+            .onChange(of: model.hypothesisText) { if live { scrollToBottom(proxy) } }
+            .onChange(of: model.capturedFrames.count) { if live { scrollToBottom(proxy) } }
         }
     }
 

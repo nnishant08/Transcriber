@@ -6,7 +6,11 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-APP_NAME="Transcriber"
+# PRODUCT_NAME is the SPM target/product (unchanged — renaming it would churn Package.swift
+# and every build path). APP_NAME is what the user sees: the .app, the executable inside it,
+# and CFBundleExecutable in Info.plist.
+PRODUCT_NAME="Transcriber"
+APP_NAME="Said"
 CONFIG="${CONFIG:-release}"
 APP="$ROOT/$APP_NAME.app"
 
@@ -35,7 +39,7 @@ echo "==> Resolving + building ($CONFIG)…"
 swift build -c "$CONFIG" ${SWIFT_FLAGS[@]+"${SWIFT_FLAGS[@]}"}
 
 BIN_DIR="$(swift build -c "$CONFIG" --show-bin-path)"
-BIN="$BIN_DIR/$APP_NAME"
+BIN="$BIN_DIR/$PRODUCT_NAME"
 if [[ ! -f "$BIN" ]]; then
     echo "!! Build product not found at $BIN" >&2
     exit 1

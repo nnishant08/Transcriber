@@ -25,6 +25,10 @@ struct MenuContent: View {
 
             startStopRow.padding(.horizontal, 6).padding(.bottom, 6)
 
+            if model.isRecording {
+                pauseRow.padding(.horizontal, 6).padding(.bottom, 6)
+            }
+
             divider
 
             PopoverRow(system: "macwindow", title: "Open transcript window") { WindowManager.shared.showTranscript() }
@@ -51,7 +55,7 @@ struct MenuContent: View {
 
             divider
 
-            PopoverRow(system: "xmark", title: "Quit Transcriber",
+            PopoverRow(system: "xmark", title: "Quit Said",
                        tint: Theme.recordText, iconTint: Theme.recordText) { NSApp.terminate(nil) }
 
             OnDeviceBadge().frame(maxWidth: .infinity).padding(.top, 8).padding(.bottom, 4)
@@ -89,16 +93,37 @@ struct MenuContent: View {
         .disabled(model.status.isBusyPreparing)
     }
 
+    /// Pause/Resume — only meaningful during a session, so it only exists then.
+    private var pauseRow: some View {
+        Button { model.togglePause() } label: {
+            HStack(spacing: 9) {
+                Image(systemName: model.isPaused ? "play.fill" : "pause.fill").font(.system(size: 11))
+                Text(model.isPaused ? "Resume recording" : "Pause recording").font(Theme.ui(13, weight: .medium))
+                KbdView("⌥⌘P")
+            }
+            .foregroundStyle(Theme.pauseText)
+            .frame(maxWidth: .infinity)
+            .padding(9)
+            .background(RoundedRectangle(cornerRadius: 9).fill(Theme.pauseSoft))
+            .overlay(RoundedRectangle(cornerRadius: 9).strokeBorder(Theme.pauseBorder))
+        }
+        .buttonStyle(.plain)
+    }
+
     private var statusColor: Color {
         switch model.uiState {
-        case .recording: return Theme.record
+        case .recording: return model.isPaused ? Theme.pause : Theme.record
         case .downloading: return Theme.accent
         default: return Theme.ok
         }
     }
     private var statusTitle: String {
         switch model.uiState {
-        case .recording: return "Recording…"
+        case .recording:
+            if model.isPaused {
+                return model.pauseReason == .silence ? "Auto-paused (silent)" : "Paused"
+            }
+            return "Recording…"
         case .downloading: return model.status.menuText
         case .summary: return "Summary"
         case .idle: return model.transcript.isEmpty ? "Ready" : "Ready · transcript saved"

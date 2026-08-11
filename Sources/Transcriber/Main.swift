@@ -72,6 +72,7 @@ enum AppMain {
         }
         if args.contains("--selftest-vocab") { SelfTest.runVocab(); return }
         if args.contains("--selftest-bookmarks") { SelfTest.runBookmarks(); return }
+        if args.contains("--selftest-pause") { SelfTest.runPause(); return }
         // Stage-1 self-tests (diarization / multilingual / calendar / cleanup / custom modes)
         if let idx = args.firstIndex(of: "--selftest-diarize") {
             SelfTest.runDiarize(path: positional(after: idx, in: args)); return
@@ -108,6 +109,20 @@ enum AppMain {
             SelfTest.runEncrypt(dir: positional(after: idx, in: args)); return
         }
         if args.contains("--selftest-slidechat") { SelfTest.runSlideChat(); return }
+        // Diagnostic: what ScreenCaptureKit hands us as the output device's mute/volume change.
+        // Needs the Screen Recording grant → run the .app bundle's binary, not .build/release.
+        if let idx = args.firstIndex(of: "--selftest-sysaudio") {
+            SysAudioProbe.run(seconds: Double(positional(after: idx, in: args) ?? "") ?? 20)
+            return
+        }
+        // Same probe through the Core Audio process tap — the screen-independent backend.
+        if let idx = args.firstIndex(of: "--selftest-processtap") {
+            guard #available(macOS 14.2, *) else {
+                print("Process taps need macOS 14.2 or newer."); return
+            }
+            SysAudioProbe.runProcessTap(seconds: Double(positional(after: idx, in: args) ?? "") ?? 20)
+            return
+        }
         if let idx = args.firstIndex(of: "--selftest") {
             let audioPath = (idx + 1 < args.count && !args[idx + 1].hasPrefix("-"))
                 ? args[idx + 1]
@@ -133,7 +148,7 @@ enum AppMain {
 enum SelfTest {
     static func run(audioPath: String, model: String) {
         setbuf(stdout, nil)
-        print("== Transcriber self-test ==")
+        print("== Said self-test ==")
         print("audio : \(audioPath)")
         print("model : \(model)")
 
@@ -177,7 +192,7 @@ enum SelfTest {
     /// rolling-window confirmation, dedup, and the final pass with no mic/permissions.
     static func runStream(audioPath: String, model: String) {
         setbuf(stdout, nil)
-        print("== Transcriber STREAMING self-test ==")
+        print("== Said STREAMING self-test ==")
         print("audio : \(audioPath)")
         print("model : \(model)")
 
@@ -967,6 +982,128 @@ extension SelfTest {
 
         let ok = timesMatch && legacyOK
         print(ok ? "OK" : "FAIL"); exit(ok ? 0 : 2)
+    }
+
+    /// Pause / auto-pause / capture-health: the pure logic behind pausing a live session.
+    /// Asserts the properties that matter for correctness of a RECORDING, not just of the types:
+    /// an open gate is a byte-identical passthrough, a closed one records nothing but still hears,
+    /// silence pauses and sound resumes (auto-pauses only), a stalled capture asks for recovery,
+    /// and the session clock excludes paused time so every timestamp still lines up with the audio.
+    static func runPause() {
+        setbuf(stdout, nil)
+        print("== pause / auto-pause self-test ==")
+        var failures: [String] = []
+        func check(_ label: String, _ condition: Bool) {
+            print("  \(condition ? "ok  " : "FAIL") \(label)")
+            if !condition { failures.append(label) }
+        }
+
+        // --- CaptureGate ---------------------------------------------------------------
+        let sink = SampleSink()
+        let gate = CaptureGate(downstream: sink)
+        let loud: [Float] = (0..<1_600).map { sin(Float($0) * 0.05) * 0.3 }
+        let quiet = [Float](repeating: 0, count: 1_600)
+
+        gate.append(loud)
+        check("open gate forwards the exact samples", sink.snapshot() == loud)
+
+        gate.close()
+        gate.append(loud)
+        check("closed gate records nothing", sink.count == loud.count)
+        check("closed gate still measures level (auto-resume can hear)", gate.level > AudioActivity.silenceRMS)
+        check("closed gate still stamps delivery (watchdog stays valid)", gate.lastDeliveryAt != nil)
+
+        // Pre-roll is capped at ~1 s, and only the newest audio is kept.
+        for _ in 0..<20 { gate.append(loud) }
+        check("pre-roll is capped at 1 s", gate.prerollCount <= 16_000)
+        let beforeOpen = sink.count
+        gate.open()
+        let flushed = sink.count - beforeOpen
+        print("  flushed pre-roll: \(flushed) samples")
+        check("reopening flushes the retained pre-roll", flushed > 0 && flushed <= 16_000)
+
+        // A pause the USER asked for must never put withheld audio into the session.
+        gate.close()
+        gate.append(loud)
+        let beforeManual = sink.count
+        gate.open(flushPreroll: false)
+        check("a manual resume replays nothing", sink.count == beforeManual)
+
+        gate.append(quiet)
+        check("digital silence reads as no level", gate.level == 0)
+
+        // --- SilenceMonitor ------------------------------------------------------------
+        var monitor = SilenceMonitor(enabled: true, pauseAfter: 30)
+        let speech: Float = 0.08
+        let room: Float = 0.001
+        _ = monitor.update(level: speech, now: 0, paused: false, reason: nil)
+        var decisionAt29: CaptureDecision = .none
+        var decisionAt30: CaptureDecision = .none
+        for t in stride(from: 1.0, through: 31.0, by: 1.0) {
+            let d = monitor.update(level: room, now: t, paused: false, reason: nil)
+            if t == 29 { decisionAt29 = d }
+            if t == 31 { decisionAt30 = d }        // quiet started at t=1 → 30 s elapsed at t=31
+        }
+        check("no auto-pause before the threshold", decisionAt29 == .none)
+        check("auto-pause fires at the threshold", decisionAt30 == .autoPause)
+
+        // Sound returns → an AUTO pause resumes itself.
+        _ = monitor.update(level: speech, now: 40, paused: true, reason: .silence)
+        let resume = monitor.update(level: speech, now: 40.5, paused: true, reason: .silence)
+        check("auto-pause resumes when audio returns", resume == .autoResume)
+
+        // A MANUAL pause is the user's decision — never overridden.
+        var manual = SilenceMonitor(enabled: true, pauseAfter: 30)
+        _ = manual.update(level: speech, now: 0, paused: true, reason: .manual)
+        let manualResume = manual.update(level: speech, now: 5, paused: true, reason: .manual)
+        check("manual pause is never auto-resumed", manualResume == .none)
+
+        // Disabled → inert in both directions.
+        var off = SilenceMonitor(enabled: false, pauseAfter: 30)
+        var offFired = false
+        for t in stride(from: 0.0, through: 120.0, by: 1.0) {
+            if off.update(level: room, now: t, paused: false, reason: nil) != .none { offFired = true }
+        }
+        check("auto-pause disabled ⇒ never fires", !offFired)
+
+        // Brief silence between sentences must not pause a normal conversation.
+        var speaking = SilenceMonitor(enabled: true, pauseAfter: 30)
+        var pausedMidSpeech = false
+        for step in 0..<600 {                                   // 60 s, 0.1 s steps
+            let t = Double(step) * 0.1
+            let level: Float = (step % 40 < 15) ? room : speech  // ~1.5 s gaps between phrases
+            if speaking.update(level: level, now: t, paused: false, reason: nil) == .autoPause { pausedMidSpeech = true }
+        }
+        check("pauses between sentences don't trigger a pause", !pausedMidSpeech)
+
+        // --- StallMonitor --------------------------------------------------------------
+        var stall = StallMonitor()
+        stall.start(now: 0)
+        check("healthy capture is left alone", !stall.shouldRecover(lastDelivery: 9.9, now: 10))
+        check("no recovery inside the cooldown", !stall.shouldRecover(lastDelivery: 0, now: 4))
+        check("stalled capture asks for recovery", stall.shouldRecover(lastDelivery: 5, now: 10))
+        check("recovery is not retried immediately", !stall.shouldRecover(lastDelivery: 5, now: 12))
+        check("recovery retried after the cooldown", stall.shouldRecover(lastDelivery: 5, now: 17))
+
+        // --- SessionClock --------------------------------------------------------------
+        var clock = SessionClock(t0: 100)
+        check("elapsed tracks wall clock while running", abs(clock.time(now: 110) - 10) < 0.001)
+        clock.pause(now: 110)
+        check("elapsed freezes while paused", abs(clock.time(now: 140) - 10) < 0.001)
+        clock.resume(now: 140)
+        check("paused time is excluded after resume", abs(clock.time(now: 150) - 20) < 0.001)
+        check("total paused is reported", abs(clock.totalPaused(now: 150) - 30) < 0.001)
+        clock.pause(now: 150)
+        clock.pause(now: 155)   // idempotent — a second pause must not double-count
+        clock.resume(now: 160)
+        check("repeated pause/resume stays consistent", abs(clock.time(now: 170) - 30) < 0.001)
+
+        // A bookmark dropped after a pause lands on the RECORDED timeline (what the audio file has),
+        // not on wall-clock time — otherwise every marker after a pause would point past the audio.
+        check("bookmark time matches recorded audio length", abs(clock.time(now: 160) - 20) < 0.001)
+
+        print(failures.isEmpty ? "OK" : "FAIL: \(failures.joined(separator: "; "))")
+        exit(failures.isEmpty ? 0 : 2)
     }
 
     // MARK: synth helpers

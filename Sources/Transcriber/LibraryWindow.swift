@@ -1,38 +1,128 @@
 import SwiftUI
 import AppKit
+import UniformTypeIdentifiers
 
-/// Quick date-range filter for the Library.
-enum DateRangeFilter: CaseIterable, Identifiable {
-    case all, week, month, year
-    var id: Self { self }
+// MARK: - Smart collections (v3 screen 01 sidebar)
+
+/// The sidebar's saved views. Every one is derived from data a session already carries — no new
+/// state on disk, so an old session.json still lands in the right collections.
+enum LibraryCollection: String, CaseIterable, Identifiable {
+    case all, week, bookmarked, slides, speakers
+
+    var id: String { rawValue }
+
     var label: String {
         switch self {
-        case .all: return "All time"
-        case .week: return "Past 7 days"
-        case .month: return "Past 30 days"
-        case .year: return "Past year"
+        case .all: return "All"
+        case .week: return "This week"
+        case .bookmarked: return "Bookmarked"
+        case .slides: return "With slides"
+        case .speakers: return "Multi-speaker"
         }
     }
-    /// Earliest date allowed, or nil for "all".
-    func start(now: Date = Date()) -> Date? {
+
+    var symbol: String {
         switch self {
-        case .all: return nil
-        case .week: return now.addingTimeInterval(-7 * 86_400)
-        case .month: return now.addingTimeInterval(-30 * 86_400)
-        case .year: return now.addingTimeInterval(-365 * 86_400)
+        case .all: return "square.stack.3d.up"
+        case .week: return "clock"
+        case .bookmarked: return "bookmark"
+        case .slides: return "rectangle.on.rectangle.angled"
+        case .speakers: return "person.2"
+        }
+    }
+
+    /// ⌘1…⌘5, the way a Mac sidebar numbers its top-level views.
+    var shortcutIndex: Int { (LibraryCollection.allCases.firstIndex(of: self) ?? 0) + 1 }
+
+    func contains(_ s: SessionInfo, now: Date = Date()) -> Bool {
+        switch self {
+        case .all: return true
+        case .week: return s.meta.date >= now.addingTimeInterval(-7 * 86_400)
+        case .bookmarked: return !s.meta.bookmarks.isEmpty
+        case .slides: return s.hasImages
+        case .speakers: return (s.meta.speakerCount ?? 0) > 1
         }
     }
 }
 
-/// Drives the Library window: lists sessions from disk (newest first), filters by tag + date range,
-/// and runs full-text search via `SearchIndex`. Live-refreshes on `.transcriberSessionSaved`.
+// MARK: - Search tokens (v3 screen 01B)
+
+/// v3: "Typing `speaker:` or `has:slide` completes into a token, exactly like Mail. It replaces both
+/// dropdown chips and does far more." Tokens filter structurally; free text still goes to SearchIndex.
+struct SearchToken: Identifiable, Equatable {
+    enum Field: String, CaseIterable {
+        case speaker, has, tag, `is`
+
+        var hint: String {
+            switch self {
+            case .speaker: return "speaker:name"
+            case .has: return "has:slide · has:audio · has:bookmark"
+            case .tag: return "tag:name"
+            case .is: return "is:kept · is:imported"
+            }
+        }
+    }
+
+    let field: Field
+    let value: String
+
+    var id: String { "\(field.rawValue):\(value)" }
+    var display: String { "\(field.rawValue): \(value)" }
+
+    /// Parse a typed fragment like `speaker:Priya` into a token (nil when it isn't one).
+    static func parse(_ raw: String) -> SearchToken? {
+        let t = raw.trimmingCharacters(in: .whitespaces)
+        guard let colon = t.firstIndex(of: ":") else { return nil }
+        let name = String(t[t.startIndex..<colon]).lowercased()
+        let value = String(t[t.index(after: colon)...]).trimmingCharacters(in: .whitespaces)
+        guard let field = Field(rawValue: name), !value.isEmpty else { return nil }
+        return SearchToken(field: field, value: value)
+    }
+
+    func matches(_ s: SessionInfo) -> Bool {
+        let v = value.lowercased()
+        switch field {
+        case .speaker:
+            let named = (s.meta.speakerNames ?? [:]).values.map { $0.lowercased() }
+            if named.contains(where: { $0.contains(v) }) { return true }
+            // Unnamed speakers are still addressable as "speaker 2" / "2".
+            if let n = s.meta.speakerCount, let slot = Int(v.replacingOccurrences(of: "speaker", with: "")
+                .trimmingCharacters(in: .whitespaces)) { return slot >= 1 && slot <= n }
+            return false
+        case .has:
+            switch v {
+            case "slide", "slides", "image", "images": return s.hasImages
+            case "audio", "playback": return s.meta.audioFile != nil
+            case "bookmark", "bookmarks": return !s.meta.bookmarks.isEmpty
+            case "summary", "summaries": return !s.meta.summaries.isEmpty
+            case "speaker", "speakers": return (s.meta.speakerCount ?? 0) > 1
+            default: return false
+            }
+        case .tag:
+            return s.meta.tags.contains { $0.lowercased().contains(v) }
+        case .is:
+            switch v {
+            case "kept", "locked": return s.meta.retentionLocked == true
+            case "imported": return s.meta.imported
+            default: return false
+            }
+        }
+    }
+}
+
+// MARK: - Model
+
+/// Drives the Library route: lists sessions from disk (newest first), filters by collection + tag +
+/// search tokens, and runs full-text search via `SearchIndex`. Live-refreshes on
+/// `.transcriberSessionSaved`.
 @MainActor
 final class LibraryModel: ObservableObject {
     @Published var sessions: [SessionInfo] = []
     @Published var query: String = "" { didSet { runSearch() } }
+    @Published var tokens: [SearchToken] = []
     @Published var hits: [SessionHit] = []
+    @Published var collection: LibraryCollection = .all
     @Published var selectedTag: String? = nil
-    @Published var dateRange: DateRangeFilter = .all
     @Published var loading = false
 
     private var observer: NSObjectProtocol?
@@ -68,157 +158,330 @@ final class LibraryModel: ObservableObject {
         hits = q.isEmpty ? [] : SearchIndex.shared.search(q)
     }
 
+    // MARK: Tokens
+
+    func addToken(_ t: SearchToken) {
+        guard !tokens.contains(t) else { return }
+        tokens.append(t)
+    }
+    func removeToken(_ t: SearchToken) { tokens.removeAll { $0 == t } }
+    func clearFilters() { tokens = []; query = ""; selectedTag = nil; collection = .all }
+
+    // MARK: Derived listings
+
     var allTags: [String] { Array(Set(sessions.flatMap { $0.meta.tags })).sorted() }
 
-    /// Browse list (search empty): sessions filtered by tag + date range, newest first.
-    var visibleSessions: [SessionInfo] {
-        let start = dateRange.start()
-        return sessions.filter { s in
-            (selectedTag == nil || s.meta.tags.contains(selectedTag!)) &&
-            (start == nil || s.meta.date >= start!)
-        }
+    func tagCount(_ tag: String) -> Int { sessions.filter { $0.meta.tags.contains(tag) }.count }
+    func collectionCount(_ c: LibraryCollection) -> Int { sessions.filter { c.contains($0) }.count }
+
+    private func passesFilters(_ s: SessionInfo) -> Bool {
+        collection.contains(s)
+            && (selectedTag == nil || s.meta.tags.contains(selectedTag!))
+            && tokens.allSatisfy { $0.matches(s) }
     }
 
-    /// Search results (search non-empty), respecting the same tag + date filters.
+    /// Browse list (no free text): sessions filtered by collection + tag + tokens, newest first.
+    var visibleSessions: [SessionInfo] { sessions.filter(passesFilters) }
+
+    /// Search results (free text present), respecting the same filters.
     var filteredHits: [SessionHit] {
-        let start = dateRange.start()
-        return hits.filter { h in
-            (selectedTag == nil || h.meta.tags.contains(selectedTag!)) &&
-            (start == nil || h.meta.date >= start!)
+        hits.filter { h in
+            guard let info = info(for: h.dir) else { return false }
+            return passesFilters(info)
         }
     }
 
     func info(for dir: URL) -> SessionInfo? { sessions.first { $0.dir.path == dir.path } }
 
     var isSearching: Bool { !query.trimmingCharacters(in: .whitespaces).isEmpty }
+    var hasFilters: Bool { collection != .all || selectedTag != nil || !tokens.isEmpty || isSearching }
 
+    /// v3's "4 of 128 shown".
     var countLabel: String {
-        if isSearching {
-            let n = filteredHits.count
-            return "\(n) match\(n == 1 ? "" : "es")"
-        }
-        let n = visibleSessions.count
-        return "\(n) session\(n == 1 ? "" : "s")"
+        let shown = isSearching ? filteredHits.count : visibleSessions.count
+        let total = sessions.count
+        if shown == total { return "\(total) session\(total == 1 ? "" : "s")" }
+        return "\(shown) of \(total) shown"
     }
 
-    // MARK: - Per-session actions
+    var titleLabel: String {
+        if isSearching { return "Search" }
+        if let tag = selectedTag { return "#\(tag)" }
+        return collection == .all ? "All Sessions" : collection.label
+    }
 
-    func open(_ dir: URL) {
-        WindowManager.shared.showViewer(dir: dir)   // in-app Session Viewer (Prompt 2)
-    }
-    func reveal(_ dir: URL) {
-        NSWorkspace.shared.activateFileViewerSelecting([dir])
-    }
-    func delete(_ dir: URL) {
-        NSWorkspace.shared.recycle([dir]) { [weak self] _, _ in
+    // MARK: Per-session actions
+
+    func open(_ dir: URL) { ShellModel.shared.go(.session(dir)) }
+    func reveal(_ dir: URL) { NSWorkspace.shared.activateFileViewerSelecting([dir]) }
+
+    func delete(_ dirs: [URL]) {
+        guard !dirs.isEmpty else { return }
+        NSWorkspace.shared.recycle(dirs) { [weak self] _, _ in
             Task { @MainActor in
-                SearchIndex.shared.remove(dir: dir)
+                dirs.forEach { SearchIndex.shared.remove(dir: $0) }
                 self?.reload()
             }
         }
     }
+
+    /// Copy a session's transcript to the pasteboard as Markdown (v3's row context menu).
+    func copyAsMarkdown(_ dirs: [URL]) {
+        let text = dirs.compactMap { SessionIO.readText($0.appendingPathComponent("transcript.md")) }
+            .joined(separator: "\n\n---\n\n")
+        guard !text.isEmpty else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+    }
 }
 
-// MARK: - View
+// MARK: - Sidebar
 
-struct LibraryWindow: View {
-    @StateObject private var lib = LibraryModel()
+struct LibrarySidebar: View {
+    @EnvironmentObject var model: AppModel
+    @ObservedObject var shell: ShellModel
+
+    private var lib: LibraryModel { shell.library }
 
     var body: some View {
-        VStack(spacing: 0) {
-            header
-            Divider().overlay(Theme.hairline)
-            content
-        }
-        .frame(minWidth: 620, minHeight: 420)
-        .background(Theme.windowBG)
-        .foregroundStyle(Theme.text)
-        .tint(Theme.accent)
-        .onAppear { lib.reload() }
-    }
+        VStack(alignment: .leading, spacing: 2) {
+            recordButton.padding(.bottom, 10)
 
-    // MARK: Header (search + filters)
+            sectionHeader("Sessions")
+            ForEach(LibraryCollection.allCases) { c in
+                sidebarRow(label: c.label, symbol: c.symbol,
+                           count: lib.collectionCount(c),
+                           shortcut: "⌘\(c.shortcutIndex)",
+                           selected: lib.collection == c && lib.selectedTag == nil) {
+                    lib.collection = c
+                    lib.selectedTag = nil
+                    shell.go(.library)
+                }
+            }
 
-    private var header: some View {
-        VStack(spacing: 10) {
+            if !lib.allTags.isEmpty {
+                sectionHeader("Tags").padding(.top, 12)
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 2) {
+                        ForEach(lib.allTags, id: \.self) { tag in
+                            tagRow(tag)
+                        }
+                    }
+                }
+            }
+
+            Spacer(minLength: 8)
+
             HStack(spacing: 8) {
-                Image(systemName: "magnifyingglass").font(.system(size: 13)).foregroundStyle(Theme.text2)
-                TextField("Search transcripts & slide text…", text: $lib.query)
-                    .textFieldStyle(.plain)
-                    .font(Theme.ui(14))
-                if !lib.query.isEmpty {
-                    Button { lib.query = "" } label: { Image(systemName: "xmark.circle.fill") }
-                        .buttonStyle(.plain).foregroundStyle(Theme.text3)
-                }
+                OnDeviceBadge()
+                Spacer(minLength: 0)
+                ToolbarIcon(system: "gearshape") { WindowManager.shared.showSettings() }
+                    .help("Settings (⌘,)")
             }
-            .padding(.horizontal, 11).padding(.vertical, 8)
-            .background(RoundedRectangle(cornerRadius: 9).fill(Theme.surface))
-            .overlay(RoundedRectangle(cornerRadius: 9).strokeBorder(Theme.hairline))
-
-            HStack(spacing: 12) {
-                Menu {
-                    Button("All tags") { lib.selectedTag = nil }
-                    if !lib.allTags.isEmpty { Divider() }
-                    ForEach(lib.allTags, id: \.self) { tag in
-                        Button(tag) { lib.selectedTag = tag }
-                    }
-                } label: {
-                    Label(lib.selectedTag ?? "All tags", systemImage: "tag").font(Theme.ui(12.5))
-                }
-                .menuStyle(.borderlessButton).fixedSize()
-
-                Menu {
-                    ForEach(DateRangeFilter.allCases) { r in
-                        Button(r.label) { lib.dateRange = r }
-                    }
-                } label: {
-                    Label(lib.dateRange.label, systemImage: "calendar").font(Theme.ui(12.5))
-                }
-                .menuStyle(.borderlessButton).fixedSize()
-
-                Spacer()
-                Button { WindowManager.shared.showAsk() } label: {
-                    Label("Ask", systemImage: "sparkles").font(Theme.ui(12.5))
-                }.buttonStyle(.plain).foregroundStyle(Theme.accentText)
-                Button { AppModel.shared.presentImportPanel() } label: {
-                    Label("Import…", systemImage: "square.and.arrow.down").font(Theme.ui(12.5))
-                }.buttonStyle(.plain).foregroundStyle(Theme.text2)
-                Text(lib.countLabel).font(Theme.ui(12)).foregroundStyle(Theme.text3)
-            }
+            .padding(.top, 8)
         }
-        .padding(14)
-        .background(Theme.titlebar)
+        .padding(.horizontal, 10)
+        .padding(.bottom, 10)
     }
 
-    // MARK: Content
-
-    @ViewBuilder private var content: some View {
-        if lib.loading {
-            placeholder("Loading…", "")
-        } else if lib.isSearching {
-            if lib.filteredHits.isEmpty {
-                placeholder("No matches", "Nothing matched “\(lib.query)”.")
-            } else {
-                ScrollView {
-                    LazyVStack(spacing: 0) {
-                        ForEach(lib.filteredHits) { hit in
-                            SearchHitRow(hit: hit, info: lib.info(for: hit.dir), lib: lib)
-                            Divider().overlay(Theme.hairline)
-                        }
-                    }
-                }
+    /// v3 puts the one irreversible-feeling action at the top of the sidebar, in record red.
+    private var recordButton: some View {
+        Button { model.toggle(); shell.go(.capture) } label: {
+            HStack(spacing: 8) {
+                Image(systemName: model.isRecording ? "stop.fill" : "record.circle.fill")
+                    .font(.system(size: 12))
+                Text(model.isRecording ? "Stop" : "Record")
+                    .font(Theme.ui(13.5, weight: .semibold))
+                Text("⌥⌘T").font(Theme.mono(10.5)).opacity(0.75)
             }
+            .foregroundStyle(.white)
+            .frame(maxWidth: .infinity)
+            .frame(height: 36)
+            .background(RoundedRectangle(cornerRadius: 8).fill(Theme.record))
+        }
+        .buttonStyle(.plain)
+        .disabled(model.status.isBusyPreparing)
+        .help(model.isRecording ? "Stop recording (⌥⌘T)" : "Start recording (⌥⌘T)")
+    }
+
+    private func sectionHeader(_ s: String) -> some View {
+        Text(s.uppercased())
+            .font(Theme.sectionHeader).tracking(1.0)
+            .foregroundStyle(Theme.text3)
+            .padding(.horizontal, 8).padding(.bottom, 2)
+    }
+
+    private func sidebarRow(label: String, symbol: String, count: Int, shortcut: String?,
+                            selected: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 9) {
+                Image(systemName: symbol).font(.system(size: 13)).frame(width: 16)
+                    .opacity(selected ? 1 : 0.8)
+                Text(label).font(Theme.ui(13, weight: selected ? .medium : .regular)).lineLimit(1)
+                Spacer(minLength: 4)
+                Text("\(count)").font(Theme.mono(10.5))
+                    .foregroundStyle(selected ? Theme.onSelection.opacity(0.75) : Theme.text3)
+            }
+            .foregroundStyle(selected ? Theme.onSelection : Theme.textSidebar)
+            .padding(.horizontal, 8).padding(.vertical, 5)
+            .background(RoundedRectangle(cornerRadius: Theme.rowRadius)
+                .fill(selected ? Theme.selection : .clear))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func tagRow(_ tag: String) -> some View {
+        let selected = shell.library.selectedTag == tag
+        return Button {
+            shell.library.selectedTag = selected ? nil : tag
+            shell.go(.library)
+        } label: {
+            HStack(spacing: 9) {
+                RoundedRectangle(cornerRadius: 2)
+                    .fill(Theme.speakerColor(abs(tag.hashValue) % 8 + 1))
+                    .frame(width: 7, height: 7)
+                    .frame(width: 16)
+                Text(tag).font(Theme.ui(13, weight: selected ? .medium : .regular)).lineLimit(1)
+                Spacer(minLength: 4)
+                Text("\(shell.library.tagCount(tag))").font(Theme.mono(10.5))
+                    .foregroundStyle(selected ? Theme.onSelection.opacity(0.75) : Theme.text3)
+            }
+            .foregroundStyle(selected ? Theme.onSelection : Theme.textSidebar)
+            .padding(.horizontal, 8).padding(.vertical, 5)
+            .background(RoundedRectangle(cornerRadius: Theme.rowRadius)
+                .fill(selected ? Theme.selection : .clear))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+// MARK: - Toolbar
+
+struct LibraryToolbar: View {
+    @EnvironmentObject var model: AppModel
+    @ObservedObject var shell: ShellModel
+    private var lib: LibraryModel { shell.library }
+
+    var body: some View {
+        HStack(spacing: 10) {
+            VStack(alignment: .leading, spacing: 1) {
+                Text(lib.titleLabel).font(Theme.ui(13.5, weight: .semibold)).lineLimit(1).fixedSize()
+                Text(lib.countLabel).font(Theme.ui(11)).foregroundStyle(Theme.text3).lineLimit(1).fixedSize()
+            }
+            TokenSearchField(lib: lib)
+                .frame(maxWidth: .infinity)
+                .frame(minWidth: 180)
+            ToolbarIcon(system: "square.and.arrow.down") { model.presentImportPanel() }
+                .help("Import audio or video…")
+            ToolbarIcon(system: "sidebar.right") { shell.inspectorVisible.toggle() }
+                .help("Show or hide the inspector (⌥⌘I)")
+            Button { WindowManager.shared.showAsk() } label: {
+                HStack(spacing: 7) {
+                    Image(systemName: "sparkles").font(.system(size: 12))
+                    Text("Ask").font(Theme.ui(12.5, weight: .medium)).fixedSize()
+                }
+                .foregroundStyle(Theme.accentText)
+                .padding(.horizontal, 11).padding(.vertical, 5)
+                .background(RoundedRectangle(cornerRadius: Theme.controlRadius).fill(Theme.accentSoft))
+                .overlay(RoundedRectangle(cornerRadius: Theme.controlRadius).strokeBorder(Theme.accentBorder))
+            }
+            .buttonStyle(.plain)
+            .help("Ask a question across every session")
+        }
+        .padding(.horizontal, 14)
+    }
+}
+
+/// A Mail-style token field: committed tokens render as chips, free text keeps searching.
+private struct TokenSearchField: View {
+    @ObservedObject var lib: LibraryModel
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "magnifyingglass").font(.system(size: 12)).foregroundStyle(Theme.text3)
+            ForEach(lib.tokens) { token in
+                HStack(spacing: 5) {
+                    Text(token.display).font(Theme.ui(11.5, weight: .medium))
+                    Button { lib.removeToken(token) } label: {
+                        Image(systemName: "xmark").font(.system(size: 7, weight: .bold))
+                    }.buttonStyle(.plain)
+                }
+                .foregroundStyle(Theme.accentText)
+                .padding(.leading, 7).padding(.trailing, 5).padding(.vertical, 1.5)
+                .background(RoundedRectangle(cornerRadius: 5).fill(Theme.accentSoft))
+                .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(Theme.accentBorder))
+            }
+            TextField(lib.tokens.isEmpty ? "Search transcripts & slide text — or type speaker:, has:, tag:" : "",
+                      text: Binding(get: { lib.query }, set: { commit($0) }))
+                .textFieldStyle(.plain)
+                .font(Theme.ui(12.5))
+                .focused($focused)
+                .onSubmit { commit(lib.query + " ") }
+            if lib.hasFilters {
+                Button { lib.clearFilters() } label: {
+                    Image(systemName: "xmark.circle.fill").font(.system(size: 11))
+                }
+                .buttonStyle(.plain).foregroundStyle(Theme.text3)
+                .help("Clear search and filters")
+            }
+        }
+        .padding(.horizontal, 8)
+        .frame(height: 28)
+        .background(RoundedRectangle(cornerRadius: Theme.controlRadius).fill(Theme.surface))
+        .overlay(RoundedRectangle(cornerRadius: Theme.controlRadius).strokeBorder(Theme.hairline2))
+        .onTapGesture { focused = true }
+    }
+
+    /// `speaker:Priya ` (or Return) completes into a token; anything else stays free text.
+    private func commit(_ raw: String) {
+        guard raw.hasSuffix(" ") || raw.hasSuffix("\n") else { lib.query = raw; return }
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let token = SearchToken.parse(trimmed) {
+            lib.addToken(token)
+            lib.query = ""
         } else {
-            if lib.visibleSessions.isEmpty {
-                placeholder("No sessions yet", "Recordings you make will appear here.")
+            lib.query = raw
+        }
+    }
+}
+
+// MARK: - Content list
+
+struct LibraryContent: View {
+    @ObservedObject var shell: ShellModel
+    private var lib: LibraryModel { shell.library }
+
+    var body: some View {
+        Group {
+            if lib.loading {
+                placeholder("Loading…", "")
+            } else if lib.isSearching {
+                if lib.filteredHits.isEmpty {
+                    placeholder("No matches", "Nothing matched “\(lib.query)”.")
+                } else {
+                    list(lib.filteredHits.map { $0.dir }, hits: lib.filteredHits)
+                }
+            } else if lib.visibleSessions.isEmpty {
+                placeholder(lib.hasFilters ? "Nothing here" : "No sessions yet",
+                            lib.hasFilters ? "No session matches these filters."
+                                           : "Press ⌥⌘T from any app — you don't need this window open.")
             } else {
-                ScrollView {
-                    LazyVStack(spacing: 0) {
-                        ForEach(lib.visibleSessions) { s in
-                            SessionRow(info: s, lib: lib)
-                            Divider().overlay(Theme.hairline)
-                        }
-                    }
+                list(lib.visibleSessions.map { $0.dir }, hits: nil)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private func list(_ dirs: [URL], hits: [SessionHit]?) -> some View {
+        ScrollView {
+            LazyVStack(spacing: 0) {
+                ForEach(dirs, id: \.path) { dir in
+                    let hit = hits?.first { $0.dir.path == dir.path }
+                    SessionRow(info: lib.info(for: dir), hit: hit, shell: shell)
+                    Divider().overlay(Theme.hairline)
                 }
             }
         }
@@ -227,71 +490,126 @@ struct LibraryWindow: View {
     private func placeholder(_ title: String, _ subtitle: String) -> some View {
         VStack(spacing: 8) {
             Text(title).font(Theme.ui(16, weight: .medium)).foregroundStyle(Theme.text2)
-            if !subtitle.isEmpty { Text(subtitle).font(Theme.ui(13)).foregroundStyle(Theme.text3) }
+            if !subtitle.isEmpty {
+                Text(subtitle).font(Theme.ui(13)).foregroundStyle(Theme.text3)
+                    .multilineTextAlignment(.center)
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .padding(24)
     }
 }
 
-// MARK: - Rows
+// MARK: - Row
 
 private struct SessionRow: View {
-    let info: SessionInfo
-    @ObservedObject var lib: LibraryModel
+    let info: SessionInfo?
+    let hit: SessionHit?
+    @ObservedObject var shell: ShellModel
     @State private var hover = false
 
-    var body: some View {
-        HStack(alignment: .top, spacing: 12) {
-            Image(systemName: info.hasImages ? "rectangle.on.rectangle.angled" : "waveform")
-                .font(.system(size: 15)).foregroundStyle(Theme.text2)
-                .frame(width: 22)
-                .padding(.top, 1)
+    private var lib: LibraryModel { shell.library }
+    private var dir: URL? { info?.dir ?? hit?.dir }
+    private var selected: Bool { dir.map { shell.selection.contains($0.path) } ?? false }
+    /// The row that drives the inspector — v3 fills it with the system accent; the rest of a
+    /// multi-selection gets the soft tint.
+    private var primary: Bool { selected && shell.selection.count == 1 }
 
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 8) {
-                    Text(info.displayTitle).font(Theme.ui(14, weight: .medium)).foregroundStyle(Theme.text).lineLimit(1)
-                    if info.hasImages {
-                        Label("\(info.imageCount)", systemImage: "photo")
-                            .font(Theme.ui(10.5)).foregroundStyle(Theme.accentText)
-                            .padding(.horizontal, 6).padding(.vertical, 1)
-                            .background(Capsule().fill(Theme.accentSoft))
-                    }
-                    if let n = info.meta.speakerCount, n > 1 {
-                        Label("\(n)", systemImage: "person.2")
-                            .font(Theme.ui(10.5)).foregroundStyle(Theme.accentText)
-                            .padding(.horizontal, 6).padding(.vertical, 1)
-                            .background(Capsule().fill(Theme.accentSoft))
-                            .help("\(n) speakers identified")
-                    }
-                }
-                HStack(spacing: 7) {
-                    Text(Self.dateFmt.string(from: info.meta.date)).font(Theme.mono(11.5)).foregroundStyle(Theme.text3)
-                    Circle().fill(Theme.text3).frame(width: 2.5, height: 2.5)
-                    Text(info.meta.sourceLabel).font(Theme.ui(11.5)).foregroundStyle(Theme.text3)
-                }
-                if !info.snippet.isEmpty {
-                    Text(info.snippet).font(Theme.ui(12.5)).foregroundStyle(Theme.text2).lineLimit(2)
-                }
-                if !info.meta.tags.isEmpty {
-                    HStack(spacing: 5) {
-                        ForEach(info.meta.tags.prefix(5), id: \.self) { tag in
-                            Text(tag).font(Theme.ui(10.5)).foregroundStyle(Theme.text2)
-                                .padding(.horizontal, 6).padding(.vertical, 1)
-                                .background(Capsule().fill(Color.primary.opacity(0.06)))
+    var body: some View {
+        HStack(alignment: .top, spacing: 13) {
+            SessionThumbnail(info: info, selected: primary)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(info?.displayTitle ?? hit?.title ?? "Session")
+                    .font(Theme.ui(13.5, weight: .semibold)).lineLimit(1)
+                    .foregroundStyle(primary ? Theme.onSelection : Theme.text)
+                metaLine
+                if let hit {
+                    ForEach(Array(hit.snippets.prefix(2).enumerated()), id: \.offset) { _, snip in
+                        HStack(alignment: .firstTextBaseline, spacing: 7) {
+                            Text(snip.timestamp ?? "—").font(Theme.mono(10.5))
+                                .foregroundStyle(primary ? Theme.onSelection.opacity(0.8) : Theme.accentText)
+                                .frame(width: 38, alignment: .leading)
+                            Text(snip.text).font(Theme.ui(12.5)).lineLimit(2)
+                                .foregroundStyle(primary ? Theme.onSelection.opacity(0.92) : Theme.text2)
                         }
                     }
+                } else if let snippet = info?.snippet, !snippet.isEmpty {
+                    Text(snippet).font(Theme.ui(12.5)).lineLimit(2)
+                        .foregroundStyle(primary ? Theme.onSelection.opacity(0.92) : Theme.text2)
                 }
             }
             Spacer(minLength: 0)
-            RowActions(dir: info.dir, lib: lib).opacity(hover ? 1 : 0.55)
         }
         .padding(.horizontal, 16).padding(.vertical, 11)
-        .background(hover ? Color.primary.opacity(0.04) : .clear)
+        .background(rowBackground)
         .contentShape(Rectangle())
         .onHover { hover = $0 }
-        .onTapGesture(count: 2) { lib.open(info.dir) }
-        .contextMenu { RowMenu(dir: info.dir, lib: lib) }
+        .onTapGesture(count: 2) { if let dir { lib.open(dir) } }
+        .simultaneousGesture(TapGesture().modifiers(.command).onEnded { toggleSelection() })
+        .simultaneousGesture(TapGesture().onEnded { selectOnly() })
+        .contextMenu { menu }
+        // v3 screen 01C: "drag a session to Finder or Mail".
+        .onDrag { NSItemProvider(contentsOf: dir) ?? NSItemProvider() }
+    }
+
+    @ViewBuilder private var metaLine: some View {
+        let meta = info?.meta ?? hit?.meta
+        HStack(spacing: 6) {
+            if let meta {
+                Text(Self.dateFmt.string(from: meta.date)).font(Theme.mono(10.5))
+                if let d = meta.durationSeconds, d > 0 {
+                    sep; Text(DocumentBuilder.timestamp(d)).font(Theme.mono(10.5))
+                }
+                sep; Text(meta.sourceLabel).font(Theme.ui(11.5))
+                if let n = meta.speakerCount, n > 1 { sep; Text("\(n) speakers").font(Theme.ui(11.5)) }
+                if let info, info.hasImages { sep; Text("\(info.imageCount) slides").font(Theme.ui(11.5)) }
+                if meta.retentionLocked == true {
+                    sep; Image(systemName: "lock.fill").font(.system(size: 8.5))
+                }
+            }
+        }
+        .foregroundStyle(primary ? Theme.onSelection.opacity(0.85) : Theme.text3)
+        .lineLimit(1)
+    }
+
+    private var sep: some View {
+        Circle().fill(primary ? Theme.onSelection.opacity(0.6) : Theme.text3).frame(width: 2.5, height: 2.5)
+    }
+
+    @ViewBuilder private var rowBackground: some View {
+        if primary { Theme.selection }
+        else if selected { Theme.selectionSoft }
+        else if hover { Theme.rowHover }
+        else { Color.clear }
+    }
+
+    @ViewBuilder private var menu: some View {
+        let targets = selectionTargets
+        Button("Open") { targets.first.map { lib.open($0) } }
+        Button("Reveal in Finder") { targets.first.map { lib.reveal($0) } }
+        Divider()
+        Button("Copy as Markdown") { lib.copyAsMarkdown(targets) }
+        Divider()
+        Button(targets.count > 1 ? "Move \(targets.count) Sessions to Trash" : "Move to Trash") {
+            lib.delete(targets)
+            shell.selection = []
+        }
+    }
+
+    /// Act on the whole selection when this row is part of it, else just this row.
+    private var selectionTargets: [URL] {
+        guard let dir else { return [] }
+        if selected, shell.selection.count > 1 {
+            return lib.sessions.filter { shell.selection.contains($0.dir.path) }.map { $0.dir }
+        }
+        return [dir]
+    }
+
+    private func selectOnly() { if let dir { shell.selection = [dir.path] } }
+    private func toggleSelection() {
+        guard let dir else { return }
+        if shell.selection.contains(dir.path) { shell.selection.remove(dir.path) }
+        else { shell.selection.insert(dir.path) }
     }
 
     static let dateFmt: DateFormatter = {
@@ -300,64 +618,169 @@ private struct SessionRow: View {
     }()
 }
 
-private struct SearchHitRow: View {
-    let hit: SessionHit
+/// 44×44 leading thumbnail: the session's first slide when it has one, else a source icon.
+private struct SessionThumbnail: View {
     let info: SessionInfo?
-    @ObservedObject var lib: LibraryModel
-    @State private var hover = false
+    let selected: Bool
+    @State private var image: NSImage?
 
     var body: some View {
-        HStack(alignment: .top, spacing: 12) {
-            Image(systemName: (info?.hasImages ?? false) ? "rectangle.on.rectangle.angled" : "waveform")
-                .font(.system(size: 15)).foregroundStyle(Theme.text2).frame(width: 22).padding(.top, 1)
+        Group {
+            if let image {
+                Image(nsImage: image).resizable().aspectRatio(contentMode: .fill)
+            } else {
+                Image(systemName: symbol).font(.system(size: 16))
+                    .foregroundStyle(selected ? Theme.onSelection.opacity(0.9) : Theme.text3)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(selected ? Color.white.opacity(0.15) : Theme.surface)
+            }
+        }
+        .frame(width: 44, height: 44)
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Theme.hairline))
+        .task(id: info?.dir.path) { await loadThumbnail() }
+    }
 
-            VStack(alignment: .leading, spacing: 5) {
-                HStack(spacing: 8) {
-                    Text(info?.displayTitle ?? hit.title).font(Theme.ui(14, weight: .medium))
-                        .foregroundStyle(Theme.text).lineLimit(1)
-                    Text("\(hit.matchCount) match\(hit.matchCount == 1 ? "" : "es")")
-                        .font(Theme.ui(10.5)).foregroundStyle(Theme.text3)
-                }
-                Text(SessionRow.dateFmt.string(from: hit.meta.date)).font(Theme.mono(11.5)).foregroundStyle(Theme.text3)
-                ForEach(Array(hit.snippets.enumerated()), id: \.offset) { _, snip in
-                    HStack(alignment: .firstTextBaseline, spacing: 7) {
-                        Text(snip.timestamp ?? "—").font(Theme.mono(11)).foregroundStyle(Theme.accentText)
-                            .frame(width: 38, alignment: .leading)
-                        Text(snip.text).font(Theme.ui(12.5)).foregroundStyle(Theme.text2).lineLimit(2)
+    private var symbol: String {
+        guard let info else { return "waveform" }
+        if info.meta.imported { return "square.and.arrow.down" }
+        return info.hasImages ? "rectangle.on.rectangle.angled" : "waveform"
+    }
+
+    private func loadThumbnail() async {
+        image = nil
+        guard let info, info.hasImages else { return }
+        let dir = info.dir.appendingPathComponent("images")
+        let loaded = await Task.detached(priority: .utility) { () -> NSImage? in
+            guard let names = try? FileManager.default.contentsOfDirectory(atPath: dir.path) else { return nil }
+            guard let first = names.filter({ $0.lowercased().hasSuffix(".png") }).sorted().first else { return nil }
+            // Routes through SessionIO so an encrypted session still renders (Feature C4).
+            guard let data = try? SessionIO.readData(dir.appendingPathComponent(first)) else { return nil }
+            return NSImage(data: data)
+        }.value
+        image = loaded
+    }
+}
+
+// MARK: - Inspector (v3's right pane)
+
+struct LibraryInspector: View {
+    @ObservedObject var shell: ShellModel
+    private var lib: LibraryModel { shell.library }
+
+    var body: some View {
+        if let info = shell.selectedSession {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 0) {
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text(info.displayTitle).font(Theme.ui(15, weight: .semibold)).lineLimit(3)
+                        Text(subtitle(info)).font(Theme.mono(11)).foregroundStyle(Theme.text3).lineLimit(2)
                     }
+                    .padding(.horizontal, 15).padding(.top, 14).padding(.bottom, 12)
+                    Divider().overlay(Theme.hairline)
+
+                    VStack(alignment: .leading, spacing: 0) {
+                        if let summary = bestSummary(info) {
+                            inspectorHeader("Summary")
+                            SummaryCard(text: summary)
+                                .padding(.bottom, 15)
+                        }
+                        inspectorHeader("Open in")
+                        LazyVGrid(columns: [GridItem(.flexible(), spacing: 7), GridItem(.flexible(), spacing: 7)],
+                                  spacing: 7) {
+                            openCard("Transcript", "Read, seek, export") { lib.open(info.dir) }
+                            openCard("Studio", "Templates") { lib.open(info.dir) }
+                            openCard("Chat", "Ask this session") { lib.open(info.dir) }
+                            if info.hasImages {
+                                openCard("Slides", "\(info.imageCount) frames · OCR") { lib.open(info.dir) }
+                            }
+                        }
+                        if !info.meta.tags.isEmpty {
+                            inspectorHeader("Tags").padding(.top, 15)
+                            FlowChips(items: info.meta.tags.map { ($0, $0) }) { tag in
+                                lib.selectedTag = tag
+                            }
+                        }
+                        Text("The inspector hides with ⌥⌘I and stays hidden, the way Finder's preview pane does.")
+                            .font(Theme.ui(11)).foregroundStyle(Theme.text3)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .padding(.top, 16)
+                    }
+                    .padding(.horizontal, 15).padding(.vertical, 14)
                 }
             }
-            Spacer(minLength: 0)
-            RowActions(dir: hit.dir, lib: lib).opacity(hover ? 1 : 0.55)
+        } else {
+            VStack(spacing: 6) {
+                Text(shell.selection.count > 1 ? "\(shell.selection.count) sessions selected" : "No selection")
+                    .font(Theme.ui(13, weight: .medium)).foregroundStyle(Theme.text2)
+                Text(shell.selection.count > 1 ? "Right-click to act on all of them."
+                                               : "Select a session to preview it here.")
+                    .font(Theme.ui(11.5)).foregroundStyle(Theme.text3).multilineTextAlignment(.center)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity).padding(20)
         }
-        .padding(.horizontal, 16).padding(.vertical, 11)
-        .background(hover ? Color.primary.opacity(0.04) : .clear)
-        .contentShape(Rectangle())
-        .onHover { hover = $0 }
-        .onTapGesture(count: 2) { lib.open(hit.dir) }
-        .contextMenu { RowMenu(dir: hit.dir, lib: lib) }
+    }
+
+    private func subtitle(_ info: SessionInfo) -> String {
+        var parts = [SessionRowDateFormat.string(from: info.meta.date)]
+        if let d = info.meta.durationSeconds, d > 0 { parts.append(DocumentBuilder.timestamp(d)) }
+        parts.append(info.meta.sourceLabel)
+        if info.hasImages { parts.append("\(info.imageCount) slides") }
+        return parts.joined(separator: " · ")
+    }
+
+    /// The cheapest already-cached summary — the inspector never triggers a model run.
+    private func bestSummary(_ info: SessionInfo) -> String? {
+        for style in SummaryStyle.allCases {
+            if let s = info.meta.summaries[style.rawValue], !s.isEmpty { return s }
+        }
+        return info.meta.summaries.values.first { !$0.isEmpty }
+    }
+
+    private func inspectorHeader(_ s: String) -> some View {
+        Text(s.uppercased()).font(Theme.ui(10, weight: .semibold)).tracking(1.2)
+            .foregroundStyle(Theme.text3).padding(.bottom, 9)
+    }
+
+    private func openCard(_ title: String, _ subtitle: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title).font(Theme.ui(12, weight: .semibold))
+                Text(subtitle).font(Theme.ui(10.5)).foregroundStyle(Theme.text3).lineLimit(1)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 10).padding(.vertical, 9)
+            .background(RoundedRectangle(cornerRadius: 9).fill(Theme.surface))
+            .overlay(RoundedRectangle(cornerRadius: 9).strokeBorder(Theme.hairline))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 }
 
-private struct RowActions: View {
-    let dir: URL
-    @ObservedObject var lib: LibraryModel
+/// The summary card with v3's pink→indigo→teal top edge (the one place that gradient appears).
+struct SummaryCard: View {
+    let text: String
+    var lineLimit: Int? = 8
+
     var body: some View {
-        HStack(spacing: 2) {
-            ToolbarIcon(system: "doc.text") { lib.open(dir) }.help("Open transcript")
-            ToolbarIcon(system: "folder") { lib.reveal(dir) }.help("Reveal in Finder")
-            ToolbarIcon(system: "trash") { lib.delete(dir) }.help("Move to Trash")
+        VStack(alignment: .leading, spacing: 0) {
+            Theme.summaryEdge.frame(height: 2)
+            Text(text)
+                .font(Theme.ui(12.5)).foregroundStyle(Theme.text2)
+                .lineSpacing(2.5)
+                .lineLimit(lineLimit)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 13).padding(.vertical, 12)
         }
+        .background(RoundedRectangle(cornerRadius: Theme.cardRadius).fill(Theme.surface))
+        .overlay(RoundedRectangle(cornerRadius: Theme.cardRadius).strokeBorder(Theme.hairline))
+        .clipShape(RoundedRectangle(cornerRadius: Theme.cardRadius))
     }
 }
 
-private struct RowMenu: View {
-    let dir: URL
-    @ObservedObject var lib: LibraryModel
-    var body: some View {
-        Button("Open Transcript") { lib.open(dir) }
-        Button("Reveal in Finder") { lib.reveal(dir) }
-        Divider()
-        Button("Move to Trash") { lib.delete(dir) }
-    }
-}
+let SessionRowDateFormat: DateFormatter = {
+    let f = DateFormatter(); f.locale = Locale(identifier: "en_US_POSIX")
+    f.dateFormat = "yyyy-MM-dd  HH:mm"; return f
+}()

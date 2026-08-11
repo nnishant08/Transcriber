@@ -397,13 +397,19 @@ final class SessionViewerModel: ObservableObject {
     func exportSubtitle(vtt: Bool) {
         let content = vtt ? Subtitles.vtt(dir: dir) : Subtitles.srt(dir: dir)
         guard let content else { presentAlert("No timing available", "This session has no per-segment timestamps to build subtitles from."); return }
-        savePanel(ext: vtt ? "vtt" : "srt") { url in try? Data(content.utf8).write(to: url) }
+        savePanel(ext: vtt ? "vtt" : "srt") { url in try Data(content.utf8).write(to: url) }
     }
-    func exportText() { savePanel(ext: "txt") { [dir] url in try? Exporter.exportTXT(sessionDir: dir, to: url) } }
-    func exportRTF() { savePanel(ext: "rtf") { [dir] url in try? Exporter.exportRTF(sessionDir: dir, to: url) } }
-    func exportHTML() { savePanel(ext: "html") { [dir] url in try? Exporter.exportHTML(sessionDir: dir, to: url) } }
+    func exportText() { savePanel(ext: "txt") { [dir] url in _ = try Exporter.exportTXT(sessionDir: dir, to: url) } }
+    func exportRTF() { savePanel(ext: "rtf") { [dir] url in _ = try Exporter.exportRTF(sessionDir: dir, to: url) } }
+    func exportHTML() { savePanel(ext: "html") { [dir] url in _ = try Exporter.exportHTML(sessionDir: dir, to: url) } }
     func exportPDF() {
-        savePanel(ext: "pdf") { [dir] url in Task { @MainActor in try? await Exporter.exportPDF(sessionDir: dir, to: url) } }
+        savePanel(ext: "pdf") { [dir] url in
+            // The only async exporter (WKWebView renders the PDF), so it reports its own failure.
+            Task { @MainActor [weak self] in
+                do { _ = try await Exporter.exportPDF(sessionDir: dir, to: url) }
+                catch { self?.presentAlert("Export failed", error.localizedDescription) }
+            }
+        }
     }
     func share() {
         Sharing.presentShareSheet(items: [Exporter.plainText(for: dir)])
@@ -437,14 +443,19 @@ final class SessionViewerModel: ObservableObject {
     }
     func revealInFinder() { NSWorkspace.shared.activateFileViewerSelecting([dir]) }
 
-    private func savePanel(ext: String, suggested: String? = nil, write: @escaping (URL) -> Void) {
+    /// Runs the save panel and reports a failure instead of swallowing it — an export that silently
+    /// does nothing is indistinguishable from one that worked.
+    private func savePanel(ext: String, suggested: String? = nil, write: @escaping (URL) throws -> Void) {
         let panel = NSSavePanel()
         let base = suggested ?? (meta.title?.isEmpty == false ? meta.title! : dir.lastPathComponent)
         panel.nameFieldStringValue = Sharing.exportFilename(base) + "." + ext
         if let ut = UTType(filenameExtension: ext) { panel.allowedContentTypes = [ut] }
         panel.canCreateDirectories = true
         NSApp.activate(ignoringOtherApps: true)
-        if panel.runModal() == .OK, let url = panel.url { write(url) }
+        if panel.runModal() == .OK, let url = panel.url {
+            do { try write(url) }
+            catch { presentAlert("Export failed", error.localizedDescription) }
+        }
     }
     private func presentAlert(_ title: String, _ message: String) {
         let a = NSAlert(); a.messageText = title; a.informativeText = message; a.runModal()
@@ -454,10 +465,10 @@ final class SessionViewerModel: ObservableObject {
 // MARK: - Viewer view
 
 struct SessionViewer: View {
-    @StateObject var lib: SessionViewerModel
-    @State private var panel = 0   // 0 = Summary, 1 = Chat
-
-    init(dir: URL) { _lib = StateObject(wrappedValue: SessionViewerModel(dir: dir)) }
+    /// Owned by `ShellModel` (the session sidebar and the shell drive the same instance), so this is
+    /// observed rather than created here.
+    @ObservedObject var lib: SessionViewerModel
+    @State private var panel = 0   // 0 = Summary, 1 = Studio, 2 = Chat
 
     var body: some View {
         VStack(spacing: 0) {
@@ -492,6 +503,9 @@ struct SessionViewer: View {
 
     private var header: some View {
         HStack(alignment: .center, spacing: 12) {
+            // Back to the list this session was opened from (v3 screen 02's leading chevron).
+            ToolbarIcon(system: "chevron.left") { ShellModel.shared.closeSession() }
+                .help("Back to the Library (⌘[)")
             VStack(alignment: .leading, spacing: 4) {
                 Text(lib.meta.title?.isEmpty == false ? lib.meta.title! : "Transcript")
                     .font(Theme.ui(15, weight: .semibold)).lineLimit(1)
@@ -621,7 +635,7 @@ struct SessionViewer: View {
                     }
                     .padding(.horizontal, 20).padding(.vertical, 18)
                 }
-                .onChange(of: lib.scrollTarget) { target in
+                .onChange(of: lib.scrollTarget) { _, target in
                     if let target { withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(target, anchor: .center) } }
                 }
             }
@@ -956,7 +970,7 @@ private struct ChatPanel: View {
                         Color.clear.frame(height: 1).id("chatBottom")
                     }.padding(12)
                 }
-                .onChange(of: lib.chat.count) { _ in withAnimation { proxy.scrollTo("chatBottom", anchor: .bottom) } }
+                .onChange(of: lib.chat.count) { withAnimation { proxy.scrollTo("chatBottom", anchor: .bottom) } }
             }
             Divider().overlay(Theme.hairline)
             HStack(spacing: 8) {
@@ -1027,8 +1041,8 @@ private struct CitationText: View {
     }
 }
 
-/// A horizontally-scrolling chip row (chapters / bookmarks). Simple + robust across macOS versions.
-private struct FlowChips: View {
+/// A horizontally-scrolling chip row (chapters / bookmarks / tags). Simple + robust across macOS versions.
+struct FlowChips: View {
     let items: [(String, String)]
     let onTap: (String) -> Void
     var body: some View {
@@ -1048,6 +1062,76 @@ private struct FlowChips: View {
 }
 
 private struct Dot: View { var body: some View { Circle().fill(Theme.text3).frame(width: 2.5, height: 2.5) } }
+
+// MARK: - Session sidebar (v3 screen 02: "In this session")
+
+/// The shell's sidebar while a session is open. Every row is an anchor on the same timeline the
+/// transcript, the player and the rail all share — so clicking one seeks rather than navigating away.
+struct SessionSidebar: View {
+    @ObservedObject var shell: ShellModel
+    @ObservedObject var viewer: SessionViewerModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Button { shell.closeSession() } label: {
+                HStack(spacing: 7) {
+                    Image(systemName: "chevron.left").font(.system(size: 11, weight: .semibold))
+                    Text("Library").font(Theme.ui(12.5, weight: .medium))
+                    Spacer(minLength: 0)
+                }
+                .foregroundStyle(Theme.textSidebar)
+                .padding(.horizontal, 8).padding(.vertical, 5)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .padding(.bottom, 6)
+
+            Text("IN THIS SESSION").font(Theme.sectionHeader).tracking(1.0)
+                .foregroundStyle(Theme.text3)
+                .padding(.horizontal, 8).padding(.bottom, 2)
+
+            row("Transcript", "waveform", count: nil, selected: true) { viewer.goTo(0) }
+            row("Bookmarks", "bookmark", count: viewer.bookmarks.count, selected: false) {
+                if let first = viewer.bookmarks.first { viewer.goTo(first.time) }
+            }
+            row("Chapters", "square.stack.3d.up", count: viewer.chapters.count, selected: false) {
+                if let first = viewer.chapters.first { viewer.goTo(first.start) }
+            }
+            row("Slides", "rectangle.on.rectangle.angled", count: viewer.frames.count, selected: false) {
+                if let first = viewer.frames.first { viewer.goTo(first.sessionTime) }
+            }
+            row("Speakers", "person.2", count: viewer.meta.speakerCount ?? 0, selected: false) {}
+
+            Spacer(minLength: 8)
+            OnDeviceBadge().padding(.top, 8)
+        }
+        .padding(.horizontal, 10).padding(.bottom, 10)
+    }
+
+    @ViewBuilder
+    private func row(_ label: String, _ symbol: String, count: Int?, selected: Bool,
+                     action: @escaping () -> Void) -> some View {
+        let empty = (count ?? 1) == 0
+        Button(action: action) {
+            HStack(spacing: 9) {
+                Image(systemName: symbol).font(.system(size: 13)).frame(width: 16).opacity(selected ? 1 : 0.8)
+                Text(label).font(Theme.ui(13, weight: selected ? .medium : .regular)).lineLimit(1)
+                Spacer(minLength: 4)
+                if let count {
+                    Text("\(count)").font(Theme.mono(10.5))
+                        .foregroundStyle(selected ? Theme.onSelection.opacity(0.75) : Theme.text3)
+                }
+            }
+            .foregroundStyle(selected ? Theme.onSelection : Theme.textSidebar)
+            .padding(.horizontal, 8).padding(.vertical, 5)
+            .background(RoundedRectangle(cornerRadius: Theme.rowRadius).fill(selected ? Theme.selection : .clear))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .opacity(empty ? 0.45 : 1)
+        .disabled(empty)
+    }
+}
 
 /// The persistent on-device / offline privacy affordance (static; no logic).
 struct OnDeviceBadge: View {

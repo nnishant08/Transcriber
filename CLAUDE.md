@@ -56,10 +56,26 @@ styles and cache per session.
   "System Audio" transcribes whatever is playing (calls, videos); "Mic + System" mixes both (e.g. a full
   call with your voice + theirs).
 - **Start/Stop** with **⌥⌘T** from any app, or the big record button.
+- **Pause/Resume** with **⌥⌘P** (or the Pause button / menu row) — the session stays open, and paused
+  time is left out of both the audio and the transcript, so timestamps stay honest.
 - Live text shows **confirmed** words solid + the **in-progress** tail dimmed with a caret.
 - On **Stop**: the session is saved to `~/Desktop/Transcripts/<date-time>/` (a folder with `transcript.md`
   + `session.json`), a full-quality pass cleans it up, and the **source audio is saved** (`audio.m4a`,
   toggle in Settings, default on) for playback.
+
+**Auto-pause on silence** (Settings ▸ Audio & accuracy, ON by default, 30 s) — when nothing is coming
+in (a muted call, a paused video, a break), recording pauses itself and **resumes automatically the
+moment sound returns**, replaying a short pre-roll so the first word isn't clipped. The status bar
+counts down before it happens and says why afterwards. A pause **you** trigger stays paused until you
+resume it, and nothing captured during it is ever recorded.
+
+**It keeps recording through audio changes** — switching output mid-session (plugging into a monitor,
+speakers, headphones, AirPods), muting the browser / the Mac / an external speaker, or a capture
+stream the OS tears down no longer ends a session. The capture rebuilds itself around the new device
+and the session continues; the status bar says "System audio reconnected" and the transcript carries
+straight on. Muting only affects what the *speakers* do — system-audio capture is tapped upstream of
+volume and mute, so it keeps hearing. Only after several failed reconnects does a session finish, and
+then it says why.
 
 **Live bookmarks** — press **⌥⌘B** while recording to drop a marker at the current moment; markers appear
 as jump points in the Session Viewer.
@@ -96,7 +112,8 @@ final). Empty = no change.
 *On change* (one clean frame per slide), *Every N seconds* (video), *Manual only*. **⌥⌘S** force-grabs a
 frame anytime. Frames are OCR'd on-device and interleaved with the transcript; export to a single HTML/PDF.
 
-**Keyboard shortcuts** (all configurable in Settings): **⌥⌘T** start/stop recording · **⌥⌘B** add bookmark ·
+**Keyboard shortcuts** (all configurable in Settings): **⌥⌘T** start/stop recording · **⌥⌘P** pause/resume ·
+**⌥⌘B** add bookmark ·
 **⌥⌘S** grab a visual frame. They work globally (from any app).
 
 **Permissions** (first-run onboarding walks these): **Microphone** (for mic / both) · **Screen Recording**
@@ -132,7 +149,8 @@ a future macOS-27 capability (today chat uses the transcript + OCR'd slide text)
   WeSpeaker embeddings, CoreML/ANE; zero transitive package deps). Models download once, anonymously.
 - Meeting detection: **EventKit** (system framework, no SPM entry; optional Calendar permission).
 - Global hotkey: **KeyboardShortcuts** (sindresorhus).
-- System audio: **ScreenCaptureKit**. Microphone: **AVAudioEngine**.
+- System audio: a **Core Audio process tap** (macOS 14.2+, default) with **ScreenCaptureKit** as the
+  fallback and as the carrier for Visual Capture. Microphone: **AVAudioEngine**.
 - On-device AI summary: Apple **FoundationModels** (Apple Intelligence, macOS 26).
 - App Sandbox **disabled** (personal tool — avoids entitlement friction for TCC + audio).
 
@@ -158,15 +176,30 @@ open ./Transcriber.app        # or run ./Transcriber.app/Contents/MacOS/Transcri
   logs launch + permission status), and `WindowManager` (NSWindowDelegate; builds the Transcript /
   Settings windows as manual `NSWindow`s and clears refs on close). `debugLog()` writes launch lines.
 - `AppModel.swift` — `@MainActor` singleton `AppModel.shared` (`ObservableObject`): `transcript`,
-  `isRecording`, `source`, `model`, `status`, `summary`, `isSummarizing`. Owns the start/stop flows,
-  the global-hotkey registration, transcript saving, `openTranscriptsFolder()`, `summarizeTranscript()`.
-  Enums: `AudioSource`, `WhisperModel`, `EngineStatus`.
+  `isRecording`, `isPaused`/`pauseReason`, `source`, `model`, `status`, `summary`, `isSummarizing`.
+  Owns the start/stop/**pause** flows, the global-hotkey registration, transcript saving,
+  `openTranscriptsFolder()`, `summarizeTranscript()`. Enums: `AudioSource`, `WhisperModel`,
+  `EngineStatus` (now incl. `.paused`). Capture is started through `startMic(into:)`/
+  `startSystem(into:visual:)` — used by BOTH `startFlow` and the recovery path, so a mid-session
+  restart rebuilds a source exactly the way it was first built. The HUD tick (12 Hz) drives the
+  meter/timer AND `updateAutoPause` + `updateCaptureHealth` (the watchdog).
 - `TranscriptionEngine.swift` — wraps WhisperKit: `prepare(model:progress:)` (download w/ progress +
   load), `transcribeFile()`, `finalPass()` (VAD-chunked full-quality), `makeStreamer()`. Plus the
   `StreamingTranscriber` actor (rolling-window live transcription) and `TranscriptText` cleanup.
 - `AudioSupport.swift` — `CaptureError`, `SampleSink` (thread-safe `[Float]` buffer), `Resampler16k`
   (AVAudioConverter → 16 kHz mono Float32), `CMSampleBuffer.asPCMBuffer`.
-- `AudioCaptureMic.swift` — AVAudioEngine input tap → `Resampler16k` → `SampleSink`.
+- `CaptureControl.swift` — pause / auto-pause / capture-health primitives, deliberately small and
+  PURE so they self-test headlessly (`--selftest-pause`). `AudioActivity` (tunables: silence RMS
+  0.004, 30 s auto-pause, 1 s pre-roll, 3 s stall), `CaptureGate` (the pause valve every capture
+  pushes through — OPEN forwards the exact array, so an unpaused session is byte-identical; CLOSED
+  drops samples but keeps measuring level + last-delivery so auto-resume and the watchdog still
+  work, retaining ≤1 s of pre-roll), `PauseReason`, `SilenceMonitor` (auto-pause/auto-resume
+  decisions; only an AUTO pause resumes itself), `StallMonitor` (recovery decisions + cooldown),
+  `SessionClock` (the pause-compressed timeline every timestamp is measured on).
+- `AudioCaptureMic.swift` — AVAudioEngine input tap → `Resampler16k` → `SampleSink`. **Survives input
+  device changes**: `.AVAudioEngineConfigurationChange` + a `kAudioHardwarePropertyDefaultInputDevice`
+  listener (coalesced) rebuild a FRESH engine + tap + resampler around the new device, retrying with
+  backoff, and keep pushing into the same receiver. `forceRestart(reason:)` is the watchdog's nudge.
 - `AudioCaptureSystem.swift` — ScreenCaptureKit `SCStream` (audio + minimal 2×2 video) → `Resampler16k`
   → `SampleSink`. Tries `SCShareableContent` directly to test Screen Recording authorization.
 - `Summarizer.swift` — on-device summary via FoundationModels `LanguageModelSession.respond(to:)`,
@@ -176,7 +209,8 @@ open ./Transcriber.app        # or run ./Transcriber.app/Contents/MacOS/Transcri
 - `TranscriptWindow.swift` — control surface: source picker + Start/Stop + Settings, status, Summarize,
   **Open Library**, Open Transcripts Folder, Copy, Clear; the AI-summary panel; the auto-scrolling read-only transcript.
 - `SettingsView.swift` — `KeyboardShortcuts.Recorder`, model picker, source picker.
-- `Shortcuts.swift` — `KeyboardShortcuts.Name.toggleRecording` (⌥⌘T) + `.grabFrame` (⌥⌘S, manual capture).
+- `Shortcuts.swift` — `KeyboardShortcuts.Name.toggleRecording` (⌥⌘T) + `.togglePause` (⌥⌘P) +
+  `.grabFrame` (⌥⌘S, manual capture) + `.addBookmark` (⌥⌘B).
 - `Theme.swift` — design tokens (light/dark adaptive colors via dynamic NSColor, fonts, radii).
 - `TranscriptComponents.swift` — toolbar atoms (ToolbarIcon, SourceSegmented, Summarize/Stop buttons,
   KbdView), RecordingTimer, LiveMeter, InviteCanvas (record ring), DownloadingCanvas (progress ring).
@@ -294,9 +328,36 @@ open ./Transcriber.app        # or run ./Transcriber.app/Contents/MacOS/Transcri
   (nearest a referenced `[mm:ss]`, else an even sample), `referencedTime`, `imageInputAvailable`
   (macOS-27 SDK flag + OS). The actual image-input call lives in `Intelligence.answerForSession` behind
   `#if TRANSCRIBER_MACOS27` + `#available(macOS 27)`; macOS 26 uses the text+OCR fallback verbatim.
+- `AudioCaptureProcessTap.swift` — the DEFAULT system-audio backend (`useProcessTap`, default ON).
+  A Core Audio **process tap** (`CATapDescription(stereoGlobalTapButExcludeProcesses:)` excluding our
+  own pid + `AudioHardwareCreateProcessTap` + a private aggregate device + `AudioDeviceIOProcIDWithBlock`)
+  → `Resampler16k` → the same `SampleReceiver` every other capture uses, so the streamer / finalPass /
+  mixer / diarization are untouched. `muteBehavior = .unmuted` and `isPrivate = true`, so tapping never
+  alters what the user hears and no device appears in Sound settings. Unlike the SCK path this hears
+  EVERY process — window or not, foreground or not — and is independent of the output device, its
+  volume, and its mute. `@available(macOS 14.2)` (two minors above the deployment target), so all entry
+  points are `#available`-gated. `AppModel.startProcessTap` returns false → the SCK path runs verbatim
+  when: the toggle is off, OS < 14.2, **visual capture is on** (frames ride the SCK stream, so that
+  topology is preserved), or the tap can't be created. **Self-healing across device changes**:
+  `buildChain()` (tap → format → private aggregate → IOProc → start) is the ONE construction path,
+  used by `start()` AND by `restartCapture(reason:)`, which rebuilds it in FULL — tap included.
+  Rebuilding only the aggregate around a surviving tap was not enough (see the device-change finding
+  under Gotchas), and re-creating the tap is also the only way to re-read `kAudioTapPropertyFormat`,
+  which a stale `tapFormat` would otherwise turn into silently-dropped buffers. Four triggers:
+  default-output device change, device-LIST change while our clock device is no longer the default,
+  and a 1 Hz watchdog with **two** signals — no IO callbacks for 3 s (aggregate died) and callbacks
+  arriving but carrying no nonzero samples for 12 s (stream alive but deaf; bounded to 3 restarts via
+  `zeroRestarts`, since genuine silence is indistinguishable). Restarts retry with backoff, are
+  serialized by `rebuilding`, and `onStreamStopped` fires only once they're exhausted.
+- `SysAudioProbe.swift` — the `--selftest-sysaudio` LIVE diagnostic. Read-only CoreAudio helpers
+  (`defaultOutputDevice`/`deviceName`/`isMuted`/`volume`) + a capture loop that tabulates captured
+  RMS / peak / exact-zero % against the output device's mute + volume twice a second. Diagnostic
+  only — it touches nothing on the recording path. See the system-audio findings under Gotchas.
 
 ## Data flow
-Capture (`AudioCaptureMic` **or** `AudioCaptureSystem`, one at a time) → `Resampler16k` → shared
+Capture (`AudioCaptureMic` **or** system audio — `AudioCaptureProcessTap` by default, falling back to
+`AudioCaptureSystem`; see the source map) → `Resampler16k` → **`CaptureGate`** (pause valve + level /
+liveness probe; a no-op passthrough while open) → shared
 `SampleSink` (16 kHz mono Float32). `StreamingTranscriber` consumes the sink: each ~1 s it re-transcribes
 the buffer from `lastConfirmedEnd` (`DecodingOptions.clipTimestamps`), confirms all but the last 2
 segments, and publishes confirmed + hypothesis text — so live text grows without duplication (this
@@ -311,6 +372,49 @@ the clean version, then (off-main) index it + auto-title/tag (see Unified sessio
 > full backup to `~/Desktop/Transcripts_backup_<stamp>` first), copy-then-verify-then-remove,
 > idempotent (re-run = no-op). Export stays gated on visual sessions (`canExport = lastSessionDir &&
 > lastSessionHasVisual`) so audio-only folders don't surface a text-only HTML/PDF.
+
+## Pause, auto-pause & capture resilience — Sources: CaptureControl / AppModel / AudioCaptureMic / AudioCaptureProcessTap / ScreenCapture
+**A session must survive everything except the user pressing Stop.** All three features below share
+one idea: the SESSION (sink, streamer, timeline, session folder) is long-lived, and the CAPTURE
+underneath it is disposable and replaceable.
+- **Pause (⌥⌘P / button / menu row).** `isPaused` + `pauseReason ∈ {manual, silence}`; the session
+  stays `isRecording` and `status` becomes `.paused`. Pausing CLOSES the `CaptureGate`s — capture
+  keeps running (so the level is still measured), but its samples are dropped. **Paused time is
+  therefore absent from the audio**, which is why every other timestamp is measured on
+  `SessionClock` (wall clock minus accumulated pause): the HUD timer, ⌥⌘B bookmarks, and visual
+  frames (`VisualCapture.setPaused(_:totalPaused:)`, which also stops automatic grabs). Without
+  that, a 5-minute pause would push every later marker 5 minutes past the audio it names.
+- **Pre-roll is replayed ONLY on an automatic resume.** The gate retains ≤1 s while closed. An
+  auto-resume flushes it (the word that triggered the resume would otherwise be clipped); a manual
+  resume — and stopping from a paused state — DISCARDS it. Audio captured during a pause the user
+  asked for must never reach the session.
+- **Auto-pause / auto-resume** (`autoPauseEnabled` default ON, `autoPauseSeconds` default 30).
+  `SilenceMonitor` runs on the 12 Hz HUD tick over `max(micGate.level, systemGate.level)` — the raw
+  block RMS measured BEFORE the gate, which is what makes hearing audio return while paused possible.
+  Silence is `rms < 0.004` (a live mic's room tone is ~0.001–0.003, speech ~0.02–0.15), so normal
+  gaps between sentences never trip it. Only a `.silence` pause auto-resumes; a manual pause is the
+  user's decision. Status bar counts down ("auto-pausing in 8s") then explains itself.
+- **Capture recovery.** `handleSystemStreamStopped` used to call `stopRecording()` — that is what made
+  "I plugged in a monitor / muted the browser" look like "it just stopped transcribing". It now calls
+  `recoverSystemCapture`, which tears the backend down, waits 400 ms for the device transition to
+  settle, and re-runs `startSystem` (tap first, SCK fallback) into the SAME gate; the session, sink,
+  streamer and timeline never notice. Only after **4 consecutive failures** does it finalize, and then
+  with `pendingStopMessage` so the finished session says why instead of showing a bare "Idle".
+- **Watchdog** (`StallMonitor`, 3 s stall / 6 s cooldown, per source). A live capture delivers buffers
+  continuously — zero-filled when nothing plays — so "no buffers at all" is the one unambiguous signal
+  that a source died silently. Mic → `mic.forceRestart`; system → `recoverSystemCapture`. Each backend
+  ALSO self-heals internally (see the source map), so the watchdog is the second net, not the first.
+- **Alive-but-silent net.** The failure a callback watchdog CANNOT see: capture delivering, every
+  buffer digital silence. `updateCaptureHealth` therefore also recovers the system source after 15 s
+  of `recentAllZero` while NOT paused — bounded to 2 rebuilds per session, 45 s apart, because
+  genuinely silent audio is byte-identical to a deaf stream. This is the layer that covers the SCK
+  backend (which has no internal self-heal) and anything the tap's own restarts didn't fix.
+- **Mute is not a failure.** Output mute/volume sit downstream of both capture paths (measured — see
+  Gotchas), so muting changes nothing about capture. Muting the SOURCE app (a browser tab) really does
+  produce silence; that is exactly the case auto-pause handles gracefully.
+- **Non-regression:** an OPEN gate forwards the exact array it was handed, so with no pause and no
+  device change a session is byte-identical to pre-pause behavior. `--selftest-pause` asserts that
+  passthrough plus every decision above; the full sweep asserts nothing else moved.
 
 ## Visual Capture (document mode) — Sources: ScreenCapture / FrameChangeDetector / DocumentBuilder / SlideOCR / Exporter
 - **Toggle** in Settings / menu (persisted, default off). When on, a session adds `images/` + frames to
@@ -505,7 +609,13 @@ Run the built binary (`.build/release/Transcriber` or the bundle's MacOS binary)
   `--selftest-mix` (mixer non-clipping + well-formed; single-source byte-identical), `--selftest-audio-save`
   (write→read-back duration matches), `--selftest-srt` (monotonic non-overlapping SRT/VTT cues),
   `--selftest-vocab` (promptTokens built for terms; empty/blank/no-model → nil no-op),
-  `--selftest-bookmarks` (persist + reload from session.json; legacy → empty). `--retag [dir] [--force]`
+  `--selftest-bookmarks` (persist + reload from session.json; legacy → empty).
+- **Pause / resilience:** `--selftest-pause` (pure, no audio hardware) — an OPEN `CaptureGate` is a
+  byte-identical passthrough; a CLOSED one records nothing yet still measures level + delivery;
+  pre-roll caps at 1 s, flushes on an auto-resume and replays NOTHING on a manual one; auto-pause
+  fires only at the threshold (and never on the gaps between sentences), auto-resume only for an
+  automatic pause, disabled ⇒ inert; `StallMonitor` respects the cooldown; `SessionClock` excludes
+  paused time so a bookmark after a pause matches the recorded audio length. `--retag [dir] [--force]`
   remains a maintenance utility.
 - **Stage 1:** `--selftest-diarize [audio.wav]` (synthesizes a two-voice `say` conversation when no
   file given; downloads the FluidAudio models on first run; asserts ≥2 distinct 1-based slots on the
@@ -536,6 +646,17 @@ Run the built binary (`.build/release/Transcriber` or the bundle's MacOS binary)
 - `--retag [dir] [--force]` — maintenance utility (NOT a self-test): fills missing tags on titled-but-
   untagged sessions (keeps the title; skips near-empty `[BLANK_AUDIO]` transcripts) via `generateTags`.
   `--force` regenerates tags even on already-tagged sessions. Defaults to `~/Desktop/Transcripts`.
+- `--selftest-sysaudio [seconds]` — LIVE diagnostic (NOT headless; needs the Screen Recording grant, so
+  run the BUNDLE binary: `./Transcriber.app/Contents/MacOS/Transcriber --selftest-sysaudio 30`). Prints,
+  twice a second, the captured RMS / peak / exact-zero % alongside the default output device's live
+  mute + volume, plus the `recentAllZero` verdict the status-bar warning uses. This is the tool for
+  "system audio recorded nothing" reports — it separates "the OS handed us digital silence" from
+  "the app broke". See the system-audio findings under Gotchas.
+- `--selftest-processtap [seconds]` — the SAME probe through the Core Audio process tap. Run it back
+  to back with `--selftest-sysaudio` against one source to compare backends; with a windowless source
+  (`afplay tone.wav &`) SCK reads 100% zeros and the tap reads real audio. Set
+  `TRANSCRIBER_PROBE_OUT=/tmp/cap.wav` on either probe to dump the captured samples as 16 kHz mono
+  WAV, then feed that file to `--selftest` to prove capture → transcription end to end.
 Test clips were made with `say` + `afconvert` (`/tmp/transcriber_test.wav`, `/tmp/tr_long_48k_stereo.wav`).
 All visual self-tests pass headlessly; the LIVE capture path (real SCStream video) needs a real screen +
 Screen Recording grant + on-screen content and must be verified by running the app.
@@ -611,6 +732,25 @@ Screen Recording grant + on-screen content and must be verified by running the a
       the Stage-2 checklist: run each Studio template + audiogram, enable Medical/second pack, redact a
       PII session, retention sweep with a Keep, optional encryption round-trip + Touch ID, macOS-27
       slide chat, full Stage-0/1 regression sweep).
+- [~] **Pause / auto-pause / capture resilience** — ⌥⌘P pause+resume (session stays open, paused time
+      excluded from audio AND every timestamp via `SessionClock`); auto-pause after 30 s of silence with
+      automatic resume + 1 s pre-roll (pre-roll replayed only on an AUTO resume — never after a manual
+      pause or a stop); mid-session device changes and torn-down streams are RECOVERED instead of ending
+      the session (mic engine rebuilt on config/input-device change; process-tap aggregate rebuilt on
+      output-device change, device-list change, or a 3 s callback stall; AppModel re-runs the whole
+      capture start on failure, finalizing only after 4 consecutive failures — with the reason shown).
+      **Build green; `--selftest-pause` (25 assertions) passes and the whole prior sweep is unchanged.**
+      **USER-VERIFIED via GUI:** manual pause/resume; auto-pause with a custom (5 s) timeout; and
+      recovery from a mid-session default-OUTPUT-device switch (USB Audio → MacBook Pro Speakers →
+      back), which is what prompted the work. Two bugs found and fixed during that verification:
+      (1) the "auto-pausing in Ns" countdown was gated on ≥5 s of quiet, so it never appeared at
+      timeouts ≤5 s — it now tracks the final 8 s of whatever is set; (2) a device change rebuilt only
+      the aggregate around a surviving tap, which left the tap alive but deaf — see the process-tap
+      finding under Gotchas, the single most important thing in this feature.
+      **AWAITING human smoke-tests:** auto-resume when sound returns after a real muted call/video;
+      ⌥⌘P from another app; the same device switch on Mic and Mic+System (only System Audio has been
+      exercised); AirPods connect/disconnect mid-recording; a bookmark + a slide dropped after a long
+      pause landing at the right place in playback.
 
 ## Stage 2 — Generation Studio / Vertical Packs / Privacy & Compliance / Multimodal Slide Chat
 **All additive, all OFF or neutral by default. With defaults untouched a session's `transcript.md` is
@@ -728,7 +868,54 @@ CleanupPass, so session.json read-modify-writes can't race).
 - Empty/garbled transcript → audio not correctly 16 kHz mono Float32.
 - Build errors after dep bumps → API drift; pin the exact tag and read that source.
 - Silent system audio → Screen Recording permission missing/stale, or sample buffer not converted right.
-- Hotkey does nothing → app not running.
+  **MEASURED on macOS 26.5.2 (2026-08-04) with `--selftest-sysaudio`, so don't re-guess these:**
+  - **Muting the speaker / dropping output volume to 0 does NOT affect capture.** SCK's tap sits
+    UPSTREAM of the output device's mute and volume — a 0.1-amplitude tone read a constant 0.0707 RMS
+    through mute, through 10% volume, and through volume 0, with Chrome AND QuickTime as the source.
+    A user reporting "can't transcribe when the speaker is off" has a DIFFERENT root cause; reproduce
+    with the probe rather than accepting the stated trigger.
+  - Source-app window hidden or minimized → also does NOT affect capture.
+  - **A windowless process IS dropped by the SCK path** — this is why the process tap now exists and
+    is the default. `afplay` playing a 40 s tone at full volume produced 100% exact zeros on SCK while
+    the stream stayed alive delivering zero-filled buffers: `SCContentFilter(display:excludingWindows:)`
+    scopes audio to processes with windows on `content.displays.first`, so background/CLI audio is
+    silently lost. **Head-to-head on the same source at the same moment: SCK 100% zeros, process tap
+    0.0707 RMS real audio.** If a report smells like "system audio recorded nothing", check whether the
+    SCK fallback was in use (visual capture on, toggle off, or tap creation failed — all NSLogged).
+  - **Multi-display is a second SCK trap**: the filter is built from `content.displays.first`, whose
+    order is NOT guaranteed to be the main display. Plug in an external monitor and the SCK path can
+    scope audio to the wrong screen — a strong candidate for "it used to work before I got a monitor".
+    The process tap has no notion of displays, so it's immune.
+  - Note that **exact digital zeros are ALSO what genuinely-silent/paused playback produces**, so zeros
+    alone don't prove a capture bug — correlate against the probe's mute/volume columns.
+  - **A process tap does NOT follow a mid-session change of the default OUTPUT device — the tap
+    itself must be re-created.** USER-REPORTED AND USER-VERIFIED FIXED (2026-08-11): switching
+    USB Audio → MacBook Pro Speakers while recording stopped transcription; switching back restored
+    it. All devices involved are 48 kHz stereo, so a format change was NOT the trigger, and the
+    session never ended — callbacks kept arriving the whole time. That is the signature: **the tap
+    stayed alive but stopped hearing the audio engine.** Rebuilding only the aggregate around a
+    surviving tap (the original implementation, chosen to avoid losing samples) does not fix it.
+    Two consequences, both now shipped: `restartCapture` rebuilds the WHOLE chain including the tap,
+    and a callback-only watchdog is BLIND to this failure by construction — it needs a second signal
+    (callbacks arriving with no nonzero samples). If this is ever re-investigated, discriminate with
+    `--selftest-processtap 40` while flipping the output device: "no data" rows = the aggregate
+    died; ~100% zeros rows = the tap went deaf. Different bugs, different fixes.
+- Recording looks fine but the transcript comes back `[BLANK_AUDIO]` → the status bar now shows
+  "no system audio for Ns" (replacing "Listening") once `SampleSink.recentAllZero()` has held for ≥8 s,
+  so a dead capture is visible DURING the session. Exact-zero (not "quiet") is the trigger, so a live
+  mic's noise floor never fires it, and for Mic+System a working mic keeps it quiet.
+- Recording "stopped by itself" mid-session → check the log before assuming a crash. `[Recover]` /
+  `[ProcessTap] … rebuilt` / `[Mic] rebuilt` lines mean a device change was absorbed and the session
+  continued; a session only ends on its own after 4 consecutive failed reconnects, and then the
+  status bar carries the reason. `[Pause] paused (auto — silence)` means it auto-paused, not stopped.
+- Transcript looks like it skipped time → an auto-pause dropped a silent stretch, by design. Session
+  timestamps are RECORDED time, not wall-clock: a 40-minute call with 10 minutes of silence saves ~30
+  minutes of audio, and every `[mm:ss]`, bookmark, and slide lines up with that audio. Turn auto-pause
+  off in Settings if wall-clock alignment matters more than the dead air.
+- Auto-pause never fires on a live mic in a noisy room → correct: the threshold (RMS 0.004) is above a
+  typical noise floor but a loud fan/AC can sit above it. Raise the silence threshold in
+  `AudioActivity` rather than the timeout if this ever needs tuning.
+- Hotkey does nothing → app not running. (⌥⌘P is a no-op unless a session is live.)
 - "App doesn't open" / "permission on but denied" → almost always a **stale running instance** (Quit first)
   or a **signature change** (use the stable identity; `tccutil reset` if needed).
 - First run "hangs" → model is downloading (needs internet once, then offline).

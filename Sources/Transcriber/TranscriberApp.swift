@@ -21,8 +21,9 @@ struct TranscriberApp: App {
     @StateObject private var model = AppModel.shared
 
     var body: some Scene {
-        // Menu-bar-only app. `.window` style gives us a popover we can put a segmented
-        // picker and buttons into (the default `.menu` style can't render a segmented Picker).
+        // The app is BOTH a menu-bar extra and a windowed app (v3 screen 03A: "Menu bar and window,
+        // not either/or"). `.window` style gives us a popover we can put a segmented picker and
+        // buttons into (the default `.menu` style can't render a segmented Picker).
         MenuBarExtra {
             MenuContent()
                 .environmentObject(model)
@@ -30,15 +31,27 @@ struct TranscriberApp: App {
             MenuBarLabel(model: model)
         }
         .menuBarExtraStyle(.window)
+        // The main menu (v3 screen 01D). Windows are built manually by WindowManager, so the
+        // commands hang off this scene.
+        .commands { TranscriberCommands(model: model) }
     }
 }
 
-/// Reactive menu-bar icon: a plain waveform when idle, a filled waveform while recording.
+/// Reactive menu-bar icon: a plain waveform when idle, a filled waveform while recording, and a
+/// pause badge while a session is held — so a paused (or auto-paused) session is visible from the
+/// menu bar without opening the app.
 struct MenuBarLabel: View {
     @ObservedObject var model: AppModel
     var body: some View {
-        Image(systemName: model.isRecording ? "waveform.circle.fill" : "waveform")
-            .accessibilityLabel(model.isRecording ? "Transcriber — recording" : "Transcriber — idle")
+        Image(systemName: symbol).accessibilityLabel(label)
+    }
+    private var symbol: String {
+        guard model.isRecording else { return "waveform" }
+        return model.isPaused ? "pause.circle.fill" : "waveform.circle.fill"
+    }
+    private var label: String {
+        guard model.isRecording else { return "Said — idle" }
+        return model.isPaused ? "Said — paused" : "Said — recording"
     }
 }
 
@@ -59,7 +72,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return true
     }
 
-    /// Files dropped on the Dock icon or "Open With… Transcriber" → import them (B1).
+    /// Files dropped on the Dock icon or "Open With… Said" → import them (B1).
     func application(_ application: NSApplication, open urls: [URL]) {
         AppModel.shared.importFiles(urls)
     }
@@ -73,55 +86,45 @@ final class WindowManager: NSObject, NSWindowDelegate {
     static let shared = WindowManager()
     weak var model: AppModel?
 
-    private var transcriptWindow: NSWindow?
+    /// The ONE main window (v3): sidebar + content + inspector, with the Library, the capture
+    /// surface, and the Session Viewer as routes inside it.
+    private var mainWindow: NSWindow?
     private var settingsWindow: NSWindow?
-    private var libraryWindow: NSWindow?
-    private var viewerWindows: [String: NSWindow] = [:]   // one per session dir
     private var onboardingWindow: NSWindow?
     private var askWindow: NSWindow?
 
-    func showTranscript() {
-        debugLog("showTranscript model=\(model != nil) existing=\(transcriptWindow != nil)")
+    /// Show the main window at a route (creating it on first use).
+    func showMain(_ route: ShellRoute) {
         guard let model else { return }
-        if transcriptWindow == nil {
-            transcriptWindow = makeWindow(
-                title: "Transcript",
-                size: NSSize(width: 900, height: 640),
-                content: AnyView(TranscriptWindow().environmentObject(model)),
-                customTitlebar: true
+        ShellModel.shared.go(route)
+        if mainWindow == nil {
+            mainWindow = makeWindow(
+                title: "Said",
+                size: NSSize(width: 1180, height: 720),
+                content: AnyView(MainShell().environmentObject(model)),
+                customTitlebar: true,
+                autosave: "TranscriberMainWindow"
             )
         }
-        present(transcriptWindow)
+        present(mainWindow)
     }
 
-    /// The Library: lists / searches every saved session. Self-contained (its own LibraryModel),
-    /// so it doesn't depend on the AppModel — but built the same manual-NSWindow way as the others.
-    func showLibrary() {
-        if libraryWindow == nil {
-            libraryWindow = makeWindow(
-                title: "Library",
-                size: NSSize(width: 820, height: 600),
-                content: AnyView(LibraryWindow())
-            )
-        }
-        present(libraryWindow)
+    /// The capture surface (invite / live transcript / summary).
+    func showTranscript() {
+        debugLog("showTranscript model=\(model != nil) existing=\(mainWindow != nil)")
+        showMain(.capture)
     }
 
-    /// The in-app Session Viewer (transcript + playback + summary + chat + export) for one session.
-    /// Library "Open" routes here. Re-opening the same session focuses the existing window.
-    func showViewer(dir: URL) {
-        let key = dir.path
-        if let existing = viewerWindows[key] { present(existing); return }
-        let w = makeWindow(title: "Session", size: NSSize(width: 1000, height: 660),
-                           content: AnyView(SessionViewer(dir: dir)))
-        viewerWindows[key] = w
-        present(w)
-    }
+    /// Browse / search every saved session.
+    func showLibrary() { showMain(.library) }
+
+    /// Open one session for reading (transcript + playback + summary + chat + export).
+    func showViewer(dir: URL) { showMain(.session(dir)) }
 
     /// First-run permission onboarding.
     func showOnboarding() {
         if onboardingWindow == nil {
-            onboardingWindow = makeWindow(title: "Welcome to Transcriber", size: NSSize(width: 460, height: 420),
+            onboardingWindow = makeWindow(title: "Welcome to Said", size: NSSize(width: 460, height: 420),
                                           content: AnyView(OnboardingWindow()))
         }
         present(onboardingWindow)
@@ -141,7 +144,7 @@ final class WindowManager: NSObject, NSWindowDelegate {
         guard let model else { return }
         if settingsWindow == nil {
             settingsWindow = makeWindow(
-                title: "Transcriber Settings",
+                title: "Said Settings",
                 size: NSSize(width: 440, height: 300),
                 content: AnyView(SettingsView().environmentObject(model))
             )
@@ -163,7 +166,8 @@ final class WindowManager: NSObject, NSWindowDelegate {
         }
     }
 
-    private func makeWindow(title: String, size: NSSize, content: AnyView, customTitlebar: Bool = false) -> NSWindow {
+    private func makeWindow(title: String, size: NSSize, content: AnyView,
+                            customTitlebar: Bool = false, autosave: String? = nil) -> NSWindow {
         let window = NSWindow(
             contentRect: NSRect(origin: .zero, size: size),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
@@ -175,15 +179,33 @@ final class WindowManager: NSObject, NSWindowDelegate {
         window.isReleasedWhenClosed = false   // ARC-safe: don't let AppKit release it on close
         window.delegate = self                // …and clear our cached reference when it closes
         if customTitlebar {
-            // Integrated dark titlebar: SwiftUI content fills to the top edge and draws its own
-            // toolbar; the traffic lights overlay its leading inset. (Presentation only.)
+            // v3 screen 01A: the sidebar's material runs the full height and the traffic lights sit
+            // on it, so the window draws its own chrome edge to edge.
             window.titlebarAppearsTransparent = true
             window.titleVisibility = .hidden
             window.styleMask.insert(.fullSizeContentView)
             window.isMovableByWindowBackground = true
-            window.backgroundColor = .dynamic(light: NSColor(hex: 0xF4F4F6), dark: NSColor(hex: 0x1D1E20))
+            window.backgroundColor = .dynamic(light: NSColor(hex: 0xF6F6F4), dark: NSColor(hex: 0x1E1F21))
         }
-        window.center()
+        // Place it deliberately. `center()` alone lands the window half off-screen here: the hosting
+        // controller reports a near-zero fitting size at this point and AppKit grows the window to
+        // its real width afterwards, anchored at the left edge it was just given.
+        window.setContentSize(size)
+        if let screen = NSScreen.main {
+            let visible = screen.visibleFrame
+            let frame = window.frameRect(forContentRect: NSRect(origin: .zero, size: size))
+            let origin = NSPoint(x: visible.midX - frame.width / 2,
+                                 y: visible.midY - frame.height / 2)
+            window.setFrame(NSRect(origin: origin, size: frame.size), display: false)
+        } else {
+            window.center()
+        }
+        // Remember where the user put it (applied after the explicit placement above, so a first
+        // run is centered and every later run reopens where they left it).
+        if let autosave {
+            window.setFrameAutosaveName(autosave)
+            window.setFrameUsingName(autosave)
+        }
         return window
     }
 
@@ -195,11 +217,9 @@ final class WindowManager: NSObject, NSWindowDelegate {
     /// When the user closes a window, drop our reference so the next "Open…" builds a fresh one.
     func windowWillClose(_ notification: Notification) {
         guard let closed = notification.object as? NSWindow else { return }
-        if closed === transcriptWindow { transcriptWindow = nil }
+        if closed === mainWindow { mainWindow = nil }
         if closed === settingsWindow { settingsWindow = nil }
-        if closed === libraryWindow { libraryWindow = nil }
         if closed === onboardingWindow { onboardingWindow = nil }
         if closed === askWindow { askWindow = nil }
-        if let key = viewerWindows.first(where: { $0.value === closed })?.key { viewerWindows[key] = nil }
     }
 }

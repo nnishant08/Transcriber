@@ -126,6 +126,27 @@ struct StopButton: View {
     }
 }
 
+/// Pause / Resume for a live session. The session stays open either way — only the capture is
+/// gated — so this never risks losing a recording the way Stop does.
+struct PauseButton: View {
+    @EnvironmentObject var model: AppModel
+    var body: some View {
+        Button { model.togglePause() } label: {
+            HStack(spacing: 8) {
+                Image(systemName: model.isPaused ? "play.fill" : "pause.fill").font(.system(size: 11))
+                Text(model.isPaused ? "Resume" : "Pause")
+                    .font(Theme.ui(12.5, weight: .medium)).lineLimit(1).fixedSize()
+            }
+            .foregroundStyle(Theme.pauseText)
+            .padding(.horizontal, 13).padding(.vertical, 6)
+            .background(RoundedRectangle(cornerRadius: 8).fill(Theme.pauseSoft))
+            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Theme.pauseBorder))
+        }
+        .buttonStyle(.plain)
+        .help(model.isPaused ? "Resume recording (⌥⌘P)" : "Pause recording — the session stays open (⌥⌘P)")
+    }
+}
+
 struct RecordingTimer: View {
     @ObservedObject var hud: RecordingHUD
     var body: some View {
@@ -139,6 +160,9 @@ struct RecordingTimer: View {
 /// level-only static read when reduced-motion is on.
 struct LiveMeter: View {
     @ObservedObject var hud: RecordingHUD
+    /// While paused the bars show the LIVE input (which is being dropped, not recorded), so they
+    /// take the paused tint — a moving amber meter reads as "hearing this, not keeping it".
+    var paused: Bool = false
     @Environment(\.accessibilityReduceMotion) private var reduce
     private let speeds: [Double] = [1.1, 0.8, 1.4, 0.95, 1.2, 0.85, 1.35, 1.0]
     private let phases: [Double] = [0, 0.6, 1.2, 0.3, 1.8, 0.9, 2.2, 0.45]
@@ -148,7 +172,7 @@ struct LiveMeter: View {
             let t = ctx.date.timeIntervalSinceReferenceDate
             HStack(alignment: .bottom, spacing: 2.5) {
                 ForEach(0..<8, id: \.self) { i in
-                    Capsule().fill(Theme.record).opacity(0.85)
+                    Capsule().fill(paused ? Theme.pause : Theme.record).opacity(0.85)
                         .frame(width: 2.5, height: barHeight(i, t: t))
                 }
             }
@@ -163,6 +187,88 @@ struct LiveMeter: View {
         let wave = (sin(t * speeds[i] + phases[i]) + 1) / 2
         let amp = 0.18 + level * 0.82
         return 4 + amp * wave * 14
+    }
+}
+
+// MARK: - Status-bar atoms (shared by the shell's status strip)
+
+struct StatusText: View {
+    let s: String
+    init(_ s: String) { self.s = s }
+    var body: some View { Text(s).lineLimit(1) }
+}
+
+struct StatusDot: View {
+    var body: some View { Circle().fill(Theme.text3).frame(width: 3, height: 3) }
+}
+
+struct ListeningIndicator: View {
+    @Environment(\.accessibilityReduceMotion) private var reduce
+    var body: some View {
+        TimelineView(.animation(minimumInterval: 0.1, paused: reduce)) { ctx in
+            let on = reduce ? true : (sin(ctx.date.timeIntervalSinceReferenceDate * 3.0) > -0.3)
+            HStack(spacing: 6) {
+                Circle().fill(Theme.record).frame(width: 7, height: 7).opacity(on ? 1 : 0.35)
+                Text("Listening")
+            }
+            .foregroundStyle(Theme.recordText)
+        }
+    }
+}
+
+/// Paused: the session is open, nothing is being recorded. States WHY, because an automatic pause
+/// the user didn't ask for must explain itself — and say that it will resume on its own.
+struct PausedIndicator: View {
+    let reason: PauseReason?
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "pause.circle.fill").font(.system(size: 10))
+            Text(reason == .silence ? "Auto-paused — silent · resumes when audio returns" : "Paused")
+                .lineLimit(1)
+        }
+        .foregroundStyle(Theme.pauseText)
+        .help(reason == .silence
+              ? "No audio was detected, so recording paused itself. It resumes automatically as soon as sound comes back — or press ⌥⌘P."
+              : "Recording is paused. Press ⌥⌘P (or Resume) to continue this session.")
+    }
+}
+
+/// The last few seconds before an automatic pause — so it is never a surprise.
+struct AutoPauseCountdown: View {
+    let seconds: Int
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "pause.circle").font(.system(size: 10))
+            Text("silent — auto-pausing in \(seconds)s").lineLimit(1)
+        }
+        .foregroundStyle(Theme.pauseText)
+        .help("No audio is coming in. Recording will pause itself, then resume automatically when sound returns.")
+    }
+}
+
+/// Shown in place of "Listening" once the capture has carried nothing but digital silence for a
+/// while. Deliberately states the elapsed time — "no audio for 40s" is actionable in the moment,
+/// whereas an empty transcript half an hour later is not.
+struct NoAudioIndicator: View {
+    let source: AudioSource
+    let seconds: Int
+
+    private var hint: String {
+        switch source {
+        case .microphone:    return "no mic audio for \(seconds)s"
+        case .systemAudio:   return "no system audio for \(seconds)s"
+        case .micPlusSystem: return "no audio for \(seconds)s"
+        }
+    }
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "exclamationmark.triangle.fill").font(.system(size: 9))
+            Text(hint).lineLimit(1)
+        }
+        .foregroundStyle(Theme.record)
+        .help("The capture is running but receiving only silence. Check that the audio is actually "
+              + "playing, and that the right source (Mic / System Audio) is selected.")
     }
 }
 

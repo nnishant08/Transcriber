@@ -14,19 +14,23 @@ enum CaptureError: LocalizedError {
     case noDisplay
     case engineNotReady
     case captureTargetUnavailable
+    case processTapUnavailable(OSStatus)
 
     var errorDescription: String? {
         switch self {
         case .micDenied:
             return "Microphone access was denied. Enable it in System Settings ▸ Privacy & Security ▸ Microphone, then try again."
         case .screenRecordingNeedsGrant:
-            return "Capture needs the Screen Recording permission. Enable Transcriber in System Settings ▸ Privacy & Security ▸ Screen Recording, then quit and relaunch the app."
+            return "Capture needs the Screen Recording permission. Enable Said in System Settings ▸ Privacy & Security ▸ Screen Recording, then quit and relaunch the app."
         case .noDisplay:
             return "No display was available to attach the capture stream to."
         case .engineNotReady:
             return "The transcription model is not loaded yet."
         case .captureTargetUnavailable:
             return "The chosen visual-capture target (window/app/display) is no longer available."
+        case .processTapUnavailable(let status):
+            return "Could not create the system-audio tap (Core Audio status \(status)). "
+                 + "Falling back to the ScreenCaptureKit path."
         }
     }
 }
@@ -70,6 +74,20 @@ final class SampleSink: SampleReceiver, @unchecked Sendable {
     var count: Int {
         lock.lock(); defer { lock.unlock() }
         return buffer.count
+    }
+
+    /// True when the most recent `window` samples are ALL exactly 0 — i.e. the OS handed us
+    /// zero-filled buffers rather than quiet audio. Digital silence is distinct from a quiet
+    /// room (a live mic always carries a nonzero noise floor), so this specifically catches
+    /// "the capture is running but carrying nothing" — the failure mode where a session records
+    /// for minutes and saves nothing but `[BLANK_AUDIO]`.
+    ///
+    /// Returns false until at least `window` samples exist, so it can't fire at startup.
+    func recentAllZero(_ window: Int = 16_000) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        guard buffer.count >= window else { return false }
+        for i in (buffer.count - window)..<buffer.count where buffer[i] != 0 { return false }
+        return true
     }
 
     /// RMS level of the most recent `window` samples, scaled to ~0…1 for the live meter.

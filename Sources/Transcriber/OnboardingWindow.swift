@@ -61,7 +61,7 @@ struct OnboardingWindow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             VStack(alignment: .leading, spacing: 6) {
-                Text("Welcome to Transcriber").font(Theme.ui(18, weight: .semibold))
+                Text("Welcome to Said").font(Theme.ui(18, weight: .semibold))
                 Text("Everything runs on this Mac — no cloud, no account. Grant a couple of permissions and you're set.")
                     .font(Theme.ui(12.5)).foregroundStyle(Theme.text2).fixedSize(horizontal: false, vertical: true)
                 OnDeviceBadge().padding(.top, 2)
@@ -77,7 +77,7 @@ struct OnboardingWindow: View {
                                                           : (m.micStatus == .authorized ? nil : ("Open Settings", { m.openSettings("Privacy_Microphone") })))
                 Divider().overlay(Theme.hairline).padding(.leading, 52)
                 row(icon: "rectangle.dashed.badge.record", title: "Screen Recording",
-                    detail: "Required to capture system audio (and slides). After granting, quit and relaunch Transcriber.",
+                    detail: "Required to capture system audio (and slides). After granting, quit and relaunch Said.",
                     state: m.screenGranted ? .ok : .pending,
                     action: m.screenGranted ? nil : ("Open Settings", { m.requestScreen() }))
                 Divider().overlay(Theme.hairline).padding(.leading, 52)

@@ -180,7 +180,7 @@ struct GenStudyGuide {
 
 @available(macOS 26.0, *)
 @Generable
-struct GenChapter { @Guide(description: "[mm:ss] start from the transcript") var timestamp: String; @Guide(description: "A short chapter / topic title") var title: String }
+struct GenChapter { @Guide(description: "A short chapter / topic title") var title: String; @Guide(description: "[mm:ss] start from the transcript, or empty") var timestamp: String }
 
 @available(macOS 26.0, *)
 @Generable
@@ -190,7 +190,10 @@ struct GenShowNotes {
     func render() -> String {
         var out = "# Show notes\n\n\(summary)\n"
         if !chapters.isEmpty {
-            out += "\n## Chapters\n" + chapters.map { "- [\(GenRender.cleanTS($0.timestamp))] \($0.title)" }.joined(separator: "\n") + "\n"
+            out += "\n## Chapters\n" + chapters.map {
+                let ts = $0.timestamp.isEmpty ? "" : "[\(GenRender.cleanTS($0.timestamp))] "
+                return "- \(ts)\($0.title)"
+            }.joined(separator: "\n") + "\n"
         }
         return out
     }
