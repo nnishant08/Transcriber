@@ -69,9 +69,11 @@ struct TranscriberCommands: Commands {
                 .keyboardShortcut("b", modifiers: [.option, .command])
                 .disabled(!model.isRecording)
 
-            Button("Grab Slide") { model.fireOnce("grab") { model.grabFrame() } }
-                .keyboardShortcut("s", modifiers: [.option, .command])
-                .disabled(!model.isRecording)
+            Button(model.isRecording ? "Stop Recording" : "Record Screen…") {
+                model.fireOnce("screen") { model.toggleScreenRecording() }
+            }
+            .keyboardShortcut("s", modifiers: [.option, .command])
+            .disabled(model.status.isBusyPreparing)
 
             Divider()
 

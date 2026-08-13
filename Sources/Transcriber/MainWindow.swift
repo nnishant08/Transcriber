@@ -144,6 +144,14 @@ struct MainShell: View {
                 CaptureCanvas()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .overlay(alignment: .top) { MeetingBanner() }
+                    .overlay(alignment: .bottomTrailing) {
+                        if model.isRecordingScreen {
+                            ScreenPreviewCard().environmentObject(model)
+                                .padding(16)
+                                .transition(.move(edge: .trailing).combined(with: .opacity))
+                        }
+                    }
+                    .animation(.easeInOut(duration: 0.2), value: model.isRecordingScreen)
                 Divider().overlay(Theme.hairline)
                 CaptureStatusBar().frame(height: 30).background(Theme.statusBG)
             }
@@ -217,10 +225,12 @@ private struct CaptureToolbar: View {
         if model.transcript.isEmpty {
             Text("Record").font(Theme.ui(13.5, weight: .semibold)).lineLimit(1).fixedSize()
             Spacer()
+            ScreenRecordButton(compact: true).environmentObject(model)
             SourceSegmented(source: $model.source, enabled: true)
             ToolbarIcon(system: "folder") { model.openTranscriptsFolder() }.help("Open ~/Desktop/Transcripts")
         } else {
             RecordPill().environmentObject(model)
+            ScreenRecordButton(compact: true).environmentObject(model)
             SourceSegmented(source: $model.source, enabled: true)
             Spacer()
             SummarizeButton().environmentObject(model)
@@ -244,6 +254,16 @@ private struct CaptureToolbar: View {
             RecordingTimer(hud: model.hud)
             LiveMeter(hud: model.hud, paused: model.isPaused)
             Spacer()
+            if model.isRecordingScreen {
+                HStack(spacing: 5) {
+                    Image(systemName: "record.circle").font(.system(size: 11))
+                    Text("Screen").font(Theme.ui(12, weight: .medium)).lineLimit(1).fixedSize()
+                }
+                .foregroundStyle(Theme.recordText)
+                .padding(.horizontal, 8).padding(.vertical, 3)
+                .background(Capsule().fill(Theme.recordSoft))
+                .help("Recording \(model.screenTargetLabel) at \(model.screenQuality.shortLabel)")
+            }
             HStack(spacing: 6) {
                 Image(systemName: model.source.symbol).font(.system(size: 12))
                 Text(model.source.label).font(Theme.ui(12.5, weight: .medium)).lineLimit(1).fixedSize()
@@ -292,7 +312,9 @@ private struct CaptureStatusBar: View {
                 StatusText("Recording stays disabled until ready")
             case .recording:
                 StatusText("\(model.wordCount) words"); StatusDot(); StatusText(model.model.shortName)
-                if model.visualCaptureEnabled { StatusDot(); StatusText("Visual capture on") }
+                if model.isRecordingScreen {
+                    StatusDot(); StatusText("Screen · \(model.screenTargetLabel) · \(model.screenQuality.shortLabel)")
+                }
                 if let lang = model.sessionLanguageLabel { StatusDot(); StatusText(lang) }
                 if let notice = model.captureNotice { StatusDot(); StatusText(notice) }
                 Spacer()

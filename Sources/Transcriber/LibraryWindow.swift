@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import AVFoundation
 import UniformTypeIdentifiers
 
 // MARK: - Smart collections (v3 screen 01 sidebar)
@@ -7,7 +8,7 @@ import UniformTypeIdentifiers
 /// The sidebar's saved views. Every one is derived from data a session already carries — no new
 /// state on disk, so an old session.json still lands in the right collections.
 enum LibraryCollection: String, CaseIterable, Identifiable {
-    case all, week, bookmarked, slides, speakers
+    case all, week, bookmarked, screen, speakers
 
     var id: String { rawValue }
 
@@ -16,7 +17,7 @@ enum LibraryCollection: String, CaseIterable, Identifiable {
         case .all: return "All"
         case .week: return "This week"
         case .bookmarked: return "Bookmarked"
-        case .slides: return "With slides"
+        case .screen: return "Screen recordings"
         case .speakers: return "Multi-speaker"
         }
     }
@@ -26,7 +27,7 @@ enum LibraryCollection: String, CaseIterable, Identifiable {
         case .all: return "square.stack.3d.up"
         case .week: return "clock"
         case .bookmarked: return "bookmark"
-        case .slides: return "rectangle.on.rectangle.angled"
+        case .screen: return "play.rectangle"
         case .speakers: return "person.2"
         }
     }
@@ -39,7 +40,7 @@ enum LibraryCollection: String, CaseIterable, Identifiable {
         case .all: return true
         case .week: return s.meta.date >= now.addingTimeInterval(-7 * 86_400)
         case .bookmarked: return !s.meta.bookmarks.isEmpty
-        case .slides: return s.hasImages
+        case .screen: return s.hasVideo
         case .speakers: return (s.meta.speakerCount ?? 0) > 1
         }
     }
@@ -47,7 +48,7 @@ enum LibraryCollection: String, CaseIterable, Identifiable {
 
 // MARK: - Search tokens (v3 screen 01B)
 
-/// v3: "Typing `speaker:` or `has:slide` completes into a token, exactly like Mail. It replaces both
+/// v3: "Typing `speaker:` or `has:screen` completes into a token, exactly like Mail. It replaces both
 /// dropdown chips and does far more." Tokens filter structurally; free text still goes to SearchIndex.
 struct SearchToken: Identifiable, Equatable {
     enum Field: String, CaseIterable {
@@ -56,7 +57,7 @@ struct SearchToken: Identifiable, Equatable {
         var hint: String {
             switch self {
             case .speaker: return "speaker:name"
-            case .has: return "has:slide · has:audio · has:bookmark"
+            case .has: return "has:screen · has:audio · has:bookmark"
             case .tag: return "tag:name"
             case .is: return "is:kept · is:imported"
             }
@@ -91,7 +92,7 @@ struct SearchToken: Identifiable, Equatable {
             return false
         case .has:
             switch v {
-            case "slide", "slides", "image", "images": return s.hasImages
+            case "screen", "video", "recording": return s.hasVideo
             case "audio", "playback": return s.meta.audioFile != nil
             case "bookmark", "bookmarks": return !s.meta.bookmarks.isEmpty
             case "summary", "summaries": return !s.meta.summaries.isEmpty
@@ -124,6 +125,10 @@ final class LibraryModel: ObservableObject {
     @Published var collection: LibraryCollection = .all
     @Published var selectedTag: String? = nil
     @Published var loading = false
+    /// Sessions currently in flight to the Trash (drives the status pill).
+    @Published var deleting = 0
+    /// Set only when a move to the Trash actually failed; cleared on the next delete.
+    @Published var deleteError: String?
 
     private var observer: NSObjectProtocol?
 
@@ -215,12 +220,59 @@ final class LibraryModel: ObservableObject {
     func open(_ dir: URL) { ShellModel.shared.go(.session(dir)) }
     func reveal(_ dir: URL) { NSWorkspace.shared.activateFileViewerSelecting([dir]) }
 
+    /// Move sessions to the Trash.
+    ///
+    /// The rows are removed OPTIMISTICALLY, before the move is confirmed. `NSWorkspace.recycle`
+    /// returns in microseconds but delivers its completion on the main run loop, and the callback
+    /// can lag well behind the actual move — waiting for it to refresh the list is what made
+    /// deleting look frozen for several seconds with nothing on screen. Anything that turns out
+    /// not to have moved is put back below, so the optimism is always corrected.
     func delete(_ dirs: [URL]) {
         guard !dirs.isEmpty else { return }
-        NSWorkspace.shared.recycle(dirs) { [weak self] _, _ in
-            Task { @MainActor in
-                dirs.forEach { SearchIndex.shared.remove(dir: $0) }
-                self?.reload()
+        let paths = Set(dirs.map(\.path))
+        let removed = sessions.filter { paths.contains($0.dir.path) }
+
+        sessions.removeAll { paths.contains($0.dir.path) }
+        hits.removeAll { paths.contains($0.dir.path) }
+        deleting += dirs.count
+        deleteError = nil
+
+        // FileManager.trashItem, NOT NSWorkspace.recycle. `recycle` asks FINDER to do the move
+        // via an Apple Event, which in a bundled app needs Automation permission — when that
+        // doesn't arrive the call simply hangs, which is where the 10–20 s stall came from (a
+        // plain CLI process never takes that path, which is why it timed at 0.02 s there).
+        // `trashItem` renames straight into ~/.Trash, no Finder, no Apple Event, and still
+        // records the original location so Finder's "Put Back" works.
+        Task.detached(priority: .userInitiated) { [weak self] in
+            let started = Date()
+            var moved: [URL] = []
+            var failures: [(URL, Error)] = []
+            for dir in dirs {
+                do {
+                    try FileManager.default.trashItem(at: dir, resultingItemURL: nil)
+                    moved.append(dir)
+                } catch {
+                    failures.append((dir, error))
+                }
+            }
+            let elapsed = Date().timeIntervalSince(started)
+            let movedOut = moved, failedOut = failures
+            await MainActor.run {
+                guard let self else { return }
+                NSLog("[Library] trashed \(movedOut.count)/\(dirs.count) in \(String(format: "%.2f", elapsed))s")
+                self.deleting = max(0, self.deleting - dirs.count)
+                movedOut.forEach { SearchIndex.shared.remove(dir: $0) }
+
+                let succeeded = Set(movedOut.map(\.path))
+                let failed = removed.filter { !succeeded.contains($0.dir.path) }
+                guard !failed.isEmpty else { return }
+
+                // Put back whatever didn't actually make it, keeping the newest-first order.
+                self.sessions.append(contentsOf: failed)
+                self.sessions.sort { $0.meta.date > $1.meta.date }
+                self.deleteError = failedOut.first?.1.localizedDescription
+                    ?? "Couldn't move \(failed.count) session\(failed.count == 1 ? "" : "s") to the Trash."
+                if !self.query.isEmpty { self.runSearch() }
             }
         }
     }
@@ -473,6 +525,41 @@ struct LibraryContent: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .overlay(alignment: .bottom) { statusPill }
+        .animation(.easeInOut(duration: 0.18), value: lib.deleting)
+        .animation(.easeInOut(duration: 0.18), value: lib.deleteError)
+    }
+
+    /// Non-blocking status for the Trash move. Deliberately NOT a modal: the rows already
+    /// disappear on click, so a dialog would interrupt without telling the user anything new.
+    /// It only needs to say the work is still finishing — and to speak up if it failed.
+    @ViewBuilder private var statusPill: some View {
+        if lib.deleting > 0 {
+            pill {
+                ProgressView().controlSize(.small)
+                Text(lib.deleting == 1 ? "Moving to Trash…" : "Moving \(lib.deleting) sessions to Trash…")
+                    .font(Theme.ui(13)).foregroundStyle(Theme.text2)
+            }
+        } else if let err = lib.deleteError {
+            pill {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.system(size: 12)).foregroundStyle(Theme.record)
+                Text(err).font(Theme.ui(13)).foregroundStyle(Theme.text2).lineLimit(2)
+                Button("Dismiss") { lib.deleteError = nil }
+                    .buttonStyle(.plain).font(Theme.ui(12, weight: .medium))
+                    .foregroundStyle(Theme.accentText)
+            }
+        }
+    }
+
+    private func pill<C: View>(@ViewBuilder _ content: () -> C) -> some View {
+        HStack(spacing: 10, content: content)
+            .padding(.horizontal, 14).padding(.vertical, 10)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Theme.hairline))
+            .shadow(color: .black.opacity(0.12), radius: 8, y: 2)
+            .padding(.bottom, 18)
+            .transition(.move(edge: .bottom).combined(with: .opacity))
     }
 
     private func list(_ dirs: [URL], hits: [SessionHit]?) -> some View {
@@ -562,7 +649,7 @@ private struct SessionRow: View {
                 }
                 sep; Text(meta.sourceLabel).font(Theme.ui(11.5))
                 if let n = meta.speakerCount, n > 1 { sep; Text("\(n) speakers").font(Theme.ui(11.5)) }
-                if let info, info.hasImages { sep; Text("\(info.imageCount) slides").font(Theme.ui(11.5)) }
+                if meta.hasVideo { sep; Label("Screen", systemImage: "play.rectangle").font(Theme.ui(11)) }
                 if meta.retentionLocked == true {
                     sep; Image(systemName: "lock.fill").font(.system(size: 8.5))
                 }
@@ -618,7 +705,7 @@ private struct SessionRow: View {
     }()
 }
 
-/// 44×44 leading thumbnail: the session's first slide when it has one, else a source icon.
+/// 44×44 leading thumbnail: a poster frame from the session's video when it has one, else a source icon.
 private struct SessionThumbnail: View {
     let info: SessionInfo?
     let selected: Bool
@@ -644,21 +731,28 @@ private struct SessionThumbnail: View {
     private var symbol: String {
         guard let info else { return "waveform" }
         if info.meta.imported { return "square.and.arrow.down" }
-        return info.hasImages ? "rectangle.on.rectangle.angled" : "waveform"
+        return info.hasVideo ? "play.rectangle" : "waveform"
     }
 
+    /// A poster frame ~10% into the video. Encrypted sessions are skipped rather than decrypted to a
+    /// temp file: a listing row is not worth writing plaintext to disk for.
     private func loadThumbnail() async {
         image = nil
-        guard let info, info.hasImages else { return }
-        let dir = info.dir.appendingPathComponent("images")
-        let loaded = await Task.detached(priority: .utility) { () -> NSImage? in
-            guard let names = try? FileManager.default.contentsOfDirectory(atPath: dir.path) else { return nil }
-            guard let first = names.filter({ $0.lowercased().hasSuffix(".png") }).sorted().first else { return nil }
-            // Routes through SessionIO so an encrypted session still renders (Feature C4).
-            guard let data = try? SessionIO.readData(dir.appendingPathComponent(first)) else { return nil }
-            return NSImage(data: data)
+        guard let info, info.hasVideo, let name = info.meta.videoFile else { return }
+        let url = info.dir.appendingPathComponent(name)
+        let duration = info.meta.durationSeconds ?? 0
+        image = await Task.detached(priority: .utility) { () -> NSImage? in
+            guard let raw = try? FileHandle(forReadingFrom: url).read(upToCount: 8),
+                  !SessionIO.isEncryptedBlob(raw) else { return nil }
+            let generator = AVAssetImageGenerator(asset: AVURLAsset(url: url))
+            generator.appliesPreferredTrackTransform = true
+            generator.maximumSize = CGSize(width: 176, height: 176)
+            generator.requestedTimeToleranceBefore = CMTime(seconds: 2, preferredTimescale: 600)
+            generator.requestedTimeToleranceAfter = CMTime(seconds: 2, preferredTimescale: 600)
+            let at = CMTime(seconds: max(0.5, duration * 0.1), preferredTimescale: 600)
+            guard let cg = try? await generator.image(at: at).image else { return nil }
+            return NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height))
         }.value
-        image = loaded
     }
 }
 
@@ -691,8 +785,8 @@ struct LibraryInspector: View {
                             openCard("Transcript", "Read, seek, export") { lib.open(info.dir) }
                             openCard("Studio", "Templates") { lib.open(info.dir) }
                             openCard("Chat", "Ask this session") { lib.open(info.dir) }
-                            if info.hasImages {
-                                openCard("Slides", "\(info.imageCount) frames · OCR") { lib.open(info.dir) }
+                            if info.hasVideo {
+                                openCard("Screen video", "Play with transcript") { lib.open(info.dir) }
                             }
                         }
                         if !info.meta.tags.isEmpty {
@@ -725,7 +819,7 @@ struct LibraryInspector: View {
         var parts = [SessionRowDateFormat.string(from: info.meta.date)]
         if let d = info.meta.durationSeconds, d > 0 { parts.append(DocumentBuilder.timestamp(d)) }
         parts.append(info.meta.sourceLabel)
-        if info.hasImages { parts.append("\(info.imageCount) slides") }
+        if info.hasVideo { parts.append("screen recording") }
         return parts.joined(separator: " · ")
     }
 

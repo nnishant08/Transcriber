@@ -134,36 +134,6 @@ enum AudioFileIO {
         }
     }
 
-    // MARK: Video frame extraction (for video import) — non-deprecated macOS 26 path
-
-    /// Extract one CGImage every `intervalSeconds` (t = 0, N, 2N, … < duration) via the async
-    /// `AVAssetImageGenerator.image(at:)`. A single unreadable timestamp is skipped, not fatal.
-    static func extractFrames(url: URL, intervalSeconds: Double, maxPixelSize: CGFloat = 1280) async throws -> [(time: Double, image: CGImage)] {
-        let asset = AVURLAsset(url: url)
-        let duration = try await asset.load(.duration)
-        let total = CMTimeGetSeconds(duration)
-        guard total.isFinite, total > 0, intervalSeconds > 0 else { return [] }
-
-        let generator = AVAssetImageGenerator(asset: asset)
-        generator.appliesPreferredTrackTransform = true
-        generator.requestedTimeToleranceBefore = .zero
-        generator.requestedTimeToleranceAfter = .zero
-        generator.maximumSize = CGSize(width: maxPixelSize, height: maxPixelSize)
-
-        var times: [CMTime] = []
-        var t = 0.0
-        while t < total, times.count < VisualConstants.maxImages {
-            times.append(CMTime(seconds: t, preferredTimescale: 600)); t += intervalSeconds
-        }
-
-        var frames: [(time: Double, image: CGImage)] = []
-        for requested in times {
-            if let result = try? await generator.image(at: requested) {
-                frames.append((CMTimeGetSeconds(result.actualTime), result.image))
-            }
-        }
-        return frames
-    }
 }
 
 // MARK: - Mic + System mixer
@@ -181,7 +151,7 @@ final class AudioMixer: @unchecked Sendable {
         func append(_ samples: [Float]) { mixer?.ingest(samples, isMic: isMic) }
     }
 
-    private let out: SampleSink
+    private let out: any SampleReceiver
     private let lock = NSLock()
     private var micBuf: [Float] = []
     private var sysBuf: [Float] = []
@@ -190,7 +160,7 @@ final class AudioMixer: @unchecked Sendable {
     private(set) lazy var micPort = Port(mixer: self, isMic: true)
     private(set) lazy var systemPort = Port(mixer: self, isMic: false)
 
-    init(out: SampleSink) { self.out = out }
+    init(out: any SampleReceiver) { self.out = out }
 
     private func ingest(_ samples: [Float], isMic: Bool) {
         // The mic tap thread and the SCStream audio queue both call this concurrently. The append to

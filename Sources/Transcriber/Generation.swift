@@ -71,7 +71,7 @@ struct QuizItemDTO: Codable, Sendable, Hashable {
 
 // MARK: - Generation Studio service
 
-/// Unified, templated structured-generation over a session's transcript (+ slide OCR text already
+/// Unified, templated structured-generation over a session's transcript (already
 /// embedded in the timestamped transcript). 100% on-device via FoundationModels guided generation
 /// (`@Generable`, macOS 26), behind the same availability guard as `Summarizer`. Outputs are cached
 /// in `session.json` and re-run on demand. Nothing here mutates `transcript.md`.
@@ -128,8 +128,8 @@ enum GenerationStudio {
     /// Shared grounding rules prepended to every structured generator's instructions: stay on the
     /// transcript, cite `[mm:ss]`, never invent. (Mirrors `Intelligence`'s chat/ask grounding.)
     private static let grounding = """
-        You work ONLY from the provided transcript (each line is prefixed with its [mm:ss] timestamp; \
-        lines marked (slide) are OCR'd on-screen text). Do not invent facts, names, numbers, or \
+        You work ONLY from the provided transcript (each line is prefixed with its [mm:ss] \
+        timestamp). Do not invent facts, names, numbers, or \
         outcomes not present in the transcript. When a field should reference a moment, use an \
         [mm:ss] timestamp that actually appears in the transcript. Be concise and faithful.
         """
@@ -143,17 +143,13 @@ enum GenerationStudio {
 
     // MARK: Run
 
-    /// Generate `template` over `sourceText` (a timestamped transcript; slide OCR text is already
-    /// embedded). Throws `SummaryError` when Apple Intelligence is unavailable or the input is empty,
-    /// so callers can show the reason and cache only on success.
-    static func generate(template: GenerationTemplate, sourceText: String,
-                         slidesText: String? = nil) async throws -> GenerationOutput {
+    /// Generate `template` over `sourceText` (a timestamped transcript). Throws `SummaryError` when
+    /// Apple Intelligence is unavailable or the input is empty, so callers can show the reason and
+    /// cache only on success.
+    static func generate(template: GenerationTemplate, sourceText: String) async throws -> GenerationOutput {
         let base = sourceText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !base.isEmpty, SessionStore.meaningfulWordCount(base) >= 3 else { throw SummaryError.emptyTranscript }
-        var text = clip(base)
-        if let s = slidesText?.trimmingCharacters(in: .whitespacesAndNewlines), !s.isEmpty {
-            text += "\n\nSLIDE TEXT:\n" + clip(s, max: 3000)
-        }
+        let text = clip(base)
 
         switch template.kind {
         case .summaryStyle(let style):

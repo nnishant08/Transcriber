@@ -273,52 +273,44 @@ struct SettingsView: View {
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
 
-            Section("Visual Capture") {
-                Toggle("Capture screenshots alongside audio", isOn: $model.visualCaptureEnabled)
+            Section("Screen Recording") {
+                Toggle("Record the screen with every session", isOn: $model.screenRecordingEnabled)
                     .disabled(model.isRecording)
 
-                if model.visualCaptureEnabled {
-                    Picker("Target", selection: $model.captureTarget) {
-                        // Ensure the current selection is always representable.
-                        if !model.availableTargets.contains(where: { $0.target == model.captureTarget }) {
-                            Text("Current").tag(model.captureTarget)
-                        }
-                        ForEach(model.availableTargets) { opt in
-                            Text(opt.label).tag(opt.target)
-                        }
+                Picker("Record", selection: $model.screenTarget) {
+                    // Ensure the current selection is always representable.
+                    if !model.availableTargets.contains(where: { $0.target == model.screenTarget }) {
+                        Text("Current").tag(model.screenTarget)
                     }
-                    .disabled(model.isRecording)
-
-                    HStack {
-                        Button("Refresh list") { model.refreshTargets() }
-                            .controlSize(.small)
-                            .disabled(model.isRecording)
-                        Spacer()
+                    ForEach(model.availableTargets) { opt in
+                        Text(opt.label).tag(opt.target)
                     }
-
-                    Picker("Mode", selection: $model.captureMode) {
-                        ForEach(CaptureMode.allCases) { m in Text(m.label).tag(m) }
-                    }
-                    .pickerStyle(.segmented)
-                    .disabled(model.isRecording)
-
-                    if model.captureMode == .interval {
-                        Stepper(value: $model.intervalSeconds, in: 2...300, step: 1) {
-                            Text("Every \(Int(model.intervalSeconds)) s")
-                        }
-                        .disabled(model.isRecording)
-                    }
-
-                    Toggle("On-device OCR of each frame (Vision)", isOn: $model.ocrEnabled)
-                        .disabled(model.isRecording)
-
-                    KeyboardShortcuts.Recorder("Manual grab:", name: .grabFrame)
-
-                    Text("“On change” captures one clean frame per slide; “Every N sec” suits continuous video; “Manual only” captures only on the grab hotkey (always live). Each session saves to its own folder on the Desktop with images and OCR. Uses the same Screen Recording permission — no new grant.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
                 }
+                .disabled(model.isRecording)
+
+                HStack {
+                    Button("Refresh list") { model.refreshTargets() }
+                        .controlSize(.small)
+                        .disabled(model.isRecording)
+                    Spacer()
+                }
+
+                Picker("Quality", selection: $model.screenQuality) {
+                    ForEach(ScreenQuality.allCases) { q in Text(q.label).tag(q) }
+                }
+                .disabled(model.isRecording)
+
+                Picker("Audio for screen recordings", selection: $model.screenAudioSource) {
+                    ForEach(AudioSource.allCases) { s in Text(s.label).tag(s) }
+                }
+                .disabled(model.isRecording)
+
+                KeyboardShortcuts.Recorder("Record screen:", name: .toggleScreenRecording)
+
+                Text("⌥⌘S starts a recording that captures the screen AND the audio in one session — one video, one transcript, one timeline. The video is saved as screen.mp4 in the session folder and plays in the Session Viewer, where clicking any transcript line jumps the video to that moment. Paused time is cut out of both. Uses the same Screen Recording permission as system audio — no new grant.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
         .formStyle(.grouped)

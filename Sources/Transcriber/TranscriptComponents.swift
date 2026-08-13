@@ -304,11 +304,78 @@ struct InviteCanvas: View {
                 }
                 .font(Theme.ui(13)).foregroundStyle(Theme.text2)
             }
+
+            // The second way in: one press records the screen AND the audio, into one session.
+            ScreenRecordButton().environmentObject(model)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .padding(24)
     }
     private var sep: some View { Circle().fill(Theme.text3).frame(width: 3, height: 3) }
+}
+
+/// "Record screen" — the whole feature as one control. It says what it will capture (target + audio)
+/// so pressing it is never a surprise, and it starts a normal session: same transcript, same
+/// timeline, plus a video.
+struct ScreenRecordButton: View {
+    @EnvironmentObject var model: AppModel
+    var compact = false
+    @State private var hover = false
+
+    var body: some View {
+        Button { model.toggleScreenRecording() } label: {
+            HStack(spacing: 7) {
+                Image(systemName: "record.circle").font(.system(size: compact ? 12 : 13))
+                Text(compact ? "Record screen" : "Record screen + audio")
+                    .font(Theme.ui(compact ? 12.5 : 13, weight: .medium)).lineLimit(1).fixedSize()
+                if !compact { KbdView("⌥⌘S") }
+            }
+            .foregroundStyle(Theme.accentText)
+            .padding(.horizontal, compact ? 10 : 14).padding(.vertical, compact ? 5 : 8)
+            .background(Capsule().fill(hover ? Theme.accentSoft : Theme.accentSoft.opacity(0.55)))
+            .overlay(Capsule().strokeBorder(Theme.accent.opacity(hover ? 0.5 : 0.28)))
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .onHover { hover = $0 }
+        .disabled(model.status.isBusyPreparing)
+        .help("Records \(model.screenTargetLabel) at \(model.screenQuality.shortLabel) with \(model.screenAudioSource.label) audio — and transcribes it (⌥⌘S)")
+    }
+}
+
+/// The live "what am I recording" preview. A screen recording you can't see is a screen recording
+/// you don't trust, so the frame that's being encoded is shown back, once a second.
+struct ScreenPreviewCard: View {
+    @EnvironmentObject var model: AppModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Group {
+                if let image = model.screenPreview {
+                    Image(nsImage: image).resizable().aspectRatio(contentMode: .fill)
+                } else {
+                    Theme.surface.overlay(
+                        Text("Waiting for the screen to change…")
+                            .font(Theme.ui(10.5)).foregroundStyle(Theme.text3).padding(6))
+                }
+            }
+            .frame(width: 220, height: 124).clipped()
+
+            HStack(spacing: 6) {
+                Circle().fill(model.isPaused ? Theme.pause : Theme.record).frame(width: 6, height: 6)
+                Text(model.isPaused ? "Paused" : "Recording")
+                    .font(Theme.ui(10.5, weight: .medium)).foregroundStyle(Theme.text2)
+                Spacer(minLength: 0)
+                Text(model.screenQuality.shortLabel).font(Theme.mono(10)).foregroundStyle(Theme.text3)
+            }
+            .padding(.horizontal, 8).padding(.vertical, 5)
+        }
+        .background(RoundedRectangle(cornerRadius: 10).fill(Theme.titlebar))
+        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Theme.hairline2))
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+        .shadow(color: .black.opacity(0.18), radius: 10, y: 3)
+        .help(model.screenTargetLabel)
+    }
 }
 
 struct DownloadingCanvas: View {

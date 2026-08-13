@@ -11,13 +11,8 @@ struct TranscriptCanvas: View {
         ScrollViewReader { proxy in
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
-                    ForEach(rows) { row in
-                        switch row {
-                        case .segment(let seg, _):
-                            SegmentRow(time: seg.start, text: seg.text)
-                        case .frame(let time, let image, let url, let ocr, _):
-                            FrameCard(image: image, url: url, time: time, ocr: ocr)
-                        }
+                    ForEach(Array(model.displaySegments.enumerated()), id: \.offset) { _, seg in
+                        SegmentRow(time: seg.start, text: seg.text)
                     }
                     if live {
                         LiveTailRow(hypothesis: model.hypothesisText)
@@ -31,40 +26,11 @@ struct TranscriptCanvas: View {
             .onAppear { if live { scrollToBottom(proxy) } }
             .onChange(of: model.displaySegments.count) { if live { scrollToBottom(proxy) } }
             .onChange(of: model.hypothesisText) { if live { scrollToBottom(proxy) } }
-            .onChange(of: model.capturedFrames.count) { if live { scrollToBottom(proxy) } }
         }
     }
 
     private func scrollToBottom(_ proxy: ScrollViewProxy) {
         withAnimation(.easeOut(duration: 0.15)) { proxy.scrollTo("bottom", anchor: .bottom) }
-    }
-
-    private var rows: [TRow] {
-        var out: [TRow] = []
-        for (i, seg) in model.displaySegments.enumerated() { out.append(.segment(seg, i)) }
-        for (i, thumb) in model.thumbnails.enumerated() {
-            let ocr = i < model.capturedFrames.count ? model.capturedFrames[i].ocrText : nil
-            out.append(.frame(thumb.time, thumb.image, thumb.url, ocr, i))
-        }
-        return out.sorted { $0.time < $1.time }
-    }
-}
-
-private enum TRow: Identifiable {
-    case segment(TranscriptSegment, Int)
-    case frame(TimeInterval, NSImage, URL, String?, Int)
-
-    var id: String {
-        switch self {
-        case .segment(_, let i): return "s\(i)"
-        case .frame(_, _, _, _, let i): return "f\(i)"
-        }
-    }
-    var time: TimeInterval {
-        switch self {
-        case .segment(let s, _): return s.start
-        case .frame(let t, _, _, _, _): return t
-        }
     }
 }
 
@@ -109,63 +75,6 @@ private struct LiveTailRow: View {
         var caret = AttributedString("▏")
         caret.foregroundColor = caretVisible ? Theme.accent : .clear   // toggle color → no layout jump
         return s + caret
-    }
-}
-
-// MARK: - Inline captured slide
-
-private struct FrameCard: View {
-    let image: NSImage
-    let url: URL
-    let time: TimeInterval
-    let ocr: String?
-    @State private var showOCR = false
-    private let cardWidth: CGFloat = 320
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 9) {
-            Button { NSWorkspace.shared.open(url) } label: {
-                VStack(spacing: 0) {
-                    LinearGradient(colors: [Color(nsColor: NSColor(hex: 0x5B6CF0)),
-                                            Color(nsColor: NSColor(hex: 0x8A63E8))],
-                                   startPoint: .leading, endPoint: .trailing)
-                        .frame(height: 8)
-                    Image(nsImage: image).resizable().aspectRatio(contentMode: .fill)
-                        .frame(width: cardWidth, height: 168).clipped()
-                }
-                .frame(width: cardWidth)
-                .background(Color.black.opacity(0.2))
-                .clipShape(RoundedRectangle(cornerRadius: 9))
-                .overlay(RoundedRectangle(cornerRadius: 9).strokeBorder(Theme.hairline2))
-            }
-            .buttonStyle(.plain)
-            .help("Open full image")
-
-            HStack(spacing: 8) {
-                Image(systemName: "photo").font(.system(size: 11))
-                Text("Slide captured · \(DocumentBuilder.timestamp(time))")
-                if let ocr, !ocr.isEmpty {
-                    Spacer()
-                    Button { withAnimation(.easeInOut(duration: 0.15)) { showOCR.toggle() } } label: {
-                        HStack(spacing: 4) {
-                            Image(systemName: showOCR ? "chevron.down" : "chevron.right").font(.system(size: 9))
-                            Text("OCR text")
-                        }.foregroundStyle(Theme.text2)
-                    }.buttonStyle(.plain)
-                }
-            }
-            .font(Theme.ui(11.5)).foregroundStyle(Theme.text3)
-            .frame(width: cardWidth, alignment: .leading)
-
-            if showOCR, let ocr, !ocr.isEmpty {
-                Text(ocr).font(Theme.mono(11)).foregroundStyle(Theme.text2)
-                    .frame(width: cardWidth, alignment: .leading)
-                    .padding(10)
-                    .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.05)))
-                    .textSelection(.enabled)
-            }
-        }
-        .padding(.leading, 60)   // align under the text column (46 gutter + 14 gap)
     }
 }
 

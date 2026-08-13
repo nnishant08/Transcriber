@@ -7,16 +7,16 @@ extension Notification.Name {
     static let transcriberSessionSaved = Notification.Name("transcriberSessionSaved")
 }
 
-/// A lightweight, listing-friendly view of one on-disk session folder (`transcript.md` + `session.json`
-/// [+ `images/`]). Built by `SessionStore.allSessions()` for the Library.
+/// A lightweight, listing-friendly view of one on-disk session folder (`transcript.md` +
+/// `session.json` [+ `audio.m4a` / `screen.mp4`]). Built by `SessionStore.allSessions()` for the Library.
 struct SessionInfo: Identifiable, Sendable {
     let dir: URL
     let meta: SessionMeta
-    let imageCount: Int
     let snippet: String
 
     var id: String { dir.path }
-    var hasImages: Bool { imageCount > 0 }
+    /// The session has a video (a screen recording, or an imported video) to play with the transcript.
+    var hasVideo: Bool { meta.hasVideo }
     var date: Date { meta.date }
 
     /// The stored title (re-sanitized as a display guard against any historically messy value),
@@ -39,7 +39,7 @@ struct MigrationResult: Sendable {
 }
 
 /// The unified on-disk session store. Every session is a folder under `~/Desktop/Transcripts`
-/// containing `transcript.md` + `session.json` (+ `images/` only when visual). This enum is the
+/// containing `transcript.md` + `session.json` (+ the media it produced: `audio.m4a`, `screen.mp4`). This enum is the
 /// single place that lists sessions, migrates legacy flat `*.md` files, derives plain text /
 /// snippets, and backfills titles/tags — reused by the Library, the search index, and self-tests.
 enum SessionStore {
@@ -62,14 +62,11 @@ enum SessionStore {
     /// All sessions as `SessionInfo`, newest first. Reads `session.json` (or synthesizes meta when a
     /// folder somehow lacks one) and a one-line snippet from `transcript.md`.
     static func allSessions(root: URL = SessionStore.root) -> [SessionInfo] {
-        let fm = FileManager.default
         var infos: [SessionInfo] = []
         for dir in sessionDirectoryURLs(root: root) {
             let meta = DocumentBuilder.readSession(dir)?.meta ?? synthMeta(dir: dir)
-            let imageCount = (try? fm.contentsOfDirectory(atPath: dir.appendingPathComponent("images").path))?
-                .filter { $0.lowercased().hasSuffix(".png") }.count ?? 0
             let snip = snippet(plainText: transcriptPlainText(dir: dir))
-            infos.append(SessionInfo(dir: dir, meta: meta, imageCount: imageCount, snippet: snip))
+            infos.append(SessionInfo(dir: dir, meta: meta, snippet: snip))
         }
         infos.sort { $0.meta.date > $1.meta.date }
         return infos
@@ -353,7 +350,7 @@ enum SessionStore {
                 let date = parseLegacyDate(base) ?? fileModificationDate(file) ?? Date()
                 let meta = SessionMeta(date: date, sourceLabel: "Unknown", modelName: "")
                 // Write ONLY session.json — must not re-render (and blank) the copied transcript.md.
-                DocumentBuilder.writeSessionJSON(SessionDoc(meta: meta, segments: [], frames: []), to: folder)
+                DocumentBuilder.writeSessionJSON(SessionDoc(meta: meta, segments: []), to: folder)
                 try fm.removeItem(at: file)     // safe: copy verified above
                 migrated += 1
             } catch {

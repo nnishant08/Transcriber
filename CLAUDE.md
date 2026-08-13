@@ -6,11 +6,11 @@ streams into a floating window; on stop the transcript is saved to `~/Desktop/Tr
 timestamped session folder, then replaced by a full-quality re-transcription (and the source audio is
 saved for playback). On-device **Apple Intelligence** powers summaries, **chat with a session**, and
 **Ask across all sessions** — all cite/link back to `[mm:ss]`. A **Library** browses + full-text-searches
-every session; the **Session Viewer** plays the audio with clickable transcript lines, bookmarks,
-summary, and chat. You can **import** audio/video files, add live **bookmarks** (⌥⌘B), bias accuracy
-with a **custom vocabulary**, and export to SRT/VTT/TXT/RTF/HTML/PDF or share to Notes/Obsidian. With
-**Visual Capture** on, a session also captures slides/video frames, OCRs them on-device, and interleaves
-them on the timeline. **Speaker diarization** labels who spoke when (renameable, color-coded, fully
+every session; the **Session Viewer** plays the session back with clickable transcript lines, bookmarks,
+summary, and chat. **Screen recording** (⌥⌘S) captures the screen and the audio in one session — one
+`screen.mp4`, one transcript, one timeline — and the Viewer plays the video against the words. You can
+**import** audio/video files, add live **bookmarks** (⌥⌘B), bias accuracy with a **custom vocabulary**,
+and export to SRT/VTT/TXT/RTF/HTML/PDF or share to Notes/Obsidian. **Speaker diarization** labels who spoke when (renameable, color-coded, fully
 on-device via FluidAudio). Transcription is **multilingual** (explicit language or auto-detect-once).
 **Calendar-aware capture** offers (or auto-starts) a bot-free local recording when a video-meeting event
 begins. An optional on-device **cleanup** view removes fillers/fixes punctuation (verbatim stays
@@ -81,13 +81,15 @@ then it says why.
 as jump points in the Session Viewer.
 
 **Library** (menu bar ▸ *Open Library*, or the books icon) — lists every session newest-first with title,
-date, source, tags, and a snippet. **Search** transcripts + slide text (keyword, ranked, with `[mm:ss]`
+date, source, tags, and a snippet. **Search** every transcript (keyword, ranked, with `[mm:ss]`
 snippets). Filter by **tag** or **date range**. Per row: **Open** (Session Viewer), **Reveal in Finder**,
 **Delete** (to Trash). Also **Ask** and **Import…** buttons.
 
 **Session Viewer** (Open a session from the Library) — one window with:
-- the **timestamped transcript** — click any line to **play/seek** the audio there;
-- an **audio player** (play/pause/scrub) when audio was saved;
+- the **timestamped transcript** — click any line to **play/seek** there;
+- the **screen recording** (when there is one) above the transcript, collapsible, driven by the same
+  player bar — clicking a line, bookmark, chapter or `[mm:ss]` citation jumps the video;
+- an **audio player** (play/pause/scrub) for audio-only sessions;
 - **bookmarks** + **chapters** as clickable jump points;
 - a **Summary** panel — switch styles **TL;DR / Detailed notes / Executive**, plus auto **action items**;
 - a **Chat** panel — ask questions about that session; answers cite a clickable `[mm:ss]`;
@@ -99,7 +101,8 @@ and automatic **titles + tags**. If Apple Intelligence is off/unavailable, these
 cleanly (search still works; Ask still lists matching sessions).
 
 **Import** — drag an **audio or video** file (`.mp3 .m4a .wav .mp4 .mov`) onto the window or the Dock icon,
-or use Library ▸ *Import…*. It transcribes into a full session; video files also sample + OCR frames.
+or use Library ▸ *Import…*. It transcribes into a full session; a video import keeps its video, so the
+session plays back in the Viewer exactly like a screen recording.
 
 **Accuracy — custom vocabulary** — add names/acronyms/jargon in Settings; they bias transcription (live and
 final). Empty = no change.
@@ -108,20 +111,26 @@ final). Empty = no change.
 (opens in Word/Pages), **HTML**, **PDF**; **Share…** (system share sheet → Notes, Mail, Messages, AirDrop…);
 **Send to Obsidian vault** (set the vault folder in Settings). Copy is available on the summary.
 
-**Visual Capture** (Settings toggle, off by default) — capture slides/screens alongside audio. Modes:
-*On change* (one clean frame per slide), *Every N seconds* (video), *Manual only*. **⌥⌘S** force-grabs a
-frame anytime. Frames are OCR'd on-device and interleaved with the transcript; export to a single HTML/PDF.
+**Screen recording** — press **⌥⌘S** (or *Record screen + audio*) and Said records the screen **and** the
+audio in a single session: a `screen.mp4` in the session folder, plus the usual live transcript. Choose
+what to record (main display, another display, a window, or one app's windows) and the quality
+(720p/15 · 1080p/24 · 1440p/30) in Settings; audio defaults to **Mic + System** so you capture both the
+call and yourself. A live preview shows what's being recorded. Pausing (⌥⌘P) cuts that time out of the
+video and the transcript together, so `[mm:ss]` always points at the right frame. In the Session Viewer
+the video sits above the transcript and every click — a line, a bookmark, a chapter, an AI citation —
+seeks it. Leave *Record the screen with every session* on in Settings if you always want both.
 
 **Keyboard shortcuts** (all configurable in Settings): **⌥⌘T** start/stop recording · **⌥⌘P** pause/resume ·
 **⌥⌘B** add bookmark ·
-**⌥⌘S** grab a visual frame. They work globally (from any app).
+**⌥⌘S** record screen + audio. They work globally (from any app).
 
 **Permissions** (first-run onboarding walks these): **Microphone** (for mic / both) · **Screen Recording**
-(for system audio + visual — *quit & relaunch* after granting) · **Notifications** (optional — a heads-up
+(for system audio + screen recording — *quit & relaunch* after granting) · **Notifications** (optional — a heads-up
 when a long transcription / summary / import finishes; degrades silently if denied).
 
 **Where things live** — sessions in `~/Desktop/Transcripts/<date-time>/`. Each folder is self-contained and
-movable (`transcript.md` + `session.json` [+ `audio.m4a` / `source.*` for playback] [+ `images/` if visual]).
+movable (`transcript.md` + `session.json` [+ `audio.m4a` / `source.*` for playback] [+ `screen.mp4` when
+the screen was recorded]).
 
 **Models** — WhisperKit, on-device: *base.en* (fastest, real-time), *small.en* (balanced), *base* /
 *small* (multilingual siblings), *large-v3-turbo* (most accurate, multilingual). Chosen in Settings;
@@ -133,8 +142,9 @@ downloads once, then fully offline. The speaker model (FluidAudio) also download
 **Limits to mention honestly** — on-device AI features need macOS 26 + Apple Intelligence; system audio needs
 the Screen Recording grant (and a relaunch after granting); non-English transcription needs a multilingual
 model selected; calendar capture needs the optional Calendar grant; speaker names don't carry across sessions
-(per-session rename only — cross-session voiceprints are a future build); attaching slide *images* to chat is
-a future macOS-27 capability (today chat uses the transcript + OCR'd slide text).
+(per-session rename only — cross-session voiceprints are a future build); a screen recording is a real
+video file, so long sessions are large (~1–3 GB/hour at 1080p — drop to 720p for all-day capture);
+chat reasons over the transcript, not the video's pixels.
 
 ## Target & stack
 - Apple Silicon, **macOS 14+ deployment target** (raised from 13 in Stage 1 — FluidAudio's platform
@@ -150,7 +160,8 @@ a future macOS-27 capability (today chat uses the transcript + OCR'd slide text)
 - Meeting detection: **EventKit** (system framework, no SPM entry; optional Calendar permission).
 - Global hotkey: **KeyboardShortcuts** (sindresorhus).
 - System audio: a **Core Audio process tap** (macOS 14.2+, default) with **ScreenCaptureKit** as the
-  fallback and as the carrier for Visual Capture. Microphone: **AVAudioEngine**.
+  fallback. Screen recording owns a SEPARATE video-only `SCStream` → AVAssetWriter (H.264 + AAC).
+  Microphone: **AVAudioEngine**.
 - On-device AI summary: Apple **FoundationModels** (Apple Intelligence, macOS 26).
 - App Sandbox **disabled** (personal tool — avoids entitlement friction for TCC + audio).
 
@@ -180,8 +191,9 @@ open ./Transcriber.app        # or run ./Transcriber.app/Contents/MacOS/Transcri
   Owns the start/stop/**pause** flows, the global-hotkey registration, transcript saving,
   `openTranscriptsFolder()`, `summarizeTranscript()`. Enums: `AudioSource`, `WhisperModel`,
   `EngineStatus` (now incl. `.paused`). Capture is started through `startMic(into:)`/
-  `startSystem(into:visual:)` — used by BOTH `startFlow` and the recovery path, so a mid-session
-  restart rebuilds a source exactly the way it was first built. The HUD tick (12 Hz) drives the
+  `startSystem(into:)` — used by BOTH `startFlow` and the recovery path, so a mid-session
+  restart rebuilds a source exactly the way it was first built. Screen recording adds
+  `screenRecordingEnabled`/`screenTarget`/`screenQuality`/`screenAudioSource` + `toggleScreenRecording()`. The HUD tick (12 Hz) drives the
   meter/timer AND `updateAutoPause` + `updateCaptureHealth` (the watchdog).
 - `TranscriptionEngine.swift` — wraps WhisperKit: `prepare(model:progress:)` (download w/ progress +
   load), `transcribeFile()`, `finalPass()` (VAD-chunked full-quality), `makeStreamer()`. Plus the
@@ -210,26 +222,32 @@ open ./Transcriber.app        # or run ./Transcriber.app/Contents/MacOS/Transcri
   **Open Library**, Open Transcripts Folder, Copy, Clear; the AI-summary panel; the auto-scrolling read-only transcript.
 - `SettingsView.swift` — `KeyboardShortcuts.Recorder`, model picker, source picker.
 - `Shortcuts.swift` — `KeyboardShortcuts.Name.toggleRecording` (⌥⌘T) + `.togglePause` (⌥⌘P) +
-  `.grabFrame` (⌥⌘S, manual capture) + `.addBookmark` (⌥⌘B).
+  `.toggleScreenRecording` (⌥⌘S) + `.addBookmark` (⌥⌘B).
 - `Theme.swift` — design tokens (light/dark adaptive colors via dynamic NSColor, fonts, radii).
 - `TranscriptComponents.swift` — toolbar atoms (ToolbarIcon, SourceSegmented, Summarize/Stop buttons,
   KbdView), RecordingTimer, LiveMeter, InviteCanvas (record ring), DownloadingCanvas (progress ring).
 - `TranscriptCanvas.swift` — the recording/review transcript (gutter timestamps + serif body, confirmed
-  solid + dimmed hypothesis tail + blinking caret, inline FrameCard slides w/ OCR disclosure) + SummaryCanvas.
-- `ScreenCapture.swift` — `CaptureTarget`/`CaptureMode`/`CaptureTargetOption` + `VisualCapture`: builds the
-  `SCContentFilter` from the chosen target, runs the detector / interval timer / manual grab, writes PNGs
-  into the session `images/`, emits `FrameEvent`s. Owns its own video stream (mic case) or ingests frames
-  from the shared AudioCaptureSystem stream (system-audio case). All mutable state on one serial `queue`.
-- `FrameChangeDetector.swift` — `VisualConstants` (tunables), `dHash`/`hamming`, and the per-slide
-  settle state machine for "On change" mode.
-- `DocumentBuilder.swift` — `TranscriptSegment`/`FrameEvent`/`SessionMeta`/`SessionDoc`; the T0 timeline
-  merge → Markdown and self-contained HTML; session-folder layout; `writeSession`/`readSession`.
+  solid + dimmed hypothesis tail + blinking caret) + SummaryCanvas.
+- `ScreenRecorder.swift` — the screen-recording feature. `ScreenTarget` (display / window / app,
+  persisted) + `ScreenTargetOption` + `ScreenQuality` (720p·15 / 1080p·24 / 1440p·30, with the H.264
+  bitrate derived from the encoded size). `ScreenRecorder` owns a video-only `SCStream` and is ALSO a
+  `SampleReceiver`, so the session's own 16 kHz mono audio is encoded into the video's AAC track live —
+  no second capture, no post-hoc remux of a multi-GB file. Frames are stamped on the pause-compressed
+  `SessionClock` time (`sessionTime()`), so a pause removes the same span from video, audio and
+  transcript. `ScreenWriter` (same file) is the encoder — AVAssetWriter + a pixel-buffer adaptor + an
+  audio input, with NO ScreenCaptureKit, which is what lets `--selftest-screenrec` verify it headlessly.
+  `finish(endingAt:)` ends the session at the true session length because SCK sends nothing while the
+  screen is static; the first accepted frame is stamped at 0 so playback never opens on black.
+- `DocumentBuilder.swift` — `TranscriptSegment`/`SessionMeta`/`SessionDoc`; the timestamped transcript →
+  Markdown and self-contained HTML; session-folder layout; `writeSession`/`readSession`.
+  `SessionMeta.videoFile`/`videoWidth`/`videoHeight` name the session's video (`screen.mp4`, or a copied
+  import); `SessionDoc` decodes explicitly so a pre-screen-recording `session.json` (which carries a
+  `frames` array from the removed screenshot feature) still loads — the key is ignored.
   `SessionMeta` carries `title`/`tags`/`schemaVersion` AND (Prompt 2) `audioFile`/`durationSeconds`/
   `bookmarks`/`chapters`/`actionItems`/`summaries`/`imported` — all `decodeIfPresent` so OLD session.json
   still decodes. Defines `Bookmark`/`Chapter`. `writeSessionJSON` writes ONLY session.json (leaves
   transcript.md untouched — used by migration, title backfill, and Viewer artifact caching).
   `makeSessionFolder(date:withImages:)`.
-- `SlideOCR.swift` — on-device Vision OCR (`VNRecognizeTextRequest`), batched over saved frames.
 - `Exporter.swift` — single-file HTML (base64-embedded images) + PDF (via `WKWebView.createPDF`).
 - `SessionStore.swift` — the unified on-disk store. `SessionInfo` (listing row), `allSessions()`,
   `sessionDirectoryURLs()`; markdown→plain-text + snippet + `[mm:ss]` helpers; `ensureTitle(dir:)`
@@ -239,7 +257,7 @@ open ./Transcriber.app        # or run ./Transcriber.app/Contents/MacOS/Transcri
   pattern as `Summarizer`); defensive parse/sanitize (strips markdown-wrapped `**Title:**`/`**Tags:**`
   labels, word-boundary tag cap); `generateTags` (focused tags-only prompt — more reliable than the
   combined title+tags prompt on long inputs); deterministic `fallbackTitle` when AI is unavailable.
-- `SearchIndex.swift` — in-app keyword inverted index over each session's `transcript.md` (incl. OCR text).
+- `SearchIndex.swift` — in-app keyword inverted index over each session's `transcript.md`.
   `search(_:) -> [SessionHit]` (ranked by match count + recency; snippets carry the nearest `[mm:ss]`);
   `rebuildFromDisk()` (validates vs disk mtimes) + `index(sessionDir:)`/`remove(dir:)`; JSON cache under
   Application Support (fast cold start, correctness always from disk). Thread-safe (`NSLock`), `Sendable`.
@@ -250,7 +268,7 @@ open ./Transcriber.app        # or run ./Transcriber.app/Contents/MacOS/Transcri
   `Summarizer` guards). `answerForSession` (A1, grounded, cites `[mm:ss]`), `ask` (A2, retrieves via
   `SearchIndex` → `AskResult{text,sources}`), `summarize(style:)`/`actionItems`/`chapters` (A3),
   `SummaryStyle`, `ChatTurn`. Single `run(instructions:prompt:)` wraps `LanguageModelSession.respond`.
-  Multimodal image input is ABSENT in the macOS 26 SDK → text+OCR only; the macOS-27 attach site is noted.
+  Text-only: chat reasons over the transcript, not the video's pixels.
 - `Subtitles.swift` (C1) — `srt`/`vtt(dir:)` from timed segments (or `[mm:ss]`-derived), sanitized to
   monotonic non-overlapping cues; nil when a session has no usable timing.
 - `Sharing.swift` (C3) — `NSSharingServicePicker` share sheet (Notes/Mail/…) + Obsidian (write `.md`
@@ -259,11 +277,13 @@ open ./Transcriber.app        # or run ./Transcriber.app/Contents/MacOS/Transcri
   AVAssetReader; write compact AAC `.m4a`/`.caf`; `AVAssetImageGenerator.image(at:)` frame extraction) +
   `AudioMixer` (sums mic+system `SampleReceiver` ports into the shared sink with headroom + a limiter).
 - `Importer.swift` (B1) — drag-drop / Import… of audio & video → a full session folder via `DocumentBuilder`
-  (transcribe + finalPass; video also samples + OCRs frames). Off the recording path; opens the Viewer.
+  (transcribe + finalPass; a video import is COPIED in as `source.<ext>` and recorded as `meta.videoFile`,
+  so it plays in the Viewer like a screen recording — skipped above 8 GB). Off the recording path.
 - `Notifier.swift` (D3) — `UserNotifications` wrapper; lazy auth, silent no-op when denied; guards the
   no-bundle (CLI self-test) case so the same binary never traps.
 - `SessionViewer.swift` (the new in-app surface) — `SessionViewerModel` + the Viewer: clickable timestamped
-  transcript, `AVAudioPlayer` bar (seek on line/citation/bookmark/chapter), summary suite (style switcher,
+  transcript, ONE player bar over two engines (`AVPlayer` + an `AVKit` video pane when the session has a
+  video, else `AVAudioPlayer`; every seek goes through `goTo`), summary suite (style switcher,
   action items, chapters), grounded chat panel, export/share menu. `OnDeviceBadge`. Library Open routes here.
 - `OnboardingWindow.swift` (D2) — first-run Mic + Screen Recording (+ quit-relaunch note) + optional
   Notifications walkthrough + optional Calendar step (Stage 1; status only queried once enabled);
@@ -288,7 +308,7 @@ open ./Transcriber.app        # or run ./Transcriber.app/Contents/MacOS/Transcri
 - `Generation.swift` (Stage 2, A) — `GenerationStudio` template registry + execution. `GenerationKind`
   (summaryStyle / customMode / structured generators), `GenerationTemplate {id,name,group,kind}`,
   `GenerationOutput {text,format,json}`, `builtins`/`allTemplates(customModes:)`. `generate(template:
-  sourceText:slidesText:)` delegates summary/custom kinds to `Intelligence` (byte-identical output,
+  sourceText:)` delegates summary/custom kinds to `Intelligence` (byte-identical output,
   cached in `meta.summaries`) and structured kinds to `StructuredGen`. Portable exports: `flashcardsCSV`
   (Anki front/back), `quizCSV`, `flashcardsMarkdown`; pure `displayText`/`flashcardsDisplay`/`quizDisplay`
   re-render cached JSON even when AI is off.
@@ -324,10 +344,6 @@ open ./Transcriber.app        # or run ./Transcriber.app/Contents/MacOS/Transcri
   disableEncryption` migrate existing sessions copy-then-verify-then-replace + one-time backup.
   `overrideKey` test hook. `transcript.md`/`session.json`/audio/images route through it; SearchIndex is
   in-memory-only (no plaintext cache) when ON.
-- `SlideChat.swift` (Stage 2, D) — PURE slide-image selection: `selectSlides(frames:question:cap:)`
-  (nearest a referenced `[mm:ss]`, else an even sample), `referencedTime`, `imageInputAvailable`
-  (macOS-27 SDK flag + OS). The actual image-input call lives in `Intelligence.answerForSession` behind
-  `#if TRANSCRIBER_MACOS27` + `#available(macOS 27)`; macOS 26 uses the text+OCR fallback verbatim.
 - `AudioCaptureProcessTap.swift` — the DEFAULT system-audio backend (`useProcessTap`, default ON).
   A Core Audio **process tap** (`CATapDescription(stereoGlobalTapButExcludeProcesses:)` excluding our
   own pid + `AudioHardwareCreateProcessTap` + a private aggregate device + `AudioDeviceIOProcIDWithBlock`)
@@ -337,8 +353,8 @@ open ./Transcriber.app        # or run ./Transcriber.app/Contents/MacOS/Transcri
   EVERY process — window or not, foreground or not — and is independent of the output device, its
   volume, and its mute. `@available(macOS 14.2)` (two minors above the deployment target), so all entry
   points are `#available`-gated. `AppModel.startProcessTap` returns false → the SCK path runs verbatim
-  when: the toggle is off, OS < 14.2, **visual capture is on** (frames ride the SCK stream, so that
-  topology is preserved), or the tap can't be created. **Self-healing across device changes**:
+  when: the toggle is off, OS < 14.2, or the tap can't be created. (Screen recording no longer forces
+  the fallback — the recorder owns its own video-only stream, so the tap stays the audio backend.) **Self-healing across device changes**:
   `buildChain()` (tap → format → private aggregate → IOProc → start) is the ONE construction path,
   used by `start()` AND by `restartCapture(reason:)`, which rebuilds it in FULL — tap included.
   Rebuilding only the aggregate around a surviving tap was not enough (see the device-change finding
@@ -358,22 +374,24 @@ open ./Transcriber.app        # or run ./Transcriber.app/Contents/MacOS/Transcri
 Capture (`AudioCaptureMic` **or** system audio — `AudioCaptureProcessTap` by default, falling back to
 `AudioCaptureSystem`; see the source map) → `Resampler16k` → **`CaptureGate`** (pause valve + level /
 liveness probe; a no-op passthrough while open) → shared
-`SampleSink` (16 kHz mono Float32). `StreamingTranscriber` consumes the sink: each ~1 s it re-transcribes
+`SampleSink` (16 kHz mono Float32). When a screen recording is live, a `SampleTee` sits at that last hop
+and hands the SAME samples to `ScreenRecorder` for the video's audio track; with no screen recording
+there is no tee at all. `StreamingTranscriber` consumes the sink: each ~1 s it re-transcribes
 the buffer from `lastConfirmedEnd` (`DecodingOptions.clipTimestamps`), confirms all but the last 2
 segments, and publishes confirmed + hypothesis text — so live text grows without duplication (this
 replicates WhisperKit's own mic-only `AudioStreamTranscriber` algorithm). On Stop: write the session
 folder's live `transcript.md`, run one VAD-chunked `finalPass()` over the whole buffer, overwrite with
 the clean version, then (off-main) index it + auto-title/tag (see Unified session store below).
 
-> **Unified session store (Prompt 1):** EVERY session — audio-only *and* visual — now saves as a
-> folder `~/Desktop/Transcripts/<yyyy-MM-dd HH-mm-ss>/` (`transcript.md` + `session.json`, plus
-> `images/` only when visual). This replaces the old audio-only flat `transcript-….md`. Legacy flat
-> files are migrated once on launch (`SessionStore.migrateLegacyFlatFiles`): non-destructive (one
-> full backup to `~/Desktop/Transcripts_backup_<stamp>` first), copy-then-verify-then-remove,
-> idempotent (re-run = no-op). Export stays gated on visual sessions (`canExport = lastSessionDir &&
-> lastSessionHasVisual`) so audio-only folders don't surface a text-only HTML/PDF.
+> **Unified session store (Prompt 1):** EVERY session saves as a folder
+> `~/Desktop/Transcripts/<yyyy-MM-dd HH-mm-ss>/` (`transcript.md` + `session.json`, plus the media it
+> produced — `audio.m4a`, and `screen.mp4` when the screen was recorded). This replaces the old
+> audio-only flat `transcript-….md`. Legacy flat files are migrated once on launch
+> (`SessionStore.migrateLegacyFlatFiles`): non-destructive (one full backup to
+> `~/Desktop/Transcripts_backup_<stamp>` first), copy-then-verify-then-remove, idempotent (re-run =
+> no-op). Export (HTML/PDF/TXT/RTF) is available for any saved session.
 
-## Pause, auto-pause & capture resilience — Sources: CaptureControl / AppModel / AudioCaptureMic / AudioCaptureProcessTap / ScreenCapture
+## Pause, auto-pause & capture resilience — Sources: CaptureControl / AppModel / AudioCaptureMic / AudioCaptureProcessTap / ScreenRecorder
 **A session must survive everything except the user pressing Stop.** All three features below share
 one idea: the SESSION (sink, streamer, timeline, session folder) is long-lived, and the CAPTURE
 underneath it is disposable and replaceable.
@@ -381,9 +399,10 @@ underneath it is disposable and replaceable.
   stays `isRecording` and `status` becomes `.paused`. Pausing CLOSES the `CaptureGate`s — capture
   keeps running (so the level is still measured), but its samples are dropped. **Paused time is
   therefore absent from the audio**, which is why every other timestamp is measured on
-  `SessionClock` (wall clock minus accumulated pause): the HUD timer, ⌥⌘B bookmarks, and visual
-  frames (`VisualCapture.setPaused(_:totalPaused:)`, which also stops automatic grabs). Without
-  that, a 5-minute pause would push every later marker 5 minutes past the audio it names.
+  `SessionClock` (wall clock minus accumulated pause): the HUD timer, ⌥⌘B bookmarks, and screen-
+  recording frames (`ScreenRecorder.setPaused(_:totalPaused:)`, which also stops encoding frames).
+  Without that, a 5-minute pause would push every later marker 5 minutes past the audio it names —
+  and the video would drift 5 minutes ahead of its own transcript.
 - **Pre-roll is replayed ONLY on an automatic resume.** The gate retains ≤1 s while closed. An
   auto-resume flushes it (the word that triggered the resume would otherwise be clipped); a manual
   resume — and stopping from a paused state — DISCARDS it. Audio captured during a pause the user
@@ -416,40 +435,50 @@ underneath it is disposable and replaceable.
   device change a session is byte-identical to pre-pause behavior. `--selftest-pause` asserts that
   passthrough plus every decision above; the full sweep asserts nothing else moved.
 
-## Visual Capture (document mode) — Sources: ScreenCapture / FrameChangeDetector / DocumentBuilder / SlideOCR / Exporter
-- **Toggle** in Settings / menu (persisted, default off). When on, a session adds `images/` + frames to
-  the folder layout (all sessions are folders now — see Unified session store). `session.json` stays
-  machine-readable and drives export.
-- **Per-session target** (Settings picker, live from `SCShareableContent`, refreshed on open): main display,
-  a specific display, a window, or an app. Own windows excluded; `showsCursor = false`.
-- **Per-session mode**: On change (dHash + settle state machine — one clean frame per slide), Every N s
-  (interval timer; for video), Manual only. **⌥⌘S** force-grabs the current frame in any mode.
-- **Stream topology** (the key non-regression rule):
-  - System audio + visual → ONE `SCStream` (AudioCaptureSystem) carrying `.audio` (→ SampleSink, unchanged)
-    and `.screen` (→ VisualCapture.ingest). Filter is the chosen visual target, so audio is scoped to it.
-  - Mic + visual → mic audio via AudioCaptureMic (unchanged) + a SEPARATE video-only `SCStream` owned by
-    VisualCapture. If the captured window/app dies, only video stops; mic audio keeps recording.
-  - When visual is OFF, AudioCaptureSystem uses the original 2×2 audio-only config verbatim.
-- **Timeline / T0**: one monotonic `CACurrentMediaTime()` at recording start. WhisperKit segment
-  timestamps are relative to the audio buffer start (== T0); frame events are `now - T0`. DocumentBuilder
-  sorts both by time and interleaves `[mm:ss] text` with `![mm:ss](images/…png)` + an OCR `<details>` block.
-- **Two passes, same builder**: a live save on stop (streamer's confirmed segments + frames), then the
-  full-quality `finalPassSegments` + batched OCR re-merge (frames are NOT re-captured).
-- **OCR**: Vision, on-device, run off the main thread (`Task.detached`) in the final pass. OCR toggle in Settings.
-- **Export**: HTML (base64 images, self-contained) + PDF (`WKWebView`). User-triggered via NSSavePanel; the
-  folder + transcript.md is the lightweight canonical form, HTML/PDF the larger portable share form.
-- **Threading**: VisualCapture confines ALL state to one serial `queue`; `onFrame`/`onStopped` are invoked
-  on the main actor (`DispatchQueue.main.async`) to avoid cross-thread closure reads from SCStream's
-  delegate thread. `stop()` drains the queue via an async continuation (no MainActor block).
-- **Tunables** (`VisualConstants`): CHANGE_THRESHOLD 12, STABLE_THRESHOLD 3, STABLE_WINDOW 1s, MIN_INTERVAL 2s,
-  ~2 fps, MAX_IMAGES 500, interval default 15s, thumbnail 240px. dHash measures EDGE STRUCTURE — sparse
-  near-uniform frames hash near-zero, so the threshold is tuned for real (dense) screen content.
+## Screen recording — Sources: ScreenRecorder / AppModel / SessionViewer / DocumentBuilder
+**The screen recording and the transcript are ONE document.** That is the whole design constraint: any
+screen recorder can write an `.mp4`; the reason to do it inside Said is that every `[mm:ss]` in the
+transcript points at a frame, and every click in the Viewer moves the video.
+- **Start it** with ⌥⌘S, the *Record screen + audio* control (invite canvas, toolbar, menu-bar popover),
+  or by leaving *Record the screen with every session* on in Settings. `toggleScreenRecording()` sets the
+  flag for this session and applies `screenAudioSource` as a ONE-SHOT `sourceOverride` (default Mic +
+  System) — a screen recording never silently inherits a mic-only pick, and never changes the user's
+  persisted source. During a session it stops the session, so one key both starts and ends it.
+- **One clock.** Video PTS = `SessionClock` time (wall clock − paused time), the same clock the audio
+  gate, bookmarks and segment timestamps use. Paused stretches are absent from the video, the audio AND
+  the transcript, so all three stay aligned no matter how many times the session is paused.
+- **One audio stream.** `ScreenRecorder` is a `SampleReceiver`. The session's own 16 kHz mono samples —
+  post-gate, post-mixer, i.e. exactly what is transcribed — are encoded straight into the video's AAC
+  track. No second capture (no extra permission, no drift), and crucially no post-hoc remux: muxing a
+  multi-GB screen recording at save time would rewrite the whole file.
+- **Stream topology.** The recorder owns a SEPARATE video-only `SCStream`; `AudioCaptureSystem` went back
+  to its verified audio-only 2×2 config, and the Core Audio process tap stays the default audio backend
+  even while recording the screen (previously visual capture forced the weaker SCK audio path).
+- **Sparse frames are correct.** ScreenCaptureKit only delivers changed frames, so a static screen writes
+  nothing. Two consequences are handled: the FIRST accepted frame is stamped at 0 (else playback opens on
+  black while SCK warms up), and `finish(endingAt:)` ends the session at the true session length (else a
+  recording that ends on a still frame would be shorter than its own transcript).
+- **Dropped, never blocked.** If the encoder isn't ready, the frame is dropped — a dropped frame just
+  holds the previous one on screen, whereas blocking would stall the SCK queue. Only the first frame
+  waits (≤100 ms) for the encoder to come up.
+- **A dead capture doesn't kill the session.** If the recorded window closes or the display is unplugged,
+  `handleScreenStopped` finalizes the video, keeps the audio + transcript running, and says so in the
+  status bar. The transcript is the thing you can't re-create.
+- **Failure at START is fatal, by design.** The recorder is started BEFORE audio capture, so a missing
+  Screen Recording grant fails the whole start cleanly instead of leaving a running session with a
+  silently dead video.
+- **In the Viewer**: the video sits above the transcript (collapsible), and ONE player bar drives either
+  engine — `AVPlayer` when the session has a video, `AVAudioPlayer` when it's audio-only. Every seek
+  entry point (line, bookmark, chapter, `[mm:ss]` citation) goes through `goTo`, so both behave
+  identically. Encrypted sessions (Feature C4) decrypt to a temp file for playback, like audio does.
+- **Library**: a *Screen recordings* smart collection, `has:screen` search token, and row thumbnails
+  generated from the video (a poster frame ~10% in; skipped for encrypted sessions rather than writing
+  plaintext to disk for a listing row).
 
 ## Unified store, Library & full-text search (Prompt 1 — Sources: SessionStore / TitleGenerator / SearchIndex / LibraryWindow / DocumentBuilder / AppModel)
-- **One layout for all sessions** — folders with `transcript.md` + `session.json` (+ `images/` if visual).
-  `AppModel.startFlow` always `makeSessionFolder(withImages: visualCaptureEnabled)`; `finalizeDocumentSession`
-  handles both (audio-only just has no frames). Migration on launch (see Data flow). NOTHING here touches
-  capture / streaming / `finalPass` / hotkeys / signing / the visual stream topology.
+- **One layout for all sessions** — folders with `transcript.md` + `session.json` (+ `audio.m4a` /
+  `screen.mp4`). `AppModel.startFlow` always `makeSessionFolder(date:)`. Migration on launch (see Data
+  flow). NOTHING here touches capture / streaming / `finalPass` / hotkeys / signing.
 - **Auto title + tags** — after `finalPass`, `SessionStore.ensureTitle(dir:)` runs OFF the save path
   (`Task.detached`): on-device via `TitleGenerator` (FoundationModels, `#available(macOS 26)`) → a ≤8-word
   title + ≤5 lowercased/deduped tags, stored in `session.json` via `writeSessionJSON` (transcript.md never
@@ -457,11 +486,11 @@ underneath it is disposable and replaceable.
   empty tags. Saving NEVER fails or blocks on titling. Migrated/legacy sessions are titled lazily by the
   `TitleBackfill` actor (serial, 300 ms apart) when the Library first lists them.
 - **Library window** (`WindowManager.showLibrary`, manual NSWindow like Transcript/Settings; reachable from
-  the menu-bar popover and the Transcript toolbar). Lists sessions newest first (title/date/source, slide
-  badge + image count, snippet, tags); tag + date-range filters; Open (`transcript.md`) / Reveal in Finder /
+  the menu-bar popover and the Transcript toolbar). Lists sessions newest first (title/date/source, screen
+  badge, snippet, tags); tag + date-range filters; Open (`transcript.md`) / Reveal in Finder /
   Delete-to-Trash (`NSWorkspace.recycle`, never hard-delete). Live-refreshes via `.transcriberSessionSaved`.
 - **Cross-session search** (`SearchIndex`, in-app, on-device, NO Spotlight) — tokenized case-insensitive
-  inverted index over each `transcript.md` (which already embeds OCR text for visual sessions). Built from
+  inverted index over each `transcript.md`. Built from
   disk on launch (cache under Application Support for cold start, but disk mtimes are the source of truth),
   updated incrementally on each save. `search(_:) -> [SessionHit]` ranks by match count + recency; each hit
   carries snippets with the nearest `[mm:ss]`. The hit type is the reuse surface for a future "chat with your
@@ -475,16 +504,14 @@ underneath it is disposable and replaceable.
   per-session grounded chat (cites clickable `[mm:ss]`), cross-session **Ask** (retrieves via
   `SearchIndex` → answers + clickable source sessions), and a summary suite (TL;DR/detailed/executive +
   action items + `[mm:ss]` chapters). Cached in `session.json` (`summaries`/`actionItems`/`chapters`).
-  Multimodal image input is ABSENT in the macOS 26 SDK (verified against the framework's swiftinterface) →
-  text+OCR only; the macOS-27 attach site is marked, gated behind `#available(macOS 27)`.
+  Text-only (multimodal image input is absent in the macOS 26 SDK).
 - **Capture coverage (B)** — *highest regression risk; all gated off by default.*
   - **Import** (`Importer`/`AudioFileIO`): drag-drop or Import… of `.mp3/.m4a/.wav/.mp4/.mov` → a full
-    session folder (audio decode → `transcribeSamples` + finalPass; video also samples frames every N s
-    + OCR). Opens in the Viewer.
+    session folder (audio decode → `transcribeSamples` + finalPass; a video import is copied in and
+    recorded as `meta.videoFile`, so it plays against the transcript). Opens in the Viewer.
   - **Mic + System** (`AudioSource.micPlusSystem` + `AudioMixer`): both captures resample to 16 kHz mono
     and feed an `AudioMixer` (sum × 0.85 + hard limit) into the ONE shared `SampleSink`; the existing
-    single `StreamingTranscriber`/`finalPass` run UNCHANGED downstream. Visual rides the SYSTEM stream
-    (same topology as system-audio+visual); the mic is a separate audio-only capture. The capture sources
+    single `StreamingTranscriber`/`finalPass` run UNCHANGED downstream. The capture sources
     now take a `SampleReceiver` (the sink for single-source = byte-identical; a mixer port for Mic+System).
   - **Save audio** (`saveAudioEnabled`, default ON): on stop, writes `audio.m4a` (16 kHz AAC, T0-aligned)
     from the sink; `meta.audioFile`/`durationSeconds`. Imported audio keeps the original as `source.<ext>`.
@@ -588,15 +615,19 @@ Run the built binary (`.build/release/Transcriber` or the bundle's MacOS binary)
 - `--selftest [audio.wav] [--model <id>]` — one-shot file transcription.
 - `--selftest-stream [audio48k.wav]` — drives `Resampler16k` + `StreamingTranscriber` + `finalPass`.
 - `--summarize [transcript.md]` — on-device summary; prints availability + result.
-- `--selftest-capture [frames-dir]` — feeds frames into FrameChangeDetector; asserts one capture per
-  distinct slide (synthesises 3 distinct full-frame patterns if no dir). Prints pairwise dHash hamming.
-- `--selftest-ocr [image.png]` — Vision OCR of an image (synthesises a text image if none).
+- `--selftest-screenrec [out.mp4]` — the screen-recording ENCODER, headlessly (no ScreenCaptureKit, no
+  permission): synthetic BGRA frames + synthetic 16 kHz audio → one `.mp4`; asserts a video track AND an
+  audio track, the requested duration (frames stop early, `finish(endingAt:)` must still end at the true
+  length), and that an out-of-order frame is rejected rather than written.
+- `--selftest-screenrec-live [seconds]` — LIVE probe: records the real main display for N seconds while
+  feeding synthetic audio through the same `SampleReceiver` path. Needs the Screen Recording grant, so
+  run the BUNDLE binary: `./Said.app/Contents/MacOS/Said --selftest-screenrec-live 8`.
 - `--selftest-doc` — synthetic segments + frame events → prints merged Markdown; asserts ordering.
 - `--selftest-export [session-folder]` — builds HTML + PDF (synthesises a session if none). Runs a main
   run loop so WKWebView can render the PDF.
 - `--selftest-migrate [dir]` — synthesises legacy flat `.md` files, migrates, and asserts each became
   `<name>/transcript.md` + `session.json`, bytes preserved, a backup exists, and a 2nd run is a no-op.
-- `--selftest-index [dir]` — synthesises sessions (incl. OCR slide text), builds `SearchIndex`, runs
+- `--selftest-index [dir]` — synthesises sessions, builds `SearchIndex`, runs
   queries; asserts correct sessions, snippets, `[mm:ss]` timestamps, and ranking (compares by folder name —
   `/tmp`→`/private/tmp` + trailing-slash make full-URL `==` unreliable in tests).
 - `--selftest-title [transcript.md]` — runs title + tag generation; prints availability + output; asserts
@@ -640,9 +671,7 @@ Run the built binary (`.build/release/Transcriber` or the bundle's MacOS binary)
   `--selftest-retention [dir]` (expired-unlocked trashed via an injected trash dir, locked + recent
   kept, second run a no-op), `--selftest-encrypt [dir]` (OFF passthrough byte-identical; ON on-disk
   bytes not plaintext + read decrypts exactly + transcript.md encrypted; SearchIndex in-memory finds
-  terms and writes NO cache file), `--selftest-slidechat` (pure: nearest-slide selection for a
-  time-referenced question, even sample otherwise, cap respected, macOS-26 build → image input
-  unavailable → text+OCR fallback). All write only to temp dirs.
+  terms and writes NO cache file). All write only to temp dirs.
 - `--retag [dir] [--force]` — maintenance utility (NOT a self-test): fills missing tags on titled-but-
   untagged sessions (keeps the title; skips near-empty `[BLANK_AUDIO]` transcripts) via `generateTags`.
   `--force` regenerates tags even on already-tagged sessions. Defaults to `~/Desktop/Transcripts`.
@@ -658,8 +687,8 @@ Run the built binary (`.build/release/Transcriber` or the bundle's MacOS binary)
   `TRANSCRIBER_PROBE_OUT=/tmp/cap.wav` on either probe to dump the captured samples as 16 kHz mono
   WAV, then feed that file to `--selftest` to prove capture → transcription end to end.
 Test clips were made with `say` + `afconvert` (`/tmp/transcriber_test.wav`, `/tmp/tr_long_48k_stereo.wav`).
-All visual self-tests pass headlessly; the LIVE capture path (real SCStream video) needs a real screen +
-Screen Recording grant + on-screen content and must be verified by running the app.
+The encoder self-tests pass headlessly; the LIVE capture path (real SCStream video) needs a real screen +
+Screen Recording grant + on-screen content — use `--selftest-screenrec-live` from the app bundle, or the app.
 
 ## Status — all DONE & user-verified
 - [x] Menu-bar + Dock app launches (opens the control window on launch).
@@ -669,14 +698,28 @@ Screen Recording grant + on-screen content and must be verified by running the a
 - [x] Live **system-audio** transcription (user-verified, incl. while listening on AirPods).
 - [x] Global hotkey ⌥⌘T; auto-save timestamped `.md` to `~/Desktop/Transcripts/`.
 - [x] On-device AI summary (Apple Intelligence) via the Summarize button.
-- [x] **Visual Capture** — USER-VERIFIED working end-to-end on a real screen (capture target, frame
-      detection, interleaved transcript.md + images/, OCR, live thumbnails, HTML/PDF export). Detector /
-      OCR / timeline-merge / export also pass headless self-tests; adversarial review done + fixes applied;
-      no audio regression.
+- [~] **Screen recording (replaces Visual Capture)** — the screenshot/slide feature was REMOVED (its
+      four files, the ⌥⌘S grab, the OCR pass, the interleaved image timeline, `FrameEvent`, and the
+      macOS-27 slide-chat hook) and replaced by real screen recording: ⌥⌘S / *Record screen + audio*
+      records the screen AND the audio into one session (`screen.mp4`, H.264 + AAC), on the transcript's
+      own pause-compressed clock, with the session's own audio muxed in live. Settings pick target
+      (display / window / app), quality (720p·15 / 1080p·24 / 1440p·30) and the audio source; a live
+      preview card shows what's being captured; the Session Viewer plays the video above the transcript
+      with click-to-seek from lines, bookmarks, chapters and AI citations; the Library gained a *Screen
+      recordings* collection, a `has:screen` token and video poster thumbnails. Video imports now keep
+      their video and play the same way. The process tap stays the audio backend during screen capture
+      (previously visual capture forced the weaker SCK path). **Build green; `--selftest-screenrec`
+      (encoder: video+audio tracks, true duration, out-of-order rejection) passes, and the whole prior
+      sweep is unchanged** (doc / migrate / index / export / import / pause / align / calendar / packs /
+      vocab / bookmarks / mix / audio-save / srt / redact / retention / encrypt, plus file + streaming
+      transcription byte-for-byte). **AWAITING human smoke-tests:** a real ⌥⌘S recording (display, then a
+      single window / app), video+transcript sync after a ⌥⌘P pause, click-to-seek in the Viewer, closing
+      a recorded window mid-session (audio must continue), file size at each quality, and a video import
+      playing back.
 - [x] **Unified session store + Library + full-text search** (Prompt 1) — all sessions save as folders;
       legacy flat `.md` migrate non-destructively (backup + idempotent); auto title/tags on-device with
       fallback; Library lists/sorts/filters with Open/Reveal/Delete-to-Trash + live refresh; keyword search
-      across transcript + OCR text with ranked, timestamped snippets. `--selftest-migrate`/`-index`/`-title`
+      across transcripts with ranked, timestamped snippets. `--selftest-migrate`/`-index`/`-title`
       pass headlessly; existing self-tests still pass; backward-compatible `readSession` verified on an
       old-schema `session.json`. **USER-VERIFIED via GUI:** first launch migrated the real 5 flat files →
       folders (byte-identical, one backup, idempotent on relaunch); Library lists/searches/tag-filters;
@@ -710,7 +753,7 @@ Screen Recording grant + on-screen content and must be verified by running the a
       speaker-model first download, live multilingual + Auto indicator, `*.en` guard UX, calendar
       prompt/auto-start/denial, cleaned-view toggle on a real filler-heavy recording, custom mode
       end-to-end, full regression sweep — list handed back at the end of the Stage-1 build).
-- [~] **Stage 2 — Generation Studio / Vertical Packs / Privacy & Compliance / Multimodal Slide Chat** —
+- [~] **Stage 2 — Generation Studio / Vertical Packs / Privacy & Compliance** —
       Feature A: unified `@Generable` Generation Studio (meeting/clinical/interview/sales/study/creator
       templates) decoding to typed values, cached in `meta.generatedArtifacts`, export incl. flashcard/
       quiz CSV; audio clip + audiogram export; the 3 summary styles + Stage-1 custom modes unified into
@@ -720,18 +763,13 @@ Screen Recording grant + on-screen content and must be verified by running the a
       Feature C: retention auto-delete-to-Trash + per-session Keep + manual purge; non-destructive
       on-device redaction (Viewer Verbatim/Cleaned/Redacted switch + redacted export); compliance panel;
       optional AES-GCM encryption-at-rest seam (OFF = byte-identical passthrough, ON = no plaintext at
-      rest + in-memory SearchIndex + optional Touch ID). Feature D: completed the macOS-27 slide-image
-      attach site behind `#if TRANSCRIBER_MACOS27` + `#available(macOS 27)` with the macOS-26 text+OCR
-      fallback; pure slide-selection logic shipped + tested. **Build green; ALL self-tests pass** — the 7
-      new ones (generate/audiogram/packs/redact/retention/encrypt/slidechat) AND the entire prior suite
-      unchanged (`--selftest-doc` md5 identical; default session.json omits the new keys; file + stream
-      transcription text identical). **Feature D's image call is NOT compiled** (this machine has only the
-      macOS 26 SDK — zero image symbols): A/B/C ship fully; D's image path compiles + runs once built with
-      `MACOS27=1 DEVELOPER_DIR=<Xcode 27 beta>` (the SDK's exact image value type inside `Prompt {}` must
-      be verified there — marked in `Intelligence.answerWithSlides`). **AWAITING human smoke-tests** (see
-      the Stage-2 checklist: run each Studio template + audiogram, enable Medical/second pack, redact a
-      PII session, retention sweep with a Keep, optional encryption round-trip + Touch ID, macOS-27
-      slide chat, full Stage-0/1 regression sweep).
+      rest + in-memory SearchIndex + optional Touch ID). Feature D (multimodal slide chat) was REMOVED
+      with the screenshot feature — chat is text-only. **Build green; ALL self-tests pass** — the 6
+      remaining new ones (generate/audiogram/packs/redact/retention/encrypt) AND the entire prior suite
+      unchanged (default session.json omits the new keys; file + stream transcription text identical).
+      **AWAITING human smoke-tests** (see the Stage-2 checklist: run each Studio template + audiogram,
+      enable Medical/second pack, redact a PII session, retention sweep with a Keep, optional encryption
+      round-trip + Touch ID, full Stage-0/1 regression sweep).
 - [~] **Pause / auto-pause / capture resilience** — ⌥⌘P pause+resume (session stays open, paused time
       excluded from audio AND every timestamp via `SessionClock`); auto-pause after 30 s of silence with
       automatic resume + 1 s pre-roll (pre-roll replayed only on an AUTO resume — never after a manual
@@ -749,14 +787,14 @@ Screen Recording grant + on-screen content and must be verified by running the a
       finding under Gotchas, the single most important thing in this feature.
       **AWAITING human smoke-tests:** auto-resume when sound returns after a real muted call/video;
       ⌥⌘P from another app; the same device switch on Mic and Mic+System (only System Audio has been
-      exercised); AirPods connect/disconnect mid-recording; a bookmark + a slide dropped after a long
-      pause landing at the right place in playback.
+      exercised); AirPods connect/disconnect mid-recording; a bookmark dropped after a long pause
+      landing at the right place in playback.
 
-## Stage 2 — Generation Studio / Vertical Packs / Privacy & Compliance / Multimodal Slide Chat
+## Stage 2 — Generation Studio / Vertical Packs / Privacy & Compliance
 **All additive, all OFF or neutral by default. With defaults untouched a session's `transcript.md` is
 byte-identical and `session.json` semantically identical to post-Stage-1 (new optional keys absent).
 No new SPM deps — everything is a system framework. Non-regression anchors unchanged: capture / streaming
-algorithm / finalPass / diarization / hotkeys / signing / visual stream topology.**
+algorithm / finalPass / diarization / hotkeys / signing.**
 - **A — Generation Studio**: `Generation.swift` + `GenerationTemplates.swift`. FoundationModels guided
   generation (`@Generable`, macOS 26 — verified at the SDK: `respond(to:generating:options:)` returns the
   decoded value; `@Guide(description:)` macro). Templates grouped (Summary/Meeting&work/Clinical/Interview/
@@ -784,21 +822,18 @@ algorithm / finalPass / diarization / hotkeys / signing / visual stream topology
   transcript.md / session.json / audio / images route through SessionIO (audio playback decrypts to a
   temp file). Newly-written media via AVFoundation isn't auto-encrypted on write — the enable migration
   (and a re-run) encrypts it; the PII-bearing TEXT is always encrypted on write when ON.
-- **D — Multimodal Slide Chat (macOS 27, gated)**: `SlideChat.swift` (pure selection) + the completed
-  attach site in `Intelligence.answerForSession`. Double-gated: `#if TRANSCRIBER_MACOS27` (compile only
-  with the macOS 27 SDK — `MACOS27=1` in `build_app.sh`) AND `#available(macOS 27)` (run only on the 27
-  runtime). On macOS 26 the block is absent and the text+OCR chat is byte-for-byte the current behavior.
-  The exact image value type inside `Prompt {}` MUST be verified at the macOS 27 SDK (marked TODO).
+- **D — Multimodal Slide Chat: REMOVED** along with the screenshot feature it depended on (see the Screen
+  recording section). Chat is text-only; the `TRANSCRIBER_MACOS27` flag in `build_app.sh` is now inert.
 - **Out of scope (explicit)**: server-side FoundationModels routing / Private Cloud Compute / BYOK cloud
   (leaves the device — kept out to preserve the on-device moat), payment / license-key / StoreKit commerce
   (only the entitlement seam exists), full video-clip compositing (audiograms only), cross-session
-  voiceprints (Stage 1), a tool-calling layer for slide chat (we pass images + existing OCR instead).
+  voiceprints (Stage 1), reasoning over the screen recording's pixels (chat uses the transcript).
 
 ## Stage 1 — Diarization / Multilingual / Calendar capture / Cleanup + custom modes
 **All additive, all OFF or neutral by default — with defaults untouched, a session's transcript.md is
 byte-identical and session.json semantically identical to pre-Stage-1 (new optional keys are simply
 absent).** Non-regression anchors: the capture layer / streaming algorithm / finalPass / hotkeys /
-signing / visual stream topology are untouched; diarization + cleanup run as post-saves off the save
+signing are untouched; diarization + cleanup run as post-saves off the save
 path (same `Task.detached` chain as titling, SERIALIZED: index → ensureTitle → DiarizationPass →
 CleanupPass, so session.json read-modify-writes can't race).
 - **A — Diarization**: Settings ▸ "Identify speakers (on-device)" (default off). Post-save,
@@ -881,7 +916,7 @@ CleanupPass, so session.json read-modify-writes can't race).
     scopes audio to processes with windows on `content.displays.first`, so background/CLI audio is
     silently lost. **Head-to-head on the same source at the same moment: SCK 100% zeros, process tap
     0.0707 RMS real audio.** If a report smells like "system audio recorded nothing", check whether the
-    SCK fallback was in use (visual capture on, toggle off, or tap creation failed — all NSLogged).
+    SCK fallback was in use (toggle off, or tap creation failed — both NSLogged).
   - **Multi-display is a second SCK trap**: the filter is built from `content.displays.first`, whose
     order is NOT guaranteed to be the main display. Plug in an external monitor and the SCK path can
     scope audio to the wrong screen — a strong candidate for "it used to work before I got a monitor".
@@ -910,7 +945,7 @@ CleanupPass, so session.json read-modify-writes can't race).
   status bar carries the reason. `[Pause] paused (auto — silence)` means it auto-paused, not stopped.
 - Transcript looks like it skipped time → an auto-pause dropped a silent stretch, by design. Session
   timestamps are RECORDED time, not wall-clock: a 40-minute call with 10 minutes of silence saves ~30
-  minutes of audio, and every `[mm:ss]`, bookmark, and slide lines up with that audio. Turn auto-pause
+  minutes of audio, and every `[mm:ss]`, bookmark, and video frame lines up with that audio. Turn auto-pause
   off in Settings if wall-clock alignment matters more than the dead air.
 - Auto-pause never fires on a live mic in a noisy room → correct: the threshold (RMS 0.004) is above a
   typical noise floor but a loud fan/AC can sit above it. Raise the silence threshold in
@@ -920,14 +955,18 @@ CleanupPass, so session.json read-modify-writes can't race).
   or a **signature change** (use the stable identity; `tccutil reset` if needed).
 - First run "hangs" → model is downloading (needs internet once, then offline).
 - Summary unavailable → Apple Intelligence off / device ineligible / model still downloading (macOS 26 only).
-- "On change" captures nothing → high motion (video) never settles → use "Every N s"; or the content is
-  near-uniform (dHash ≈ 0) → manual grab (⌥⌘S) or lower CHANGE_THRESHOLD.
-- No frames at all → wrong/closed visual target (falls back to main display, logged), or Screen Recording
-  not granted for the mic+visual video stream (same grant + relaunch flow as system audio).
-- Export disabled → only available after a VISUAL session (needs `session.json`); audio-only sessions
-  produce a flat `.md` with nothing to export.
-- Audio scoped unexpectedly with system-audio+visual → the shared stream's audio follows the visual target
-  (window/app filter = that app's audio; display filter = that display).
+- Screen recording produced no video → the recorded window/app was closed (the recorder falls back to the
+  main display when the target is already gone at start, and logs it), or Screen Recording isn't granted
+  (same grant + quit-and-relaunch flow as system audio). A recording with zero frames writes no file at
+  all rather than leaving a 0-byte stub.
+- Screen recording looks short / ends on a frozen frame → correct: ScreenCaptureKit only delivers frames
+  when pixels change, so a static screen writes nothing and the last frame is held to the end. The file's
+  DURATION is still the true session length (`finish(endingAt:)`).
+- "The video and the transcript are out of sync" → they're measured on the same pause-compressed clock,
+  so check whether the session was paused (that time is cut from both, by design). A mid-session video
+  restart is NOT possible — if the capture died, the video simply ends early and the transcript continues.
+- Screen recordings are big → ~1–3 GB/hour at 1080p·24. Settings ▸ Screen Recording ▸ Quality drops it to
+  720p·15 for long captures.
 - No speaker labels after a session → toggle off, OR the first-run speaker-model download failed
   (needs internet once — retries next session), OR the clip was <1 s / one speaker. Labels appear a
   little AFTER save (post-pass) — the Library/Viewer refresh via `.transcriberSessionSaved`.

@@ -44,6 +44,22 @@ protocol SampleReceiver: AnyObject, Sendable {
     func append(_ samples: [Float])
 }
 
+/// Forwards one sample stream to two destinations, in order. Used only when a screen recording is
+/// live: the samples go to the transcription sink AND into the video's audio track. With no screen
+/// recording there is no tee at all, so the capture path stays byte-identical.
+final class SampleTee: SampleReceiver, @unchecked Sendable {
+    private let primary: any SampleReceiver
+    private let secondary: any SampleReceiver
+    init(_ primary: any SampleReceiver, _ secondary: any SampleReceiver) {
+        self.primary = primary
+        self.secondary = secondary
+    }
+    func append(_ samples: [Float]) {
+        primary.append(samples)
+        secondary.append(samples)
+    }
+}
+
 // MARK: - Shared sample sink (thread-safe accumulating buffer)
 
 /// A thread-safe buffer of 16 kHz mono Float32 PCM samples shared by the active
@@ -187,7 +203,7 @@ extension CMSampleBuffer {
     }
 }
 
-// MARK: - CGImage helpers (visual capture)
+// MARK: - CGImage helpers (screen-recording preview)
 
 extension CGImage {
     /// Wrap a CoreVideo pixel buffer (BGRA from ScreenCaptureKit) as a CGImage.
@@ -195,29 +211,6 @@ extension CGImage {
         var image: CGImage?
         VTCreateCGImageFromCVPixelBuffer(pixelBuffer, options: nil, imageOut: &image)
         return image
-    }
-
-    /// PNG-encode this image.
-    func pngData() -> Data? {
-        let data = NSMutableData()
-        guard let dest = CGImageDestinationCreateWithData(data, UTType.png.identifier as CFString, 1, nil) else {
-            return nil
-        }
-        CGImageDestinationAddImage(dest, self, nil)
-        guard CGImageDestinationFinalize(dest) else { return nil }
-        return data as Data
-    }
-
-    /// A standalone bitmap copy that does NOT reference the source's backing store. Needed before
-    /// retaining a ScreenCaptureKit frame past the delegate callback — its IOSurface gets recycled.
-    func detachedCopy() -> CGImage? {
-        guard width > 0, height > 0,
-              let ctx = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8,
-                                  bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
-                                  bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue)
-        else { return nil }
-        ctx.draw(self, in: CGRect(x: 0, y: 0, width: width, height: height))
-        return ctx.makeImage()
     }
 
     /// A downscaled copy whose longest side is `maxDim` (for the live UI). Keeps memory bounded.

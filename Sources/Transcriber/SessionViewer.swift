@@ -1,23 +1,31 @@
 import SwiftUI
 import AppKit
 import AVFoundation
+import AVKit
 import UniformTypeIdentifiers
 
 // MARK: - Viewer model
 
-/// Drives one Session Viewer window: the loaded session, audio playback (AVAudioPlayer), the summary
-/// suite (styles / action items / chapters, cached in session.json), and the grounded chat panel.
+/// Drives one Session Viewer window: the loaded session, playback (the screen recording when there
+/// is one, else the audio), the summary suite (styles / action items / chapters, cached in
+/// session.json), and the grounded chat panel.
 @MainActor
 final class SessionViewerModel: ObservableObject {
     let dir: URL
     @Published var meta: SessionMeta
     @Published var segments: [TranscriptSegment]
-    @Published var frames: [FrameEvent]
 
-    // Playback
+    // Playback — ONE timeline with two possible engines. A session with a screen recording plays the
+    // video (which already carries the same audio); otherwise the saved audio file plays alone. Every
+    // seek entry point (transcript line, bookmark, chapter, chat citation) goes through `goTo`, so
+    // both engines behave identically to the rest of the Viewer.
     private var player: AVAudioPlayer?
+    private(set) var videoPlayer: AVPlayer?
     private var playTimer: Timer?
     @Published var hasAudio = false
+    @Published var hasVideo = false
+    /// The video pane can be collapsed — some sessions are read, not watched.
+    @Published var videoVisible = true
     @Published var isPlaying = false
     @Published var currentTime: TimeInterval = 0
     @Published var duration: TimeInterval = 0
@@ -45,7 +53,8 @@ final class SessionViewerModel: ObservableObject {
     var bookmarks: [Bookmark] { meta.bookmarks }
     var fmAvailable: Bool { Intelligence.isAvailable }
     var fmMessage: String? { Intelligence.availabilityMessage() }
-    var hasVisual: Bool { !frames.isEmpty }
+    /// True when there is something to play at all (video or audio) — drives the player bar.
+    var hasPlayback: Bool { hasVideo || hasAudio }
     var hasCleaned: Bool { segments.contains { $0.cleanedText != nil } }
     var hasSpeakers: Bool { segments.contains { $0.speaker != nil } }
     var customModes: [CustomSummaryMode] { AppModel.shared.customSummaryModes }
@@ -67,38 +76,61 @@ final class SessionViewerModel: ObservableObject {
         var segs = doc?.segments ?? []
         if segs.isEmpty { segs = SessionStore.timedSegments(dir: dir) }   // legacy → derive from [mm:ss]
         self.segments = segs
-        self.frames = doc?.frames ?? []
         self.summaryStyle = AppModel.shared.defaultSummaryStyle
         self.actionItems = doc?.meta.actionItems ?? []
         self.chapters = doc?.meta.chapters ?? []
         if let cached = self.meta.summaries[summaryStyle.rawValue] { self.summaryText = cached }
-        setupAudio()
+        setupVideo()
+        if !hasVideo { setupAudio() }   // the video already carries the session's audio
     }
 
     deinit {
-        playTimer?.invalidate(); player?.stop()
-        if let t = tempAudioURL { try? FileManager.default.removeItem(at: t) }
+        playTimer?.invalidate()
+        player?.stop()
+        videoPlayer?.pause()
+        for t in tempMediaURLs { try? FileManager.default.removeItem(at: t) }
     }
 
     // MARK: Playback
 
-    /// Temp decrypted-audio file backing playback when the session is encrypted (cleaned up on deinit).
-    private var tempAudioURL: URL?
+    /// Temp decrypted media backing playback when the session is encrypted (cleaned up on deinit).
+    private var tempMediaURLs: [URL] = []
+
+    /// An encrypted artifact can't be handed to AVFoundation, so decrypt it to a temp file and play
+    /// that. Plaintext (the default) returns the original URL — no copy, no behavior change.
+    private func playableURL(_ url: URL) -> URL? {
+        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+        guard let head = try? FileHandle(forReadingFrom: url).read(upToCount: 8),
+              SessionIO.isEncryptedBlob(head) else { return url }
+        guard let raw = try? Data(contentsOf: url) else { return nil }
+        let plain = SessionIO.decryptIfNeeded(raw)
+        let ext = url.pathExtension.isEmpty ? "bin" : url.pathExtension
+        let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("said-\(UUID().uuidString).\(ext)")
+        guard (try? plain.write(to: tmp)) != nil else { return nil }
+        tempMediaURLs.append(tmp)
+        return tmp
+    }
+
+    private func setupVideo() {
+        guard let name = meta.videoFile, let url = playableURL(dir.appendingPathComponent(name)) else { return }
+        let item = AVPlayerItem(url: url)
+        let p = AVPlayer(playerItem: item)
+        p.actionAtItemEnd = .pause
+        videoPlayer = p
+        hasVideo = true
+        duration = meta.durationSeconds ?? 0
+        // The asset's own duration is authoritative (and only known asynchronously).
+        Task { @MainActor [weak self] in
+            if let d = try? await item.asset.load(.duration) {
+                let seconds = CMTimeGetSeconds(d)
+                if seconds.isFinite, seconds > 0 { self?.duration = seconds }
+            }
+        }
+    }
 
     private func setupAudio() {
-        guard let name = meta.audioFile else { return }
-        let url = dir.appendingPathComponent(name)
-        guard FileManager.default.fileExists(atPath: url.path) else { return }
-        // Encryption (Feature C4): AVAudioPlayer can't read an encrypted blob, so decrypt to a temp
-        // file and play that. Plaintext (default) plays the original URL directly — no behavior change.
-        var playURL = url
-        if let raw = try? Data(contentsOf: url), SessionIO.isEncryptedBlob(raw) {
-            let plain = SessionIO.decryptIfNeeded(raw)
-            let tmp = FileManager.default.temporaryDirectory
-                .appendingPathComponent("tr-\(UUID().uuidString).\(url.pathExtension.isEmpty ? "m4a" : url.pathExtension)")
-            if (try? plain.write(to: tmp)) != nil { playURL = tmp; tempAudioURL = tmp }
-        }
-        guard let p = try? AVAudioPlayer(contentsOf: playURL) else { return }
+        guard let name = meta.audioFile, let url = playableURL(dir.appendingPathComponent(name)) else { return }
+        guard let p = try? AVAudioPlayer(contentsOf: url) else { return }
         p.prepareToPlay()
         player = p
         hasAudio = true
@@ -106,17 +138,27 @@ final class SessionViewerModel: ObservableObject {
     }
 
     func togglePlay() {
+        if let videoPlayer {
+            if isPlaying { videoPlayer.pause(); isPlaying = false; stopTick() }
+            else { videoPlayer.play(); isPlaying = true; startTick() }
+            return
+        }
         guard let player else { return }
         if player.isPlaying { player.pause(); isPlaying = false; stopTick() }
         else { player.play(); isPlaying = true; startTick() }
     }
 
-    /// Jump to a moment: seek audio (if any), highlight, and scroll the transcript there.
+    /// Jump to a moment: seek whatever is playing, highlight, and scroll the transcript there.
     func goTo(_ t: TimeInterval) {
         let upper = duration > 0 ? duration : max(0, t)
         let clamped = min(max(0, t), upper)
         currentTime = clamped
-        if let player { player.currentTime = clamped }
+        if let videoPlayer {
+            videoPlayer.seek(to: CMTime(seconds: clamped, preferredTimescale: 600),
+                             toleranceBefore: .zero, toleranceAfter: .zero)
+        } else if let player {
+            player.currentTime = clamped
+        }
         scrollTarget = activeSegmentID(at: clamped)
     }
 
@@ -124,7 +166,13 @@ final class SessionViewerModel: ObservableObject {
         stopTick()
         playTimer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated {
-                guard let self, let player = self.player else { return }
+                guard let self else { return }
+                if let video = self.videoPlayer {
+                    if !self.isScrubbing { self.currentTime = CMTimeGetSeconds(video.currentTime()) }
+                    if video.timeControlStatus == .paused { self.isPlaying = false; self.stopTick() }
+                    return
+                }
+                guard let player = self.player else { return }
                 if !self.isScrubbing { self.currentTime = player.currentTime }   // don't fight a drag
                 if !player.isPlaying { self.isPlaying = false; self.stopTick() }
             }
@@ -236,7 +284,7 @@ final class SessionViewerModel: ObservableObject {
         } else {
             // No readable session.json (corrupt/missing): write a fresh one but do NOT persist DERIVED
             // segments as authoritative (1 s-granularity from [mm:ss]) — keep on-the-fly derivation.
-            DocumentBuilder.writeSessionJSON(SessionDoc(meta: meta, segments: [], frames: frames), to: dir)
+            DocumentBuilder.writeSessionJSON(SessionDoc(meta: meta, segments: []), to: dir)
         }
         SessionStore.postSessionSaved(dir)
     }
@@ -290,7 +338,7 @@ final class SessionViewerModel: ObservableObject {
     var selectedStudioTemplate: GenerationTemplate? { studioTemplates.first { $0.id == studioTemplateID } }
 
     /// The timestamped transcript fed to generators: cleaned form when the Viewer is showing Cleaned
-    /// (documented choice), else the verbatim timestamped transcript (slide OCR text already embedded).
+    /// (documented choice), else the verbatim timestamped transcript.
     private func studioSourceText() -> String {
         if showCleaned, hasCleaned {
             return segments.map { "[\(DocumentBuilder.timestamp($0.start))] " + ($0.cleanedText ?? $0.text) }
@@ -480,7 +528,7 @@ struct SessionViewer: View {
                 Divider().overlay(Theme.hairline)
                 sidePanel.frame(width: 380)
             }
-            if lib.hasAudio {
+            if lib.hasPlayback {
                 Divider().overlay(Theme.hairline)
                 playerBar.frame(height: 52).background(Theme.titlebar)
             }
@@ -512,7 +560,10 @@ struct SessionViewer: View {
                 HStack(spacing: 7) {
                     Text(Self.dateFmt.string(from: lib.meta.date)).font(Theme.mono(11)).foregroundStyle(Theme.text3)
                     Dot(); Text(lib.meta.sourceLabel).font(Theme.ui(11.5)).foregroundStyle(Theme.text3)
-                    if lib.hasVisual { Dot(); Label("\(lib.frames.count)", systemImage: "photo").font(Theme.ui(11)).foregroundStyle(Theme.accentText) }
+                    if lib.hasVideo {
+                        Dot()
+                        Label(videoLabel, systemImage: "play.rectangle").font(Theme.ui(11)).foregroundStyle(Theme.accentText)
+                    }
                     if lib.hasAudio { Dot(); Label("audio", systemImage: "speaker.wave.2").font(Theme.ui(11)).foregroundStyle(Theme.accentText) }
                     if let n = lib.meta.speakerCount, n > 1 { Dot(); Label("\(n) speakers", systemImage: "person.2").font(Theme.ui(11)).foregroundStyle(Theme.accentText) }
                     if let lang = lib.meta.language { Dot(); Text(AppModel.languageName(lang)).font(Theme.ui(11)).foregroundStyle(Theme.text3) }
@@ -528,12 +579,24 @@ struct SessionViewer: View {
                 }
             }
             Spacer()
+            if lib.hasVideo {
+                ToolbarIcon(system: lib.videoVisible ? "rectangle.topthird.inset.filled" : "rectangle") {
+                    withAnimation(.easeInOut(duration: 0.18)) { lib.videoVisible.toggle() }
+                }
+                .help(lib.videoVisible ? "Hide the video" : "Show the video")
+            }
             OnDeviceBadge()
             exportMenu
             ToolbarIcon(system: "folder") { lib.revealInFinder() }.help("Reveal in Finder")
         }
         .padding(.horizontal, 16).padding(.vertical, 11)
         .background(Theme.titlebar)
+    }
+
+    /// "1080p" when we know the encoded size, else a plain label.
+    private var videoLabel: String {
+        if let h = lib.meta.videoHeight, h > 0 { return "\(h)p" }
+        return "video"
     }
 
     private var exportMenu: some View {
@@ -609,8 +672,21 @@ struct SessionViewer: View {
         .padding(.horizontal, 20).padding(.vertical, 7)
     }
 
+    /// The screen recording, above the transcript it belongs to. Deliberately NOT a separate window:
+    /// the point of recording the screen here is that the video and the words are one document —
+    /// clicking a line moves the video, and the video moving highlights the line.
+    @ViewBuilder private var videoPane: some View {
+        if lib.hasVideo, lib.videoVisible, let player = lib.videoPlayer {
+            VideoPlayer(player: player)
+                .frame(height: 300)
+                .background(Color.black)
+                .overlay(alignment: .bottom) { Divider().overlay(Theme.hairline) }
+        }
+    }
+
     private var transcriptColumn: some View {
         VStack(spacing: 0) {
+            videoPane
             transcriptToolbar
             if lib.hasCleaned || lib.hasRedacted { Divider().overlay(Theme.hairline) }
             ScrollViewReader { proxy in
@@ -955,11 +1031,9 @@ private struct ChatPanel: View {
                                  ? "Ask anything about this session. Answers cite the [mm:ss] you can click."
                                  : (lib.fmMessage ?? "Apple Intelligence is unavailable."))
                                 .font(Theme.ui(12.5)).foregroundStyle(Theme.text3).padding(.top, 6)
-                            // Feature D — surface the multimodal capability only when slides exist AND the
-                            // runtime can attach images (macOS 27). On macOS 26 this is hidden (text+OCR).
-                            if lib.hasVisual && SlideChat.imageInputAvailable {
-                                Label("Slide images are included — ask about diagrams or charts directly.",
-                                      systemImage: "photo.on.rectangle.angled")
+                            if lib.hasVideo {
+                                Label("Citations jump the video, not just the transcript.",
+                                      systemImage: "play.rectangle")
                                     .font(Theme.ui(11)).foregroundStyle(Theme.accentText)
                             }
                         }
@@ -1097,8 +1171,8 @@ struct SessionSidebar: View {
             row("Chapters", "square.stack.3d.up", count: viewer.chapters.count, selected: false) {
                 if let first = viewer.chapters.first { viewer.goTo(first.start) }
             }
-            row("Slides", "rectangle.on.rectangle.angled", count: viewer.frames.count, selected: false) {
-                if let first = viewer.frames.first { viewer.goTo(first.sessionTime) }
+            row("Screen video", "play.rectangle", count: viewer.hasVideo ? nil : 0, selected: false) {
+                viewer.videoVisible = true
             }
             row("Speakers", "person.2", count: viewer.meta.speakerCount ?? 0, selected: false) {}
 

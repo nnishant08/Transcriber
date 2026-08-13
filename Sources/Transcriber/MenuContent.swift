@@ -27,6 +27,8 @@ struct MenuContent: View {
 
             if model.isRecording {
                 pauseRow.padding(.horizontal, 6).padding(.bottom, 6)
+            } else {
+                screenRow.padding(.horizontal, 6).padding(.bottom, 6)
             }
 
             divider
@@ -48,7 +50,7 @@ struct MenuContent: View {
                     .foregroundStyle(Theme.text3).frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 12).padding(.bottom, 2)
                 ForEach(model.recentSessions.prefix(5)) { s in
-                    PopoverRow(system: s.hasImages ? "rectangle.on.rectangle.angled" : "waveform",
+                    PopoverRow(system: s.hasVideo ? "play.rectangle" : "waveform",
                                title: s.displayTitle) { WindowManager.shared.showViewer(dir: s.dir) }
                 }
             }
@@ -91,6 +93,26 @@ struct MenuContent: View {
         }
         .buttonStyle(.plain)
         .disabled(model.status.isBusyPreparing)
+    }
+
+    /// Screen + audio in one go. Only offered when idle: mid-session the screen is either already
+    /// being recorded or deliberately isn't, and neither can start halfway through a timeline.
+    private var screenRow: some View {
+        Button { model.toggleScreenRecording() } label: {
+            HStack(spacing: 9) {
+                Image(systemName: "record.circle").font(.system(size: 12))
+                Text("Record screen + audio").font(Theme.ui(13, weight: .medium))
+                KbdView("⌥⌘S")
+            }
+            .foregroundStyle(Theme.accentText)
+            .frame(maxWidth: .infinity)
+            .padding(9)
+            .background(RoundedRectangle(cornerRadius: 9).fill(Theme.accentSoft))
+            .overlay(RoundedRectangle(cornerRadius: 9).strokeBorder(Theme.accent.opacity(0.35)))
+        }
+        .buttonStyle(.plain)
+        .disabled(model.status.isBusyPreparing)
+        .help("Records \(model.screenTargetLabel) with \(model.screenAudioSource.label) audio, and transcribes it")
     }
 
     /// Pause/Resume — only meaningful during a session, so it only exists then.

@@ -9,17 +9,15 @@ enum ExportError: LocalizedError {
     }
 }
 
-/// Produces a portable single-file document (HTML with base64-embedded images, or PDF) from a
-/// finished session folder. Fully local; nothing is sent anywhere. The folder + `transcript.md`
-/// stays the lightweight canonical form — these exports are the larger, shareable form.
+/// Produces a portable single-file document (HTML or PDF) from a finished session folder. Fully
+/// local; nothing is sent anywhere. The folder + `transcript.md` stays the lightweight canonical
+/// form — these exports are the shareable form.
 enum Exporter {
 
-    /// Self-contained HTML string for a session folder, images embedded as base64 data URIs.
+    /// Self-contained HTML string for a session folder.
     static func htmlString(for sessionDir: URL) -> String? {
         guard let doc = DocumentBuilder.readSession(sessionDir) else { return nil }
-        return DocumentBuilder.html(meta: doc.meta, segments: doc.segments, frames: doc.frames) { rel in
-            try? SessionIO.readData(sessionDir.appendingPathComponent(rel))   // decrypts when encrypted
-        }
+        return DocumentBuilder.html(meta: doc.meta, segments: doc.segments)
     }
 
     @discardableResult

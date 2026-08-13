@@ -6,14 +6,6 @@ import QuartzCore
 
 // MARK: - Domain types
 
-/// A captured frame's downsized thumbnail for the live UI strip.
-struct FrameThumbnail: Identifiable {
-    let id = UUID()
-    let image: NSImage
-    let url: URL
-    let time: TimeInterval
-}
-
 enum AudioSource: String, CaseIterable, Identifiable {
     case microphone
     case systemAudio
@@ -317,28 +309,34 @@ final class AppModel: ObservableObject {
     /// Transient: session-time of the most recent live bookmark (drives a small HUD confirmation).
     @Published var lastBookmarkAt: TimeInterval? = nil
 
-    // MARK: Visual capture (per-session, persisted defaults)
-    @Published var visualCaptureEnabled: Bool {
-        didSet { UserDefaults.standard.set(visualCaptureEnabled, forKey: "visualCaptureEnabled") }
+    // MARK: Screen recording (per-session, persisted defaults)
+
+    /// Whether the NEXT session also records the screen. Set by the Record Screen button / ⌥⌘S, or
+    /// left on in Settings for someone who always records both.
+    @Published var screenRecordingEnabled: Bool {
+        didSet { UserDefaults.standard.set(screenRecordingEnabled, forKey: "screenRecordingEnabled") }
     }
-    @Published var captureMode: CaptureMode {
-        didSet { UserDefaults.standard.set(captureMode.rawValue, forKey: "captureMode") }
+    /// What gets recorded: a display, a window, or one app's windows.
+    @Published var screenTarget: ScreenTarget {
+        didSet { UserDefaults.standard.set(screenTarget.persisted, forKey: "screenTarget") }
     }
-    @Published var intervalSeconds: Double {
-        didSet { UserDefaults.standard.set(intervalSeconds, forKey: "intervalSeconds") }
+    @Published var screenQuality: ScreenQuality {
+        didSet { UserDefaults.standard.set(screenQuality.rawValue, forKey: "screenQuality") }
     }
-    @Published var captureTarget: CaptureTarget {
-        didSet { UserDefaults.standard.set(captureTarget.persisted, forKey: "captureTarget") }
+    /// Audio used when a recording is STARTED from the Record Screen button — a screen recording
+    /// with no system audio would miss the sound of whatever is on screen, so this defaults to
+    /// Mic + System rather than inheriting a mic-only pick.
+    @Published var screenAudioSource: AudioSource {
+        didSet { UserDefaults.standard.set(screenAudioSource.rawValue, forKey: "screenAudioSource") }
     }
-    @Published var ocrEnabled: Bool {
-        didSet { UserDefaults.standard.set(ocrEnabled, forKey: "ocrEnabled") }
-    }
-    @Published var availableTargets: [CaptureTargetOption] = []
-    @Published var thumbnails: [FrameThumbnail] = []
+    @Published var availableTargets: [ScreenTargetOption] = []
+    /// A ~1 Hz downscaled frame of what is being recorded (recording state only).
+    @Published var screenPreview: NSImage?
+    /// True while the live session is also recording the screen.
+    @Published private(set) var isRecordingScreen = false
     @Published var lastSessionDir: URL?
-    /// Whether the last finished session captured slides — gates Export (audio-only folders have
-    /// nothing to export), preserving the pre-unified-store behavior that export = visual session only.
-    @Published var lastSessionHasVisual = false
+    /// Whether the last finished session has a video (drives the "open it" affordances).
+    @Published var lastSessionHasVideo = false
     @Published var isExporting = false
 
     private let engine = TranscriptionEngine()
@@ -374,9 +372,16 @@ final class AppModel: ObservableObject {
     /// Error to show once the stop flow finishes (it owns `status` while finalizing).
     private var pendingStopMessage: String?
 
-    // Visual-capture session state
-    private var visual: VisualCapture?
-    @Published private(set) var capturedFrames: [FrameEvent] = []
+    // Screen-recording session state
+    private var screenRecorder: ScreenRecorder?
+    /// The finished video for the session being saved (nil when the screen wasn't recorded).
+    private var screenResult: ScreenRecordingResult?
+    /// Finalization of a video whose capture died mid-session — awaited before the session is saved,
+    /// so the file is always linked in `session.json` rather than orphaned in the folder.
+    private var screenFinishTask: Task<Void, Never>?
+    /// One-shot "record the screen this session" (⌥⌘S / the Record Screen button), independent of the
+    /// persisted Settings default.
+    private var screenOverride: Bool?
     private var sessionDir: URL?
     private var sessionT0: TimeInterval = 0
     private var sessionStartDate = Date()
@@ -394,7 +399,7 @@ final class AppModel: ObservableObject {
     private var pendingTitleSeed: String?          // meeting title seeded into the session (Feature C)
     private var calendarMonitor: CalendarMonitor?  // non-nil ONLY while calendarCaptureEnabled
 
-    var canExport: Bool { lastSessionDir != nil && lastSessionHasVisual }
+    var canExport: Bool { lastSessionDir != nil }
 
     /// The language SETTING in effect: `*.en` models always pin "en" (English-only decoder — the
     /// Settings UI also guards this); multilingual models honor `transcriptionLanguage` ("auto" or code).
@@ -416,11 +421,10 @@ final class AppModel: ObservableObject {
         let d = UserDefaults.standard
         source = AudioSource(rawValue: d.string(forKey: "source") ?? "") ?? .microphone
         model = WhisperModel(rawValue: d.string(forKey: "model") ?? "") ?? .baseEn
-        visualCaptureEnabled = d.bool(forKey: "visualCaptureEnabled")
-        captureMode = CaptureMode(rawValue: d.string(forKey: "captureMode") ?? "") ?? .onChange
-        intervalSeconds = (d.object(forKey: "intervalSeconds") as? Double) ?? VisualConstants.intervalDefault
-        captureTarget = CaptureTarget(persisted: d.string(forKey: "captureTarget") ?? "main")
-        ocrEnabled = (d.object(forKey: "ocrEnabled") as? Bool) ?? true
+        screenRecordingEnabled = d.bool(forKey: "screenRecordingEnabled")
+        screenTarget = ScreenTarget(persisted: d.string(forKey: "screenTarget") ?? "main")
+        screenQuality = ScreenQuality(rawValue: d.string(forKey: "screenQuality") ?? "") ?? .balanced
+        screenAudioSource = AudioSource(rawValue: d.string(forKey: "screenAudioSource") ?? "") ?? .micPlusSystem
         saveAudioEnabled = (d.object(forKey: "saveAudioEnabled") as? Bool) ?? true
         useProcessTap = (d.object(forKey: "useProcessTap") as? Bool) ?? true
         customVocabulary = (d.object(forKey: "customVocabulary") as? [String]) ?? []
@@ -457,8 +461,8 @@ final class AppModel: ObservableObject {
         KeyboardShortcuts.onKeyDown(for: .togglePause) { [weak self] in
             Task { @MainActor in self?.fireOnce("pause") { self?.togglePause() } }
         }
-        KeyboardShortcuts.onKeyDown(for: .grabFrame) { [weak self] in
-            Task { @MainActor in self?.fireOnce("grab") { self?.grabFrame() } }
+        KeyboardShortcuts.onKeyDown(for: .toggleScreenRecording) { [weak self] in
+            Task { @MainActor in self?.fireOnce("screen") { self?.toggleScreenRecording() } }
         }
         KeyboardShortcuts.onKeyDown(for: .addBookmark) { [weak self] in
             Task { @MainActor in self?.fireOnce("bookmark") { self?.addBookmark() } }
@@ -619,10 +623,10 @@ final class AppModel: ObservableObject {
             hypothesisText = ""
             showingSummary = false
             summary = ""
-            capturedFrames = []
-            thumbnails = []
+            screenPreview = nil
+            screenResult = nil
             lastSessionDir = nil
-            lastSessionHasVisual = false
+            lastSessionHasVideo = false
             sessionBookmarks = []
             lastBookmarkAt = nil
             system.onStreamStopped = nil   // clear any stale closure from a prior system/both session
@@ -652,42 +656,54 @@ final class AppModel: ObservableObject {
             // so bookmarks / slides / the timer must all be measured with them removed.
             clock = SessionClock(t0: sessionT0)
 
-            // Unified store: EVERY session is a folder (transcript.md + session.json). Visual sessions
-            // also get an images/ subdir; audio-only sessions get just the folder.
-            let dir = DocumentBuilder.makeSessionFolder(date: sessionStartDate, withImages: visualCaptureEnabled)
+            // Unified store: EVERY session is a folder (transcript.md + session.json), plus the
+            // media it produced (audio.m4a, and screen.mp4 when the screen was recorded).
+            let dir = DocumentBuilder.makeSessionFolder(date: sessionStartDate)
             sessionDir = dir
 
-            var visualObj: VisualCapture?
-            if visualCaptureEnabled {
-                let v = VisualCapture(target: captureTarget, mode: captureMode,
-                                      interval: intervalSeconds, sessionDir: dir)
-                v.onFrame = { [weak self] event, thumb in
-                    let image = NSImage(cgImage: thumb, size: NSSize(width: thumb.width, height: thumb.height))
-                    Task { @MainActor in self?.appendFrame(event, thumbnail: image, dir: dir) }
+            // Screen recording is started BEFORE audio capture so a missing Screen Recording grant
+            // fails the whole start cleanly, instead of leaving a running audio session with a
+            // silently-dead video. Its audio is the session's own stream (the tee below).
+            let wantScreen = screenOverride ?? screenRecordingEnabled
+            screenOverride = nil
+            screenFinishTask = nil
+
+            var recorder: ScreenRecorder?
+            if wantScreen {
+                let r = ScreenRecorder(target: screenTarget, quality: screenQuality,
+                                       outputURL: dir.appendingPathComponent("screen.mp4"))
+                r.onPreview = { [weak self] image in
+                    Task { @MainActor in self?.screenPreview = image }
                 }
-                v.onStopped = { [weak self] msg in
-                    Task { @MainActor in self?.handleVisualStopped(msg) }
+                r.onStopped = { [weak self] msg in
+                    Task { @MainActor in self?.handleScreenStopped(msg) }
                 }
-                v.begin(t0: sessionT0)
-                self.visual = v
-                visualObj = v
+                try await r.start(t0: sessionT0)
+                screenRecorder = r
+                recorder = r
+                isRecordingScreen = true
             } else {
-                self.visual = nil
+                screenRecorder = nil
+                isRecordingScreen = false
             }
+
+            // Where the transcription-ready samples land. With a screen recording live, a tee also
+            // feeds them into the video's audio track — one capture, one stream, two consumers.
+            let audioOut: any SampleReceiver = recorder.map { SampleTee(engine.sink, $0) } ?? engine.sink
 
             // Single-source → push straight to the shared sink (byte-identical to before). Mic+System →
             // an AudioMixer sums both streams into the same sink, feeding the unchanged streamer/finalPass.
             let micReceiver: any SampleReceiver
             let systemReceiver: any SampleReceiver
             if sessionSource == .micPlusSystem {
-                let m = AudioMixer(out: engine.sink)
+                let m = AudioMixer(out: audioOut)
                 mixer = m
                 micReceiver = m.micPort
                 systemReceiver = m.systemPort
             } else {
                 mixer = nil
-                micReceiver = engine.sink
-                systemReceiver = engine.sink
+                micReceiver = audioOut
+                systemReceiver = audioOut
             }
 
             // Every capture pushes through a gate: the pause valve, and the probe the auto-pause +
@@ -702,13 +718,10 @@ final class AppModel: ObservableObject {
             switch sessionSource {
             case .microphone:
                 try await startMic(into: micPort)
-                if let v = visualObj { try await v.startOwnVideoStream() }
             case .systemAudio:
-                try await startSystem(into: systemPort, visual: visualObj)
+                try await startSystem(into: systemPort)
             case .micPlusSystem:
-                // Visual (if on) rides the SYSTEM stream — same topology as system-audio + visual;
-                // the mic is a separate audio-only capture.
-                try await startSystem(into: systemPort, visual: visualObj)
+                try await startSystem(into: systemPort)
                 try await startMic(into: micPort)
             }
 
@@ -752,12 +765,12 @@ final class AppModel: ObservableObject {
     /// Start system audio into `gate`: the process tap when it is available, else the ScreenCaptureKit
     /// path verbatim. Both backends report an unexpected stop the same way, and both are recovered
     /// (not finalized) by `recoverSystemCapture`.
-    private func startSystem(into gate: CaptureGate, visual: VisualCapture?) async throws {
-        if !startProcessTap(into: gate, visual: visual) {
+    private func startSystem(into gate: CaptureGate) async throws {
+        if !startProcessTap(into: gate) {
             system.onStreamStopped = { [weak self] in
                 Task { @MainActor in self?.handleSystemStreamStopped() }
             }
-            try await system.start(sink: gate, visual: visual)
+            try await system.start(sink: gate)
         }
         systemStall.start(now: CACurrentMediaTime())
     }
@@ -766,10 +779,11 @@ final class AppModel: ObservableObject {
     /// every process regardless of window, display, output device, volume, or mute.
     ///
     /// Returns false (caller falls back to the verified ScreenCaptureKit path) when the toggle is
-    /// off, the OS predates the tap API, visual capture is on (frames ride the SCK stream, so that
-    /// topology must stay intact), or the tap itself can't be created.
-    private func startProcessTap(into receiver: any SampleReceiver, visual: VisualCapture?) -> Bool {
-        guard useProcessTap, visual == nil else { return false }
+    /// off, the OS predates the tap API, or the tap itself can't be created. Screen recording no
+    /// longer forces the fallback: the recorder owns its own video-only stream, so the tap — which
+    /// hears every process regardless of window, display, volume or mute — stays the audio backend.
+    private func startProcessTap(into receiver: any SampleReceiver) -> Bool {
+        guard useProcessTap else { return false }
         guard #available(macOS 14.2, *) else { return false }
         let tap = AudioCaptureProcessTap()
         tap.onStreamStopped = { [weak self] in
@@ -866,25 +880,23 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// Finalize any session (audio-only or visual) into its folder: transcript.md + session.json
-    /// (+ images/ for visual). Same two-pass shape as before — immediate live save, then the
-    /// full-quality re-transcription (+ OCR for visual). Audio-only sessions simply have no frames.
+    /// Finalize a session into its folder: transcript.md + session.json (+ audio.m4a, + screen.mp4
+    /// when the screen was recorded). Same two-pass shape as before — immediate live save, then the
+    /// full-quality re-transcription.
     private func finalizeDocumentSession(dir: URL, liveSegments: [TranscriptSegment]) async {
-        let frames = capturedFrames
         let meta = sessionMeta()
-        let isVisual = visualCaptureEnabled
 
         // 1) Immediate live save (interleaved, no OCR yet). Do NOT blank the on-screen transcript to
         //    confirmed-only here: `liveSegments` is the streamer's CONFIRMED segments (all-but-last-2),
         //    which can be empty on a short session even though live text was shown — blanking it would
         //    drop the window to the empty "Start recording" screen. Keep the live text until the final pass.
-        DocumentBuilder.writeSession(SessionDoc(meta: meta, segments: liveSegments, frames: frames), to: dir)
+        DocumentBuilder.writeSession(SessionDoc(meta: meta, segments: liveSegments), to: dir)
         lastSessionDir = dir
-        lastSessionHasVisual = isVisual
+        lastSessionHasVideo = screenResult != nil
         lastSavedURL = dir.appendingPathComponent("transcript.md")
         notifySessionSaved(dir)
 
-        // 2) Full-quality transcript segments (+ custom-vocab bias) + OCR over the saved frames, re-merge.
+        // 2) Full-quality transcript segments (+ custom-vocab bias), re-saved over the live pass.
         do {
             // Resolve the session language. nil only happens for an "auto" session stopped before the
             // lead-in detection ran — detect on whatever audio we have, falling back to English.
@@ -893,11 +905,6 @@ final class AppModel: ObservableObject {
                 sessionLanguage = (try? await engine.detectLanguage(samples: Array(lead.prefix(30 * 16_000))))?.language ?? "en"
             }
             let finalSegs = try await engine.finalPassSegments(language: sessionLanguage, promptTokens: sessionPromptTokens)
-            // OCR off the main thread (heavy); does not re-capture frames.
-            let ocrFrames: [FrameEvent] = (ocrEnabled && !frames.isEmpty)
-                ? await Task.detached { SlideOCR.annotate(frames, sessionDir: dir) }.value
-                : frames
-            capturedFrames = ocrFrames
             let segs = finalSegs.isEmpty ? liveSegments : finalSegs
             if !segs.isEmpty {
                 transcript = segs.map { $0.text }.joined(separator: " ")
@@ -914,9 +921,9 @@ final class AppModel: ObservableObject {
                 audioName = (try? AudioFileIO.writeCompactAudio(buffer, to: dir.appendingPathComponent("audio.m4a")))?.lastPathComponent
             }
 
-            // Final save with enriched meta (saved audio + live ⌥⌘B bookmarks).
+            // Final save with enriched meta (saved audio + screen video + live ⌥⌘B bookmarks).
             let finalMeta = sessionMeta(audioFile: audioName, durationSeconds: duration, bookmarks: sessionBookmarks)
-            DocumentBuilder.writeSession(SessionDoc(meta: finalMeta, segments: segs, frames: ocrFrames), to: dir)
+            DocumentBuilder.writeSession(SessionDoc(meta: finalMeta, segments: segs), to: dir)
 
             // D3: notify when a long pass completes (silent no-op if Notifications aren't granted).
             if let duration, duration > 30 {
@@ -968,8 +975,19 @@ final class AppModel: ObservableObject {
         mixer = nil
         micGate = nil
         systemGate = nil
-        await visual?.stop()
-        visual = nil
+        // Finalize the video LAST: the mixer flush above is the final audio of the session, and it
+        // belongs in the video's audio track too.
+        if let recorder = screenRecorder {
+            screenRecorder = nil
+            recorder.onPreview = nil
+            recorder.onStopped = nil
+            screenResult = await recorder.finish()
+        }
+        // A capture that died mid-session finalizes on its own task; wait for it before saving.
+        await screenFinishTask?.value
+        screenFinishTask = nil
+        isRecordingScreen = false
+        screenPreview = nil
     }
 
     // MARK: Live bookmarks (⌥⌘B)
@@ -999,7 +1017,6 @@ final class AppModel: ObservableObject {
                                      language: langSetting == "auto" ? nil : langSetting,
                                      autoDetectLanguage: langSetting == "auto",
                                      vocabulary: effectiveVocabulary,
-                                     visualIntervalSeconds: intervalSeconds, ocrEnabled: ocrEnabled,
                                      diarize: diarizationEnabled, cleanup: cleanupEnabled)
         Task {
             var failure: String?
@@ -1230,38 +1247,73 @@ final class AppModel: ObservableObject {
         hypothesisText = ""
         summary = ""
         showingSummary = false
-        capturedFrames = []
-        thumbnails = []
+        screenPreview = nil
+        screenResult = nil
         lastSessionDir = nil
-        lastSessionHasVisual = false
+        lastSessionHasVideo = false
         lastSavedURL = nil
     }
 
-    // MARK: Visual capture helpers
+    // MARK: Screen recording
 
-    func grabFrame() { visual?.manualGrab() }
+    /// Start a screen recording (screen + audio in one session), or stop the one in progress.
+    ///
+    /// This is the whole feature in one entry point: ⌥⌘S, the Record Screen button and the menu row
+    /// all call it. Both settings it touches are ONE-SHOT — the screen flag and the screen-audio
+    /// source apply to this session only, so pressing ⌥⌘S once never silently turns "record my screen"
+    /// on forever, and never changes the user's persisted source.
+    ///
+    /// While a session is already running it only stops a SCREEN recording. Stopping someone's live
+    /// audio session because they pressed the screen key would destroy the thing they can't redo, and
+    /// a video can't be added halfway through a timeline it wasn't recording.
+    func toggleScreenRecording() {
+        if isRecording {
+            if isRecordingScreen { stopRecording() }
+            else { noteCaptureEvent("Already recording — stop this session first to record the screen") }
+            return
+        }
+        screenOverride = true
+        sourceOverride = screenAudioSource
+        startRecording()
+    }
 
-    /// Refresh the live list of capture targets (call when the Settings picker opens).
+    /// Refresh the live list of screen-recording targets (call when the Settings picker opens).
     func refreshTargets() {
         Task {
-            let options = await VisualCapture.availableTargets()
+            let options = await ScreenRecorder.availableTargets()
             await MainActor.run { self.availableTargets = options }
         }
     }
 
-    private func appendFrame(_ event: FrameEvent, thumbnail: NSImage, dir: URL) {
-        capturedFrames.append(event)
-        thumbnails.append(FrameThumbnail(image: thumbnail,
-                                         url: dir.appendingPathComponent(event.imagePath),
-                                         time: event.sessionTime))
+    /// The recorded label for the current target ("Main Display", a window title, …).
+    var screenTargetLabel: String {
+        availableTargets.first { $0.target == screenTarget }?.label ?? {
+            switch screenTarget {
+            case .mainDisplay: return "Main Display"
+            case .display(let id): return "Display \(id)"
+            case .window: return "Window"
+            case .app(let bundle): return bundle
+            }
+        }()
     }
 
-    /// Mic-case video stream died (e.g. captured window closed): keep audio recording, drop visual.
-    private func handleVisualStopped(_ message: String) {
-        NSLog("[Visual] stopped mid-session — keeping audio: \(message)")
-        // Drain/stop the visual pipeline BEFORE releasing it, so a late interval-timer firing
-        // can't append a frame that finalize would miss.
-        Task { await visual?.stop(); visual = nil }
+    /// The capture stopped on its own (recorded window closed, display unplugged). Audio — and the
+    /// transcript, which is the thing you can't re-create — keeps going; only the video ends, and
+    /// whatever was recorded up to that point is still finalized and saved.
+    private func handleScreenStopped(_ message: String) {
+        guard isRecordingScreen else { return }
+        NSLog("[ScreenRec] stopped mid-session — audio continues: \(message)")
+        noteCaptureEvent("Screen recording ended — audio continues")
+        isRecordingScreen = false
+        screenPreview = nil
+        let recorder = screenRecorder
+        screenRecorder = nil
+        // Held so the stop flow can await it — otherwise a stop right after the capture died could
+        // save session.json before the video finished writing, orphaning the file.
+        screenFinishTask = Task { @MainActor [weak self] in
+            let result = await recorder?.finish()
+            self?.screenResult = result
+        }
     }
 
     /// The system-audio backend reported that it stopped. This used to end the session, which is
@@ -1283,7 +1335,6 @@ final class AppModel: ObservableObject {
         recovering = true
         NSLog("[Recover] system audio: \(reason)")
         noteCaptureEvent("Reconnecting system audio…")
-        let visualObj = visual
         Task {
             defer { recovering = false }
 
@@ -1299,7 +1350,7 @@ final class AppModel: ObservableObject {
             guard isRecording else { return }
 
             do {
-                try await startSystem(into: gate, visual: visualObj)
+                try await startSystem(into: gate)
                 // Stop can land during the (awaiting) restart. Teardown already ran by then, so a
                 // capture started here would outlive the session — undo it rather than leak it.
                 guard isRecording else {
@@ -1365,7 +1416,7 @@ final class AppModel: ObservableObject {
         clock.pause(now: CACurrentMediaTime())
         micGate?.close()
         systemGate?.close()
-        visual?.setPaused(true, totalPaused: clock.totalPaused(now: CACurrentMediaTime()))
+        screenRecorder?.setPaused(true, totalPaused: clock.totalPaused(now: CACurrentMediaTime()))
         status = .paused
         hud.level = 0
         NSLog("[Pause] paused (\(auto ? "auto — silence" : "manual"))")
@@ -1384,7 +1435,7 @@ final class AppModel: ObservableObject {
         clock.resume(now: now)
         micGate?.open(flushPreroll: replayPreroll)
         systemGate?.open(flushPreroll: replayPreroll)
-        visual?.setPaused(false, totalPaused: clock.totalPaused(now: now))
+        screenRecorder?.setPaused(false, totalPaused: clock.totalPaused(now: now))
         isPaused = false
         pauseReason = nil
         status = .recording
@@ -1414,21 +1465,19 @@ final class AppModel: ObservableObject {
         SessionMeta(date: sessionStartDate,
                     sourceLabel: sessionSource.label,
                     modelName: model.rawValue,
-                    targetLabel: visualCaptureEnabled ? captureTargetLabel : nil,
-                    modeLabel: visualCaptureEnabled ? captureMode.label : nil,
+                    targetLabel: screenResult != nil ? screenTargetLabel : nil,
+                    modeLabel: screenResult != nil ? screenQuality.shortLabel : nil,
                     // Calendar-triggered sessions seed the meeting title (kept by ensureTitle; tags
                     // still backfill lazily). language stored only when non-default, so a default
                     // English session.json stays byte-identical.
                     title: pendingTitleSeed,
                     audioFile: audioFile, durationSeconds: durationSeconds, bookmarks: bookmarks,
-                    language: (sessionLanguage != nil && sessionLanguage != "en") ? sessionLanguage : nil)
+                    language: (sessionLanguage != nil && sessionLanguage != "en") ? sessionLanguage : nil,
+                    videoFile: screenResult?.url.lastPathComponent,
+                    videoWidth: screenResult?.width, videoHeight: screenResult?.height)
     }
 
-    var captureTargetLabel: String {
-        availableTargets.first { $0.target == captureTarget }?.label ?? captureTarget.persisted
-    }
-
-    // MARK: Export (single-file HTML / PDF from the last visual session)
+    // MARK: Export (single-file HTML / PDF of the last session)
 
     func exportHTML() {
         guard let dir = lastSessionDir, let out = savePanel(suggested: dir.lastPathComponent, ext: "html") else { return }

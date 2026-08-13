@@ -8,9 +8,9 @@ extension KeyboardShortcuts.Name {
     /// User-configurable in Settings.
     static let togglePause = Self("togglePause", default: .init(.p, modifiers: [.command, .option]))
 
-    /// Manual grab of the current visual frame — always live while recording with visual capture on.
+    /// Start a screen recording (screen + audio in one session), or stop the session in progress.
     /// Default: ⌥⌘S. User-configurable in Settings.
-    static let grabFrame = Self("grabFrame", default: .init(.s, modifiers: [.command, .option]))
+    static let toggleScreenRecording = Self("toggleScreenRecording", default: .init(.s, modifiers: [.command, .option]))
 
     /// Drop a bookmark at the current moment while recording. Carbon hotkey → no permission.
     /// Default: ⌥⌘B. User-configurable in Settings.

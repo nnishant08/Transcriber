@@ -22,15 +22,13 @@ if [[ -z "${DEVELOPER_DIR:-}" && -d /Applications/Xcode.app/Contents/Developer ]
     echo "==> Using Xcode toolchain at $DEVELOPER_DIR"
 fi
 
-# Stage 2, Feature D (Multimodal Slide Chat) needs the macOS 27 SDK (image input symbols exist only
-# there). It is double-gated: the image call compiles ONLY when -DTRANSCRIBER_MACOS27 is set, and runs
-# ONLY on a macOS 27 runtime (#available). The default build (A/B/C) stays on the current Xcode and the
-# flag is OFF, so the shipped binary still runs on macOS 26 (text+OCR chat fallback). To compile D,
-# point DEVELOPER_DIR at Xcode 27 beta and set MACOS27=1:
+# TRANSCRIBER_MACOS27 is a build flag reserved for macOS-27-only SDK symbols. It is currently INERT —
+# the multimodal slide-chat path that used it was removed along with the screenshot feature. Left in
+# place because the next 27-only API (whatever it is) will want exactly this switch:
 #   DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer MACOS27=1 Scripts/build_app.sh
 SWIFT_FLAGS=()
 if [[ "${MACOS27:-0}" == "1" ]]; then
-    echo "==> Feature D: compiling the macOS-27 slide-image path (-DTRANSCRIBER_MACOS27)"
+    echo "==> Compiling with -DTRANSCRIBER_MACOS27 (macOS 27 SDK paths)"
     SWIFT_FLAGS+=(-Xswiftc -DTRANSCRIBER_MACOS27)
 fi
 

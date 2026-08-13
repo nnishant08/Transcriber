@@ -1,10 +1,10 @@
 import Foundation
-import CoreGraphics
 
-/// Imports an audio or video file into a full session folder — the same `transcript.md` + `session.json`
-/// (+ `images/` for video) layout a recorded session produces, via `DocumentBuilder`. Audio is decoded
-/// to 16 kHz mono and transcribed with the full-quality pass (+ custom-vocab bias); video additionally
-/// samples frames on an interval and OCRs them, interleaving on the T0 timeline like a visual session.
+/// Imports an audio or video file into a full session folder — the same `transcript.md` +
+/// `session.json` layout a recorded session produces, via `DocumentBuilder`. Audio is decoded to
+/// 16 kHz mono and transcribed with the full-quality pass (+ custom-vocab bias). A VIDEO file
+/// becomes the session's video (`meta.videoFile`), played in the Viewer against the transcript
+/// exactly like a screen recording — same seek, same timeline.
 enum Importer {
 
     /// Parameters captured from AppModel so the importer is self-contained (no MainActor hops mid-work).
@@ -13,11 +13,14 @@ enum Importer {
         var language: String?              // explicit ISO code, or nil when auto-detecting
         var autoDetectLanguage: Bool = false   // "Auto" setting: detect once on a lead-in, then pin
         var vocabulary: [String]
-        var visualIntervalSeconds: Double
-        var ocrEnabled: Bool
         var diarize: Bool = false          // Stage-1 post-passes (same as a recorded session)
         var cleanup: Bool = false
     }
+
+    /// A video this large is left where it is rather than copied into the session folder (the
+    /// transcript + audio still import fine; only in-app playback of the video is skipped). Copying
+    /// a 20 GB screen capture onto the Desktop without asking would be a nasty surprise.
+    static let maxCopiedVideoBytes: Int64 = 8 * 1_073_741_824   // 8 GB
 
     static func isSupported(_ url: URL) -> Bool { AudioFileIO.isSupported(url) }
 
@@ -50,31 +53,28 @@ enum Importer {
 
         // Session folder (unique even for same-second batch imports).
         let date = fileDate(url) ?? Date()
-        let dir = uniqueSessionFolder(date: date, withImages: isVideo, root: root)
-
-        // Video → sample + OCR frames on the T0 timeline.
-        var frames: [FrameEvent] = []
-        if isVideo {
-            progress("Extracting frames…")
-            let extracted = (try? await AudioFileIO.extractFrames(url: url, intervalSeconds: config.visualIntervalSeconds)) ?? []
-            frames = writeFrames(extracted, to: dir)
-            if config.ocrEnabled, !frames.isEmpty {
-                progress("Reading slide text…")
-                frames = SlideOCR.annotate(frames, sessionDir: dir)
-            }
-        }
+        let dir = uniqueSessionFolder(date: date, root: root)
 
         // Playback source: copy the original for audio imports (full fidelity, AVAudioPlayer-compatible);
         // write a compact audio.m4a from the decoded buffer for video imports (avoids a huge copy).
         progress("Saving audio…")
         let audioName = saveAudio(url: url, isVideo: isVideo, samples: samples, dir: dir)
 
+        // A video import keeps its video: copied into the session folder so the folder stays
+        // self-contained, and recorded as `videoFile` so the Viewer plays it against the transcript.
+        var videoName: String?
+        if isVideo {
+            progress("Saving video…")
+            videoName = saveVideo(url: url, dir: dir)
+        }
+
         let label = isVideo ? "Imported video — \(url.lastPathComponent)" : "Imported — \(url.lastPathComponent)"
         let meta = SessionMeta(date: date, sourceLabel: label, modelName: config.model,
                                targetLabel: nil, modeLabel: isVideo ? "Imported video" : nil,
                                audioFile: audioName, durationSeconds: duration, imported: true,
-                               language: (language != nil && language != "en") ? language : nil)
-        DocumentBuilder.writeSession(SessionDoc(meta: meta, segments: segments, frames: frames), to: dir)
+                               language: (language != nil && language != "en") ? language : nil,
+                               videoFile: videoName)
+        DocumentBuilder.writeSession(SessionDoc(meta: meta, segments: segments), to: dir)
 
         // Index + auto-title/tags + notify, exactly like a recorded session.
         SearchIndex.shared.index(sessionDir: dir)
@@ -90,19 +90,24 @@ enum Importer {
 
     // MARK: - Helpers
 
-    private static func writeFrames(_ extracted: [(time: Double, image: CGImage)], to dir: URL) -> [FrameEvent] {
-        var events: [FrameEvent] = []
-        for (i, f) in extracted.enumerated() {
-            guard let png = f.image.pngData() else { continue }
-            let total = Int(max(0, f.time).rounded())
-            let name = String(format: "%04d-%02d%02d.png", i + 1, total / 60, total % 60)
-            let rel = "images/\(name)"
-            do {
-                try png.write(to: dir.appendingPathComponent(rel))
-                events.append(FrameEvent(sessionTime: f.time, imagePath: rel, ocrText: nil))
-            } catch { NSLog("[Import] frame write failed: \(error)") }
+    /// Copy an imported video into the session folder as `source.<ext>`. Returns nil (and logs) when
+    /// the file is too large to copy or the copy fails — the session is still a complete transcript.
+    private static func saveVideo(url: URL, dir: URL) -> String? {
+        let size = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize.map(Int64.init) ?? 0
+        guard size <= maxCopiedVideoBytes else {
+            NSLog("[Import] video is \(size / 1_048_576) MB — left in place, session is audio + transcript only")
+            return nil
         }
-        return events
+        let ext = url.pathExtension.isEmpty ? "mp4" : url.pathExtension.lowercased()
+        let dest = dir.appendingPathComponent("source.\(ext)")
+        do {
+            if FileManager.default.fileExists(atPath: dest.path) { return dest.lastPathComponent }
+            try FileManager.default.copyItem(at: url, to: dest)
+            return dest.lastPathComponent
+        } catch {
+            NSLog("[Import] video copy failed: \(error)")
+            return nil
+        }
     }
 
     private static func saveAudio(url: URL, isVideo: Bool, samples: [Float], dir: URL) -> String? {
@@ -119,7 +124,7 @@ enum Importer {
     }
 
     /// A session folder that doesn't collide (batch imports in the same second get a suffix).
-    private static func uniqueSessionFolder(date: Date, withImages: Bool, root: URL) -> URL {
+    private static func uniqueSessionFolder(date: Date, root: URL) -> URL {
         let base = DocumentBuilder.folderStamp.string(from: date)
         var name = base
         var n = 2
@@ -127,8 +132,7 @@ enum Importer {
             name = "\(base)-\(n)"; n += 1
         }
         let dir = root.appendingPathComponent(name, isDirectory: true)
-        let target = withImages ? dir.appendingPathComponent("images", isDirectory: true) : dir
-        try? FileManager.default.createDirectory(at: target, withIntermediateDirectories: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir
     }
 }

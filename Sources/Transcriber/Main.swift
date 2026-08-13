@@ -7,6 +7,7 @@ import CryptoKit
 /// transcription pipeline:
 ///   --selftest [audioFile] [--model <id>]         one-shot file transcription
 ///   --selftest-stream [audioFile] [--model <id>]  drives Resampler16k + StreamingTranscriber
+///   --selftest-screenrec [out.mp4]                screen-recording encoder (video + muxed audio)
 @main
 enum AppMain {
     static func main() {
@@ -23,12 +24,9 @@ enum AppMain {
             SelfTest.runSummary(path: path)
             return
         }
-        if let idx = args.firstIndex(of: "--selftest-capture") {
-            SelfTest.runCapture(dir: positional(after: idx, in: args))
-            return
-        }
-        if let idx = args.firstIndex(of: "--selftest-ocr") {
-            SelfTest.runOCR(path: positional(after: idx, in: args))
+        if let idx = args.firstIndex(of: "--selftest-screenrec") {
+            Task { await SelfTest.runScreenRec(path: positional(after: idx, in: args)) }
+            RunLoop.main.run()
             return
         }
         if args.contains("--selftest-doc") {
@@ -108,7 +106,15 @@ enum AppMain {
         if let idx = args.firstIndex(of: "--selftest-encrypt") {
             SelfTest.runEncrypt(dir: positional(after: idx, in: args)); return
         }
-        if args.contains("--selftest-slidechat") { SelfTest.runSlideChat(); return }
+        // LIVE screen recording against the real main display (needs the Screen Recording grant →
+        // run the .app bundle's binary, not .build/release). The headless `--selftest-screenrec`
+        // covers the encoder; this covers ScreenCaptureKit actually delivering frames.
+        if let idx = args.firstIndex(of: "--selftest-screenrec-live") {
+            let seconds = Double(positional(after: idx, in: args) ?? "") ?? 6
+            Task { await SelfTest.runScreenRecLive(seconds: seconds) }
+            RunLoop.main.run()
+            return
+        }
         // Diagnostic: what ScreenCaptureKit hands us as the output device's mute/volume change.
         // Needs the Screen Recording grant → run the .app bundle's binary, not .build/release.
         if let idx = args.firstIndex(of: "--selftest-sysaudio") {
@@ -339,92 +345,140 @@ extension SelfTest {
         return ctx.makeImage()
     }
 
-    /// Verify the change detector fires once per distinct "slide" and ignores repeats.
-    static func runCapture(dir: String?) {
+    /// Verify the screen-recording encoder end to end WITHOUT ScreenCaptureKit: synthetic frames
+    /// + synthetic audio → one `.mp4` carrying both tracks, at the length the caller asked for.
+    /// This is everything about a screen recording that can be wrong without a screen: the writer,
+    /// the pause-compressed presentation times, the muxed audio, and the final duration.
+    static func runScreenRec(path: String?) async {
         setbuf(stdout, nil)
-        print("== change-detector self-test ==")
+        print("== screen-recording self-test ==")
+        let out = path.map { URL(fileURLWithPath: $0) }
+            ?? FileManager.default.temporaryDirectory.appendingPathComponent("said-screenrec-selftest.mp4")
+        let w = 640, h = 360
+        let fps = 10.0
+        let seconds = 3.0
 
-        // Build an ordered sequence: slide A ×5, B ×5, C ×5 (one new slide every 2.5 s @ 2 fps).
-        var frames: [CGImage] = []
-        if let dir, let files = try? FileManager.default.contentsOfDirectory(atPath: dir).sorted() {
-            for f in files where f.hasSuffix(".png") {
-                if let s = CGImageSourceCreateWithURL(URL(fileURLWithPath: dir).appendingPathComponent(f) as CFURL, nil),
-                   let img = CGImageSourceCreateImageAtIndex(s, 0, nil) { frames.append(img) }
+        do {
+            let writer = try ScreenWriter(url: out, width: w, height: h, quality: .compact)
+            var appended = 0
+            for i in 0..<Int(seconds * fps) {
+                let t = Double(i) / fps
+                guard let pb = bgraPixelBuffer(width: w, height: h, shade: Double(i % 10) / 10.0) else { continue }
+                writer.appendVideo(pb, at: t)
+                // 16 kHz mono, in ~1/10 s blocks, exactly like a capture callback delivers.
+                writer.appendAudio((0..<1600).map { sinf(Float($0) * 0.05) * 0.2 })
+                appended += 1
+                usleep(4000)   // let the real-time encoder drain (expectsMediaDataInRealTime)
             }
-            print("loaded \(frames.count) frames from \(dir)")
-        }
-        if frames.isEmpty {
-            // dHash measures EDGE STRUCTURE over the whole frame. Real screen content (video, slides
-            // with text/colour) is dense; use frame-filling, structurally-distinct patterns here.
-            let uniques = (0..<3).compactMap { patternImage($0) }
-            // Diagnostic: pairwise hamming of the three distinct "slides".
-            if uniques.count == 3 {
-                let h = uniques.map { dHash($0) }
-                print("pairwise hamming: A–B=\(hamming(h[0], h[1])) B–C=\(hamming(h[1], h[2])) A–C=\(hamming(h[0], h[2])) (threshold \(VisualConstants.changeThreshold))")
-            }
-            for img in uniques { for _ in 0..<5 { frames.append(img) } }
-            print("using \(frames.count) synthetic frames (3 distinct patterns × 5)")
-        }
+            // Out-of-order frames must be dropped, not written: a non-monotonic PTS breaks the file.
+            let before = writer.frameCount
+            if let pb = bgraPixelBuffer(width: w, height: h, shade: 0.5) { writer.appendVideo(pb, at: 0.0) }
+            let rejectedOutOfOrder = writer.frameCount == before
+            print("appended \(appended) frames; out-of-order frame rejected: \(rejectedOutOfOrder)")
 
-        let detector = FrameChangeDetector()
-        var captures = 0
-        for (i, img) in frames.enumerated() {
-            let t = Double(i) * 0.5          // 2 fps
-            if detector.shouldCapture(hash: dHash(img), now: t) {
-                captures += 1
-                print("  capture #\(captures) at \(String(format: "%.1f", t))s")
+            guard let result = await writer.finish(endingAt: seconds) else {
+                print("FAIL: writer produced nothing"); exit(2)
             }
+            print("wrote \(result.frameCount) frames → \(result.url.path) (\(result.byteSize) bytes, \(String(format: "%.2f", result.duration))s)")
+
+            let asset = AVURLAsset(url: out)
+            let video = (try? await asset.loadTracks(withMediaType: .video)) ?? []
+            let audio = (try? await asset.loadTracks(withMediaType: .audio)) ?? []
+            let dur = CMTimeGetSeconds((try? await asset.load(.duration)) ?? .zero)
+            print("tracks: video=\(video.count) audio=\(audio.count); duration=\(String(format: "%.2f", dur))s (asked \(seconds)s)")
+
+            let ok = rejectedOutOfOrder && result.frameCount > 0 && video.count == 1 && audio.count == 1
+                && abs(dur - seconds) < 0.75 && result.byteSize > 0
+            print(ok ? "OK" : "FAIL")
+            exit(ok ? 0 : 2)
+        } catch {
+            print("ERROR: \(error)")
+            exit(1)
         }
-        print("total captures: \(captures) (expected 3: one per distinct slide)")
-        exit(captures == 3 ? 0 : 2)
     }
 
-    /// Verify on-device Vision OCR.
-    static func runOCR(path: String?) {
+    /// Record the real main display for `seconds`, feeding synthetic audio through the same
+    /// `SampleReceiver` path a live session uses, and report what came out. This is the one part of
+    /// the feature that can't be checked headlessly: whether ScreenCaptureKit actually delivers.
+    static func runScreenRecLive(seconds: Double) async {
         setbuf(stdout, nil)
-        print("== OCR self-test ==")
-        let image: CGImage?
-        if let path {
-            let src = CGImageSourceCreateWithURL(URL(fileURLWithPath: path) as CFURL, nil)
-            image = src.flatMap { CGImageSourceCreateImageAtIndex($0, 0, nil) }
-            print("image: \(path)")
-        } else {
-            image = textImage("Roadmap Q3: ship the beta")
-            print("image: synthetic (\"Roadmap Q3: ship the beta\")")
+        print("== live screen-recording probe (\(Int(seconds))s, main display) ==")
+        let out = FileManager.default.temporaryDirectory.appendingPathComponent("said-screenrec-live.mp4")
+        let recorder = ScreenRecorder(target: .mainDisplay, quality: .balanced, outputURL: out)
+        recorder.onPreview = { image in print("  preview frame \(Int(image.size.width))×\(Int(image.size.height))") }
+        recorder.onStopped = { print("  !! stream stopped: \($0)") }
+
+        do {
+            try await recorder.start(t0: CACurrentMediaTime())
+            print("capturing \(recorder.pixelSize.width)×\(recorder.pixelSize.height) — move a window to generate frames…")
+            // Feed 0.1 s blocks of quiet-but-nonzero audio, exactly like a capture callback.
+            let end = Date().addingTimeInterval(seconds)
+            while Date() < end {
+                recorder.append((0..<1600).map { sinf(Float($0) * 0.03) * 0.05 })
+                try? await Task.sleep(nanoseconds: 100_000_000)
+            }
+            guard let result = await recorder.finish() else {
+                print("FAIL: nothing was recorded (no frames delivered)"); exit(2)
+            }
+            print("→ \(result.url.path)")
+            print("   \(result.width)×\(result.height), \(result.frameCount) frames, "
+                  + "\(String(format: "%.1f", result.duration))s, \(result.byteSize / 1024) KB")
+            let asset = AVURLAsset(url: result.url)
+            let v = ((try? await asset.loadTracks(withMediaType: .video)) ?? []).count
+            let a = ((try? await asset.loadTracks(withMediaType: .audio)) ?? []).count
+            print("   tracks: video=\(v) audio=\(a)")
+            let ok = result.frameCount > 0 && v == 1 && a == 1 && result.duration > seconds * 0.7
+            print(ok ? "OK" : "FAIL")
+            exit(ok ? 0 : 2)
+        } catch {
+            print("ERROR: \(error.localizedDescription)")
+            exit(1)
         }
-        guard let cg = image else { print("ERROR: no image"); exit(1) }
-        let text = SlideOCR.recognize(cg)
-        print("----------------------------------------")
-        print("OCR: \(text)")
-        print("----------------------------------------")
-        exit(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? 2 : 0)
     }
 
-    /// Verify the timeline merge: synthetic segments + frame events → interleaved Markdown.
+    /// A solid-grey BGRA frame — the encoder only cares about format and size, not content.
+    private static func bgraPixelBuffer(width: Int, height: Int, shade: Double) -> CVPixelBuffer? {
+        var pb: CVPixelBuffer?
+        let attrs: [String: Any] = [
+            kCVPixelBufferCGImageCompatibilityKey as String: true,
+            kCVPixelBufferCGBitmapContextCompatibilityKey as String: true,
+        ]
+        guard CVPixelBufferCreate(kCFAllocatorDefault, width, height, kCVPixelFormatType_32BGRA,
+                                  attrs as CFDictionary, &pb) == kCVReturnSuccess, let buffer = pb else { return nil }
+        CVPixelBufferLockBaseAddress(buffer, [])
+        defer { CVPixelBufferUnlockBaseAddress(buffer, []) }
+        guard let ctx = CGContext(data: CVPixelBufferGetBaseAddress(buffer), width: width, height: height,
+                                  bitsPerComponent: 8, bytesPerRow: CVPixelBufferGetBytesPerRow(buffer),
+                                  space: CGColorSpaceCreateDeviceRGB(),
+                                  bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue
+                                            | CGBitmapInfo.byteOrder32Little.rawValue) else { return nil }
+        ctx.setFillColor(CGColor(red: shade, green: 0.3, blue: 1 - shade, alpha: 1))
+        ctx.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        return buffer
+    }
+
+    /// Verify the transcript render: timestamped, in order, with the screen-recording header line.
     static func runDoc() {
         setbuf(stdout, nil)
         print("== document-builder self-test ==")
         let meta = SessionMeta(date: Date(timeIntervalSince1970: 0), sourceLabel: "System Audio",
-                               modelName: "openai_whisper-base.en", targetLabel: "Main Display", modeLabel: "On change")
+                               modelName: "openai_whisper-base.en", targetLabel: "Main Display", modeLabel: "1080p",
+                               videoFile: "screen.mp4", videoWidth: 1920, videoHeight: 1080)
         let segments = [
             TranscriptSegment(start: 0.5, end: 3.0, text: "Welcome everyone to the session."),
-            TranscriptSegment(start: 9.0, end: 12.0, text: "As you can see on this slide."),
+            TranscriptSegment(start: 9.0, end: 12.0, text: "As you can see on this screen."),
             TranscriptSegment(start: 20.0, end: 23.0, text: "That wraps up the results."),
         ]
-        let frames = [
-            FrameEvent(sessionTime: 8.0, imagePath: "images/0001-0008.png", ocrText: "Agenda\n1. Intro\n2. Results"),
-            FrameEvent(sessionTime: 19.0, imagePath: "images/0002-0019.png", ocrText: "Quarterly Results: +18%"),
-        ]
-        let md = DocumentBuilder.markdown(meta: meta, segments: segments, frames: frames)
+        let md = DocumentBuilder.markdown(meta: meta, segments: segments)
         print("----------------------------------------")
         print(md)
         print("----------------------------------------")
-        // Ordering check: image at 8s must appear between the 3s and 12s segments.
-        let okOrder = md.range(of: "0001-0008") != nil &&
-            (md.range(of: "Welcome")!.lowerBound < md.range(of: "0001-0008")!.lowerBound) &&
-            (md.range(of: "0001-0008")!.lowerBound < md.range(of: "this slide")!.lowerBound)
+        let okOrder = md.range(of: "[00:00] Welcome")!.lowerBound < md.range(of: "[00:09] As you")!.lowerBound
+            && md.range(of: "[00:09] As you")!.lowerBound < md.range(of: "[00:20] That wraps")!.lowerBound
+        let okVideo = md.contains("**Screen recording:** screen.mp4 — Main Display (1920×1080)")
         print(okOrder ? "OK (ordering correct)" : "FAIL (ordering wrong)")
-        exit(okOrder ? 0 : 2)
+        print(okVideo ? "OK (video header present)" : "FAIL (video header missing)")
+        exit(okOrder && okVideo ? 0 : 2)
     }
 
     /// Verify HTML + PDF export from a session folder (synthesises one if none given).
@@ -459,19 +513,14 @@ extension SelfTest {
 
     private static func makeSyntheticSession() -> URL {
         let dir = URL(fileURLWithPath: "/tmp/transcriber-selftest-session")
-        try? FileManager.default.createDirectory(at: dir.appendingPathComponent("images"),
-                                                 withIntermediateDirectories: true)
-        if let cg = textImage("Roadmap Q3: ship the beta"), let png = cg.pngData() {
-            try? png.write(to: dir.appendingPathComponent("images/0001-0005.png"))
-        }
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let meta = SessionMeta(date: Date(timeIntervalSince1970: 0), sourceLabel: "System Audio",
-                               modelName: "openai_whisper-base.en", targetLabel: "Main Display", modeLabel: "On change")
+                               modelName: "openai_whisper-base.en", targetLabel: "Main Display", modeLabel: "1080p")
         let segments = [
             TranscriptSegment(start: 1, end: 4, text: "Welcome to the demonstration."),
             TranscriptSegment(start: 6, end: 9, text: "Here is the roadmap for the quarter."),
         ]
-        let frames = [FrameEvent(sessionTime: 5, imagePath: "images/0001-0005.png", ocrText: "Roadmap Q3: ship the beta")]
-        DocumentBuilder.writeSession(SessionDoc(meta: meta, segments: segments, frames: frames), to: dir)
+        DocumentBuilder.writeSession(SessionDoc(meta: meta, segments: segments), to: dir)
         return dir
     }
 }
@@ -551,11 +600,11 @@ extension SelfTest {
         try? fm.removeItem(at: root)
         try? fm.createDirectory(at: root, withIntermediateDirectories: true)
 
-        func makeSession(_ name: String, date: Date, segments: [TranscriptSegment], frames: [FrameEvent] = []) -> URL {
+        func makeSession(_ name: String, date: Date, segments: [TranscriptSegment]) -> URL {
             let folder = root.appendingPathComponent(name, isDirectory: true)
-            try? fm.createDirectory(at: folder.appendingPathComponent("images"), withIntermediateDirectories: true)
+            try? fm.createDirectory(at: folder, withIntermediateDirectories: true)
             let meta = SessionMeta(date: date, sourceLabel: "Mic", modelName: "openai_whisper-base.en", tags: [])
-            DocumentBuilder.writeSession(SessionDoc(meta: meta, segments: segments, frames: frames), to: folder)
+            DocumentBuilder.writeSession(SessionDoc(meta: meta, segments: segments), to: folder)
             return folder
         }
 
@@ -566,8 +615,7 @@ extension SelfTest {
         ])
         let b = makeSession("B", date: now.addingTimeInterval(-86_400), segments: [
             TranscriptSegment(start: 0, end: 4, text: "Today we discuss machine learning fundamentals."),
-        ], frames: [
-            FrameEvent(sessionTime: 5, imagePath: "images/0001-0005.png", ocrText: "Neural Networks 101"),
+            TranscriptSegment(start: 5, end: 9, text: "Neural networks are the core idea."),
         ])
         let c = makeSession("C", date: now.addingTimeInterval(-2 * 86_400), segments: [
             TranscriptSegment(start: 0, end: 4, text: "Anyone up for lunch later today?"),
@@ -696,11 +744,11 @@ extension SelfTest {
 
 extension SelfTest {
 
-    /// Synthesize a session folder with given segments/frames + meta.
-    static func synthSession(_ dir: URL, segments: [TranscriptSegment], frames: [FrameEvent] = [], meta: SessionMeta? = nil) {
-        try? FileManager.default.createDirectory(at: dir.appendingPathComponent("images"), withIntermediateDirectories: true)
+    /// Synthesize a session folder with given segments + meta.
+    static func synthSession(_ dir: URL, segments: [TranscriptSegment], meta: SessionMeta? = nil) {
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let m = meta ?? SessionMeta(date: Date(timeIntervalSince1970: 0), sourceLabel: "Mic", modelName: "openai_whisper-base.en")
-        DocumentBuilder.writeSession(SessionDoc(meta: m, segments: segments, frames: frames), to: dir)
+        DocumentBuilder.writeSession(SessionDoc(meta: m, segments: segments), to: dir)
     }
 
     static let defaultMeetingTranscript = """
@@ -817,14 +865,15 @@ extension SelfTest {
         sema.wait(); exit(code)
     }
 
-    /// B1 import: an audio file and a synthesized video → full session folders (+ frames for video).
+    /// B1 import: an audio file and a synthesized video → full session folders (the video import
+    /// keeps its video, so the session plays back in the Viewer like a screen recording).
     static func runImport(path: String?) {
         setbuf(stdout, nil)
         print("== import self-test ==")
         let testRoot = URL(fileURLWithPath: "/tmp/transcriber-import-sessions")
         try? FileManager.default.removeItem(at: testRoot)
         try? FileManager.default.createDirectory(at: testRoot, withIntermediateDirectories: true)
-        let config = Importer.Config(model: "openai_whisper-base.en", language: "en", vocabulary: [], visualIntervalSeconds: 1, ocrEnabled: false)
+        let config = Importer.Config(model: "openai_whisper-base.en", language: "en", vocabulary: [])
         let sema = DispatchSemaphore(value: 0); var code: Int32 = 0
         Task.detached {
             var ok = true
@@ -842,16 +891,19 @@ extension SelfTest {
                 ok = ok && hasFiles && decodes
             } catch { print("audio import failed: \(error)"); ok = false }
 
-            // 2) Video import (synthesized video+audio) → assert frames.
+            // 2) Video import (synthesized video+audio) → the video comes with the session.
             let videoURL = URL(fileURLWithPath: "/tmp/transcriber-import-video.mov")
             if makeTinyVideoWithAudio(to: videoURL, seconds: 4) {
                 do {
                     let dir = try await Importer.run(url: videoURL, config: config, root: testRoot) { print("  [video] \($0)") }
-                    let frames = (try? FileManager.default.contentsOfDirectory(atPath: dir.appendingPathComponent("images").path))?
-                        .filter { $0.hasSuffix(".png") }.count ?? 0
                     let hasJSON = FileManager.default.fileExists(atPath: dir.appendingPathComponent("session.json").path)
-                    print("video session \(dir.lastPathComponent): frames=\(frames) json=\(hasJSON)")
-                    ok = ok && hasJSON && frames > 0
+                    let meta = DocumentBuilder.readSession(dir)?.meta
+                    let videoName = meta?.videoFile
+                    let videoOnDisk = videoName.map {
+                        FileManager.default.fileExists(atPath: dir.appendingPathComponent($0).path)
+                    } ?? false
+                    print("video session \(dir.lastPathComponent): json=\(hasJSON) video=\(videoName ?? "none") onDisk=\(videoOnDisk)")
+                    ok = ok && hasJSON && videoOnDisk
                 } catch { print("video import failed: \(error)"); ok = false }
             } else {
                 print("video synth unavailable — skipping video import portion (covered by human smoke test)")
@@ -1137,8 +1189,8 @@ extension SelfTest {
         return out
     }
 
-    /// Synthesize a tiny .mov with BOTH a video track (distinct frames) and an audio track (sine), so
-    /// the import path (decode audio + extract frames) runs end-to-end. Returns false if synth fails.
+    /// Synthesize a tiny .mov with BOTH a video track and an audio track (sine), so the video-import
+    /// path (decode audio + carry the video) runs end-to-end. Returns false if synth fails.
     static func makeTinyVideoWithAudio(to url: URL, seconds: Int) -> Bool {
         try? FileManager.default.removeItem(at: url)
         guard let writer = try? AVAssetWriter(outputURL: url, fileType: .mov) else { return false }
@@ -1354,11 +1406,11 @@ extension SelfTest {
         // speakers renders byte-identically to the unlabeled form.
         var meta = SessionMeta(date: Date(timeIntervalSince1970: 0), sourceLabel: "Mic", modelName: "m")
         meta.speakerNames = ["2": "Alice"]
-        let md = DocumentBuilder.markdown(meta: meta, segments: labeled, frames: [])
+        let md = DocumentBuilder.markdown(meta: meta, segments: labeled)
         check("md label after anchor", md.contains("[00:00] **Speaker 1:** one"))
         check("md rename resolves", md.contains("[00:03] **Alice:** two"))
         check("md lines stay [mm:ss]-anchored", !md.contains("** [0"))
-        let mdPlain = DocumentBuilder.markdown(meta: meta, segments: segs, frames: [])
+        let mdPlain = DocumentBuilder.markdown(meta: meta, segments: segs)
         check("no speakers → no labels", !mdPlain.contains("**Speaker") && mdPlain.contains("[00:00] one"))
         check("snippet path strips label", SessionStore.stripLeadingSpeakerLabel("**Alice:** hello there") == "hello there"
               && SessionStore.stripLeadingSpeakerLabel("plain line") == "plain line")
@@ -1861,34 +1913,6 @@ extension SelfTest {
         check("no plaintext cache written while encrypted", !FileManager.default.fileExists(atPath: cacheURL.path))
 
         SessionIO.isEncryptionEnabled = false; SessionIO.overrideKey = nil    // reset process flag
-        print(ok ? "OK" : "FAIL"); exit(ok ? 0 : 2)
-    }
-
-    /// Feature D — slide-chat selection (pure): correct slide picked for a time-referenced question;
-    /// even sample otherwise; macOS-26 build uses the text+OCR fallback.
-    static func runSlideChat() {
-        setbuf(stdout, nil)
-        print("== slide-chat self-test ==")
-        var ok = true
-        func check(_ l: String, _ c: Bool) { print("  \(c ? "✓" : "✗") \(l)"); ok = ok && c }
-
-        let frames = [
-            FrameEvent(sessionTime: 0, imagePath: "images/0000.png", ocrText: "Title slide"),
-            FrameEvent(sessionTime: 300, imagePath: "images/0001.png", ocrText: "Agenda"),
-            FrameEvent(sessionTime: 750, imagePath: "images/0002.png", ocrText: "Architecture diagram"),
-            FrameEvent(sessionTime: 1200, imagePath: "images/0003.png", ocrText: "Summary"),
-        ]
-        check("referencedTime parses 12:30 → 750s", SlideChat.referencedTime(in: "What was on the architecture diagram at 12:30?") == 750)
-        let sel = SlideChat.selectSlides(frames: frames, question: "What was on the architecture diagram at 12:30?")
-        print("  selected: \(sel.map { Int($0.sessionTime) })")
-        check("nearest slide to 12:30 chosen first", sel.first?.sessionTime == 750)
-        check("capped to maxImages", sel.count <= SlideChat.maxImages)
-        let even = SlideChat.selectSlides(frames: frames, question: "summarize the whole talk")
-        let evenTimes = even.map { $0.sessionTime }
-        check("no time ref → even sample (non-empty, ordered)", !even.isEmpty && evenTimes == evenTimes.sorted())
-        check("no slides → empty", SlideChat.selectSlides(frames: [], question: "anything at 1:00?").isEmpty)
-        // On a macOS-26 build the image path is unavailable → text+OCR fallback is the active path.
-        check("macOS-26 build: image input unavailable (text+OCR fallback)", SlideChat.imageInputAvailable == false)
         print(ok ? "OK" : "FAIL"); exit(ok ? 0 : 2)
     }
 }

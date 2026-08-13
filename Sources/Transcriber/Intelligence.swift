@@ -1,6 +1,4 @@
 import Foundation
-import CoreGraphics
-import ImageIO
 #if canImport(FoundationModels)
 import FoundationModels
 #endif
@@ -47,17 +45,16 @@ struct AskResult: Sendable {
 
 // MARK: - On-device intelligence (chat, cross-session ask, styled summaries / action items / chapters)
 
-/// All flows are 100% on-device via Apple FoundationModels (text-only — see decision #2; image input
-/// is absent in the macOS 26 SDK and is gated behind `#available(macOS 27)` at the (currently inert)
-/// attach site). Everything reuses `Summarizer`'s availability checks and degrades to a clear,
-/// non-crashing fallback string when Apple Intelligence is unavailable.
+/// All flows are 100% on-device via Apple FoundationModels (text-only). Everything reuses
+/// `Summarizer`'s availability checks and degrades to a clear, non-crashing fallback string when
+/// Apple Intelligence is unavailable.
 enum Intelligence {
     static var isAvailable: Bool { Summarizer.isAvailable }
     static func availabilityMessage() -> String? { Summarizer.availabilityMessage() }
 
     // MARK: A1 — chat with one session (grounded, cites [mm:ss])
 
-    /// Answer a question grounded in ONE session's transcript + OCR text. Builds context from the
+    /// Answer a question grounded in ONE session's transcript. Builds context from the
     /// whole timestamped transcript when it fits, else retrieves relevant passages via `SearchIndex`.
     /// The answer is instructed to cite `[mm:ss]`; the Viewer makes those citations clickable.
     static func answerForSession(dir: URL, question: String, history: [ChatTurn]) async -> String {
@@ -66,9 +63,9 @@ enum Intelligence {
 
         let instructions = """
             You answer questions about a single transcribed session. Use ONLY the provided transcript \
-            excerpts (each line is prefixed with its [mm:ss] timestamp; lines marked (slide) are OCR'd \
-            on-screen text). When you state a fact, cite the supporting [mm:ss] in your answer. If the \
-            transcript doesn't contain the answer, say so plainly — do not invent details. Be concise.
+            excerpts (each line is prefixed with its [mm:ss] timestamp). When you state a fact, cite \
+            the supporting [mm:ss] in your answer. If the transcript doesn't contain the answer, say \
+            so plainly — do not invent details. Be concise.
             """
         var prompt = "TRANSCRIPT EXCERPTS:\n\(context)\n\n"
         if !history.isEmpty {
@@ -80,63 +77,12 @@ enum Intelligence {
         }
         prompt += "QUESTION: \(question)"
 
-        // Feature D — Multimodal Slide Chat (macOS 27). When the session has slides and the model can
-        // accept image input, attach the relevant slide image(s) so the model can reason over the
-        // diagram/chart itself, not just OCR text. The image symbols exist only in the macOS 27 SDK,
-        // so the call is double-gated: compiled only with the 27 SDK (TRANSCRIBER_MACOS27) AND run
-        // only on a macOS 27 runtime (#available). On macOS 26 this whole block is absent and the
-        // text+OCR path below is used verbatim — byte-for-byte the current behavior.
-        #if TRANSCRIBER_MACOS27
-        if #available(macOS 27, *) {
-            let frames = DocumentBuilder.readSession(dir)?.frames ?? []
-            let slides = SlideChat.selectSlides(frames: frames, question: question)
-            if !slides.isEmpty {
-                if let answer = try? await answerWithSlides(dir: dir, slides: slides,
-                                                            instructions: instructions, prompt: prompt) {
-                    return answer
-                }
-                // Image attach failed / too many images → fall through to text+OCR for this turn.
-                NSLog("[SlideChat] image path unavailable for this turn — using text+OCR fallback")
-            }
-        }
-        #endif
-
         do {
             return try await run(instructions: instructions, prompt: prompt, temperature: 0.2, maxTokens: 700)
         } catch {
             return fallbackMessage(for: error)
         }
     }
-
-    #if TRANSCRIBER_MACOS27
-    /// macOS 27 image-input call. VERIFY against the macOS 27 SDK: the exact image value type accepted
-    /// inside `Prompt { }` (it wraps a CGImage / image source), how multiple images are passed, and any
-    /// per-prompt image-count/size limits (`SlideChat.maxImages` is a conservative default). Pass the
-    /// slide image(s) + the existing transcript/OCR grounding; keep answers citing [mm:ss].
-    @available(macOS 27, *)
-    private static func answerWithSlides(dir: URL, slides: [FrameEvent],
-                                         instructions: String, prompt: String) async throws -> String {
-        let session = LanguageModelSession(instructions: instructions)
-        let options = GenerationOptions(temperature: 0.2, maximumResponseTokens: 700)
-        // Load slide PNGs (decrypting via SessionIO when encryption is on).
-        let images: [CGImage] = slides.compactMap { frame in
-            guard let data = try? SessionIO.readData(dir.appendingPathComponent(frame.imagePath)),
-                  let src = CGImageSourceCreateWithData(data as CFData, nil),
-                  let img = CGImageSourceCreateImageAtIndex(src, 0, nil) else { return nil }
-            return img
-        }
-        let response = try await session.respond(options: options) {
-            prompt
-            "Relevant slide image(s) follow — reason over the visual content, not just the OCR text:"
-            for img in images {
-                // The macOS 27 SDK exposes an image value usable inside the PromptBuilder. Adjust the
-                // wrapper type here once verified at the SDK (e.g. `Image(cgImage:)` / image content).
-                Image(cgImage: img)
-            }
-        }
-        return response.content.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-    #endif
 
     // MARK: A2 — ask across all sessions (links back to source sessions)
 

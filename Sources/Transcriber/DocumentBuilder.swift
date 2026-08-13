@@ -18,15 +18,6 @@ struct TranscriptSegment: Sendable, Codable {
     var redactedText: String? = nil
 }
 
-/// A captured screenshot, timestamped relative to the same session clock T0 (seconds).
-/// `imagePath` is RELATIVE to the session folder (e.g. "images/0003-14.png") so the folder
-/// stays self-contained and movable.
-struct FrameEvent: Sendable, Codable {
-    var sessionTime: TimeInterval
-    var imagePath: String
-    var ocrText: String?
-}
-
 /// A user-dropped marker captured live (⌥⌘B) or added in the Viewer, in seconds from session T0.
 struct Bookmark: Sendable, Codable, Identifiable, Hashable {
     var time: TimeInterval
@@ -82,6 +73,13 @@ struct SessionMeta: Sendable, Codable {
     // produced with these features untouched omit the keys entirely (byte-identical default encoding).
     var generatedArtifacts: [String: GeneratedArtifact]?  // Feature A: template id → cached output
     var retentionLocked: Bool?              // Feature C1: true exempts the session from auto-delete
+    // Screen recording: the session's video, on the same pause-compressed clock as the transcript.
+    // Relative filename so the folder stays self-contained and movable — "screen.mp4" for a recorded
+    // session, the copied original for an imported video. Absent (nil) for audio-only sessions, so
+    // their session.json is unchanged.
+    var videoFile: String?
+    var videoWidth: Int?
+    var videoHeight: Int?
 
     static let currentSchemaVersion = 2
 
@@ -92,7 +90,8 @@ struct SessionMeta: Sendable, Codable {
          bookmarks: [Bookmark] = [], chapters: [Chapter] = [], actionItems: [String] = [],
          summaries: [String: String] = [:], imported: Bool = false,
          speakerCount: Int? = nil, speakerNames: [String: String]? = nil, language: String? = nil,
-         generatedArtifacts: [String: GeneratedArtifact]? = nil, retentionLocked: Bool? = nil) {
+         generatedArtifacts: [String: GeneratedArtifact]? = nil, retentionLocked: Bool? = nil,
+         videoFile: String? = nil, videoWidth: Int? = nil, videoHeight: Int? = nil) {
         self.date = date
         self.sourceLabel = sourceLabel
         self.modelName = modelName
@@ -113,6 +112,9 @@ struct SessionMeta: Sendable, Codable {
         self.language = language
         self.generatedArtifacts = generatedArtifacts
         self.retentionLocked = retentionLocked
+        self.videoFile = videoFile
+        self.videoWidth = videoWidth
+        self.videoHeight = videoHeight
     }
 
     enum CodingKeys: String, CodingKey {
@@ -120,6 +122,7 @@ struct SessionMeta: Sendable, Codable {
         case audioFile, durationSeconds, bookmarks, chapters, actionItems, summaries, imported
         case speakerCount, speakerNames, language
         case generatedArtifacts, retentionLocked
+        case videoFile, videoWidth, videoHeight
     }
 
     // Custom decode for backward compatibility: older session.json files lack the newer fields.
@@ -147,7 +150,13 @@ struct SessionMeta: Sendable, Codable {
         language = try c.decodeIfPresent(String.self, forKey: .language)
         generatedArtifacts = try c.decodeIfPresent([String: GeneratedArtifact].self, forKey: .generatedArtifacts)
         retentionLocked = try c.decodeIfPresent(Bool.self, forKey: .retentionLocked)
+        videoFile = try c.decodeIfPresent(String.self, forKey: .videoFile)
+        videoWidth = try c.decodeIfPresent(Int.self, forKey: .videoWidth)
+        videoHeight = try c.decodeIfPresent(Int.self, forKey: .videoHeight)
     }
+
+    /// True when this session has a video to play alongside the transcript.
+    var hasVideo: Bool { videoFile?.isEmpty == false }
 
     /// Display name for a diarized speaker slot: the user's rename when present, else "Speaker N".
     func speakerLabel(_ slot: Int) -> String {
@@ -163,16 +172,25 @@ struct SessionMeta: Sendable, Codable {
 struct SessionDoc: Sendable, Codable {
     var meta: SessionMeta
     var segments: [TranscriptSegment]
-    var frames: [FrameEvent]
+
+    init(meta: SessionMeta, segments: [TranscriptSegment]) {
+        self.meta = meta
+        self.segments = segments
+    }
+
+    // Decoded explicitly so a pre-screen-recording `session.json` — which carries a `frames` array
+    // from the removed screenshot feature — still decodes cleanly. The extra key is simply ignored.
+    enum CodingKeys: String, CodingKey { case meta, segments }
 }
 
 // MARK: - DocumentBuilder
 
-/// Merges transcript segments + frame events into one time-sorted timeline and renders it.
-/// Both inputs are relative to a single session clock `T0` (captured at recording start with
-/// `CACurrentMediaTime()`): WhisperKit segment timestamps are relative to the audio buffer start,
-/// which also begins at T0; frame events are stamped `CACurrentMediaTime() - T0`. Same clock →
-/// alignment is free.
+/// Renders a session's timestamped transcript to Markdown / HTML.
+///
+/// Everything in a session is measured on ONE clock: `T0`, captured at recording start with
+/// `CACurrentMediaTime()` and compressed by any paused time. WhisperKit's segment timestamps are
+/// relative to the audio buffer, which starts at T0, and the screen recording's frames are stamped
+/// on the same compressed clock — so `[mm:ss]`, the audio, and the video all line up for free.
 enum DocumentBuilder {
 
     static func timestamp(_ t: TimeInterval) -> String {
@@ -182,19 +200,18 @@ enum DocumentBuilder {
 
     // MARK: Session folder layout
 
-    /// A per-session folder `~/Desktop/Transcripts/<yyyy-MM-dd HH-mm-ss>/`. Visual sessions also get
-    /// an `images/` subdir; audio-only sessions (unified store) get just the folder (no empty images/).
-    static func makeSessionFolder(date: Date, withImages: Bool = true) -> URL {
+    /// A per-session folder `~/Desktop/Transcripts/<yyyy-MM-dd HH-mm-ss>/`. Self-contained and
+    /// movable: `transcript.md` + `session.json`, plus `audio.m4a` / `screen.mp4` when those exist.
+    static func makeSessionFolder(date: Date) -> URL {
         let dir = AppModel.transcriptsDirectory
             .appendingPathComponent(folderStamp.string(from: date), isDirectory: true)
-        let target = withImages ? dir.appendingPathComponent("images", isDirectory: true) : dir
-        try? FileManager.default.createDirectory(at: target, withIntermediateDirectories: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir
     }
 
     /// Write `transcript.md` + machine-readable `session.json` into the session folder.
     static func writeSession(_ doc: SessionDoc, to sessionDir: URL) {
-        let md = markdown(meta: doc.meta, segments: doc.segments, frames: doc.frames)
+        let md = markdown(meta: doc.meta, segments: doc.segments)
         // Route through SessionIO so encryption-at-rest (Feature C4) is transparent. When encryption
         // is OFF (default) this is a byte-identical plain UTF-8 write — same bytes as before.
         try? SessionIO.writeText(md, to: sessionDir.appendingPathComponent("transcript.md"))
@@ -219,73 +236,51 @@ enum DocumentBuilder {
 
     // MARK: Markdown
 
-    static func markdown(meta: SessionMeta, segments: [TranscriptSegment], frames: [FrameEvent]) -> String {
+    static func markdown(meta: SessionMeta, segments: [TranscriptSegment]) -> String {
         var out = "# Transcript — \(humanStamp.string(from: meta.date))\n\n"
         out += "- **Source:** \(meta.sourceLabel)\n"
         out += "- **Model:** \(meta.modelName)\n"
-        if let t = meta.targetLabel { out += "- **Visual target:** \(t)\n" }
-        if let m = meta.modeLabel { out += "- **Capture mode:** \(m)\n" }
+        if let v = meta.videoFile {
+            var line = "- **Screen recording:** \(v)"
+            if let t = meta.targetLabel { line += " — \(t)" }
+            if let w = meta.videoWidth, let h = meta.videoHeight { line += " (\(w)×\(h))" }
+            out += line + "\n"
+        } else if let t = meta.targetLabel {
+            out += "- **Capture target:** \(t)\n"
+        }
         out += "\n---\n\n"
 
-        let items = timeline(segments: segments, frames: frames)
-        if items.isEmpty {
+        let lines = segments.compactMap { seg -> String? in
+            let text = seg.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty else { return nil }
+            // Diarized sessions prefix a resolved speaker label AFTER the [mm:ss] anchor, so
+            // click-to-seek, SearchIndex parsing, and stripLeadingTimestamp all keep working.
+            // No speaker (feature off / pre-Stage-1 session) → byte-identical to before.
+            let label = seg.speaker.map { "**\(meta.speakerLabel($0)):** " } ?? ""
+            return "[\(timestamp(seg.start))] \(label)\(text)\n"
+        }
+        if lines.isEmpty {
             out += "_(no speech detected)_\n"
             return out
         }
-
-        for item in items {
-            switch item {
-            case .text(let seg):
-                let text = seg.text.trimmingCharacters(in: .whitespacesAndNewlines)
-                // Diarized sessions prefix a resolved speaker label AFTER the [mm:ss] anchor, so
-                // click-to-seek, SearchIndex parsing, and stripLeadingTimestamp all keep working.
-                // No speaker (feature off / pre-Stage-1 session) → byte-identical to before.
-                let label = seg.speaker.map { "**\(meta.speakerLabel($0)):** " } ?? ""
-                if !text.isEmpty { out += "[\(timestamp(seg.start))] \(label)\(text)\n\n" }
-            case .frame(let f):
-                let ts = timestamp(f.sessionTime)
-                out += "![\(ts)](\(f.imagePath))\n\n"
-                if let ocr = f.ocrText?.trimmingCharacters(in: .whitespacesAndNewlines), !ocr.isEmpty {
-                    out += "<details><summary>On-slide text (\(ts))</summary>\n\n```\n\(ocr)\n```\n\n</details>\n\n"
-                }
-            }
-        }
+        out += lines.joined(separator: "\n")
         return out
     }
 
-    // MARK: HTML (self-contained, images embedded as base64 data URIs)
+    // MARK: HTML (self-contained)
 
-    /// `imageData` resolves a frame's relative `imagePath` to PNG bytes for base64 embedding.
-    static func html(meta: SessionMeta,
-                     segments: [TranscriptSegment],
-                     frames: [FrameEvent],
-                     imageData: (String) -> Data?) -> String {
+    static func html(meta: SessionMeta, segments: [TranscriptSegment]) -> String {
         var body = ""
-        for item in timeline(segments: segments, frames: frames) {
-            switch item {
-            case .text(let seg):
-                let text = seg.text.trimmingCharacters(in: .whitespacesAndNewlines)
-                if !text.isEmpty {
-                    let label = seg.speaker.map { "<b>\(escape(meta.speakerLabel($0))):</b> " } ?? ""
-                    body += "<p><span class=\"ts\">\(timestamp(seg.start))</span> \(label)\(escape(text))</p>\n"
-                }
-            case .frame(let f):
-                let ts = timestamp(f.sessionTime)
-                if let data = imageData(f.imagePath) {
-                    let uri = "data:image/png;base64,\(data.base64EncodedString())"
-                    body += "<figure><img src=\"\(uri)\" alt=\"\(ts)\"/><figcaption>\(ts)</figcaption></figure>\n"
-                } else {
-                    body += "<p class=\"ts\">[image \(ts) missing]</p>\n"
-                }
-                if let ocr = f.ocrText?.trimmingCharacters(in: .whitespacesAndNewlines), !ocr.isEmpty {
-                    body += "<details><summary>On-slide text (\(ts))</summary><pre>\(escape(ocr))</pre></details>\n"
-                }
-            }
+        for seg in segments {
+            let text = seg.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty else { continue }
+            let label = seg.speaker.map { "<b>\(escape(meta.speakerLabel($0))):</b> " } ?? ""
+            body += "<p><span class=\"ts\">\(timestamp(seg.start))</span> \(label)\(escape(text))</p>\n"
         }
 
         var meta1 = "<li><b>Source:</b> \(escape(meta.sourceLabel))</li><li><b>Model:</b> \(escape(meta.modelName))</li>"
-        if let t = meta.targetLabel { meta1 += "<li><b>Visual target:</b> \(escape(t))</li>" }
-        if let m = meta.modeLabel { meta1 += "<li><b>Capture mode:</b> \(escape(m))</li>" }
+        if let v = meta.videoFile { meta1 += "<li><b>Screen recording:</b> \(escape(v))</li>" }
+        if let t = meta.targetLabel { meta1 += "<li><b>Capture target:</b> \(escape(t))</li>" }
 
         return """
         <!DOCTYPE html><html lang="en"><head><meta charset="utf-8">
@@ -298,12 +293,6 @@ enum DocumentBuilder {
           ul.meta li { display: inline-block; margin-right: 16px; }
           hr { border: none; border-top: 1px solid #e0e0e0; margin: 20px 0; }
           .ts { color: #8a8a8e; font-variant-numeric: tabular-nums; font-size: 12px; margin-right: 6px; }
-          figure { margin: 20px 0; }
-          img { max-width: 100%; border: 1px solid #e0e0e0; border-radius: 8px; display: block; }
-          figcaption { color: #8a8a8e; font-size: 12px; margin-top: 4px; }
-          details { background: #f6f6f7; border-radius: 8px; padding: 8px 12px; margin: 8px 0 16px; }
-          summary { cursor: pointer; color: #555; font-size: 13px; }
-          pre { white-space: pre-wrap; font: 12px/1.45 ui-monospace, Menlo, monospace; margin: 8px 0 0; }
         </style></head><body>
         <h1>Transcript — \(escape(humanStamp.string(from: meta.date)))</h1>
         <ul class="meta">\(meta1)</ul><hr>
@@ -313,17 +302,6 @@ enum DocumentBuilder {
     }
 
     // MARK: - Internal
-
-    private enum Item { case text(TranscriptSegment); case frame(FrameEvent) }
-
-    private static func timeline(segments: [TranscriptSegment], frames: [FrameEvent]) -> [Item] {
-        var items: [(time: TimeInterval, order: Int, item: Item)] = []
-        for s in segments { items.append((s.start, 0, .text(s))) }
-        for f in frames { items.append((f.sessionTime, 1, .frame(f))) }
-        // Stable sort by time; on ties, text before image (order field).
-        items.sort { $0.time != $1.time ? $0.time < $1.time : $0.order < $1.order }
-        return items.map { $0.item }
-    }
 
     private static func escape(_ s: String) -> String {
         s.replacingOccurrences(of: "&", with: "&amp;")
