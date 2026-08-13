@@ -1,0 +1,871 @@
+<!doctype html>
+<!-- Said for iPhone — screens on the settled identity: 3a mark + 4a name. Violet, amber, ink. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Said — iPhone screens</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root{
+  --violet:oklch(0.52 0.20 288);
+  --violet-press:oklch(0.42 0.19 288);
+  --violet-deep:oklch(0.30 0.14 288);
+  --violet-tint:oklch(0.90 0.07 288);
+  --violet-tint-ink:oklch(0.35 0.15 288);
+  --amber:oklch(0.78 0.13 68);
+  --amber-press:oklch(0.63 0.12 68);
+  --amber-tint:oklch(0.92 0.07 78);
+  --amber-mark:oklch(0.88 0.11 78);
+  --amber-ink:oklch(0.25 0.06 68);
+  --amber-ink2:oklch(0.45 0.10 68);
+  --ink:oklch(0.22 0.03 288);
+  --ink-press:oklch(0.15 0.03 288);
+  --ink-deep:oklch(0.19 0.03 288);
+  --paper:oklch(0.96 0.022 288);
+  --paper-2:oklch(0.975 0.015 288);
+  --card:#fff;
+  --rule:oklch(0.88 0.05 288);
+  --t2:oklch(0.50 0.05 288);
+  --t3:oklch(0.60 0.04 288);
+  --hard:0 3px 0 oklch(0.88 0.05 288);
+  --sans:Archivo,-apple-system,"Helvetica Neue",Helvetica,sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,"SF Mono",Menlo,monospace;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--paper);color:var(--ink);font-family:var(--sans);-webkit-font-smoothing:antialiased}
+
+/* ---------- page ---------- */
+.wrap{max-width:1380px;margin:0 auto;padding:60px 60px 110px}
+.eyebrow{font-family:var(--mono);font-size:12px;letter-spacing:.12em;text-transform:uppercase;color:var(--violet)}
+h1.big{margin:10px 0 12px;font-size:46px;font-weight:600;letter-spacing:-.025em;line-height:1.05}
+h1.big .dot{color:var(--amber)}
+.lede{margin:0;font-size:17px;line-height:1.55;color:oklch(0.44 0.02 288);max-width:760px;text-wrap:pretty}
+
+/* identity strip */
+.ident{display:flex;gap:22px;flex-wrap:wrap;margin:38px 0 10px}
+.panel{background:var(--card);border-radius:20px;padding:24px 28px;display:flex;flex-direction:column;gap:16px;box-shadow:var(--hard)}
+.panel .lab{font-family:var(--mono);font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--amber-ink2)}
+.mark{width:76px;height:76px;border-radius:18px;background:var(--violet);display:flex;align-items:center;justify-content:center;gap:6px;flex:none}
+.mark i{width:21px;height:21px;border-radius:50% 50% 50% 3px;background:#fff;display:block}
+.mark i.a{background:var(--amber)}
+.word{font-size:42px;font-weight:600;letter-spacing:-.04em;line-height:1}
+.word .dot{color:var(--amber)}
+.sw{display:flex;gap:10px}
+.sw b{width:46px;height:46px;border-radius:9px;display:block}
+.swl{font-family:var(--mono);font-size:10px;line-height:1.8;color:var(--t2)}
+
+/* reality panel */
+.flag{background:var(--ink);color:#fff;border-radius:20px;padding:26px 30px;margin:26px 0 0}
+.flag .lab{font-family:var(--mono);font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--amber);margin-bottom:12px}
+.flag h3{margin:0 0 14px;font-size:21px;font-weight:600;letter-spacing:-.02em}
+.flag ul{margin:0;padding-left:0;list-style:none;display:flex;flex-direction:column;gap:11px}
+.flag li{display:flex;gap:11px;font-size:14.5px;line-height:1.5;color:rgba(255,255,255,.82);text-wrap:pretty}
+.flag li b{color:#fff;font-weight:600}
+.flag li .k{width:9px;height:9px;border-radius:50% 50% 50% 2px;background:var(--amber);flex:none;margin-top:7px}
+
+/* gallery */
+.gal{display:flex;flex-wrap:wrap;gap:60px 44px;margin-top:56px}
+.cell{width:402px;display:flex;flex-direction:column;gap:16px}
+.cap .n{font-family:var(--mono);font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--violet)}
+.cap h2{margin:6px 0 7px;font-size:19px;font-weight:600;letter-spacing:-.02em}
+.cap p{margin:0 0 9px;font-size:14px;line-height:1.5;color:oklch(0.48 0.02 288);text-wrap:pretty}
+.cap ul.notes{margin:0;padding-left:0;list-style:none;display:flex;flex-direction:column;gap:6px}
+.cap ul.notes li{display:flex;gap:9px;font-size:13.5px;line-height:1.45;color:var(--t2)}
+.cap ul.notes li .k{width:7px;height:7px;border-radius:50% 50% 50% 2px;background:var(--violet);flex:none;margin-top:6px}
+.cap ul.notes li.warn .k{background:var(--amber)}
+
+/* ---------- device ---------- */
+.dev{width:402px;height:874px;border-radius:56px;background:var(--ink);padding:11px;flex:none;
+  box-shadow:0 3px 0 oklch(0.15 0.03 288),0 34px 70px -28px rgba(26,22,38,.55)}
+.scr{width:100%;height:100%;border-radius:46px;overflow:hidden;position:relative;display:flex;flex-direction:column}
+.isl{position:absolute;top:12px;left:50%;transform:translateX(-50%);width:118px;height:33px;background:#000;border-radius:20px;z-index:30}
+.sb{position:absolute;top:0;left:0;right:0;height:56px;display:flex;align-items:flex-end;justify-content:space-between;
+  padding:0 32px 6px;font-size:14px;font-weight:600;z-index:20}
+.sb .r{font-size:11px;letter-spacing:.04em}
+.hi{position:absolute;bottom:9px;left:50%;transform:translateX(-50%);width:134px;height:5px;border-radius:3px;background:currentColor;opacity:.28;z-index:30}
+.pane{flex:1;min-height:0;display:flex;flex-direction:column;padding-top:56px}
+.pane.paper{background:var(--paper);color:var(--ink)}
+.pane.violet{background:var(--violet-deep);color:#fff}
+.pane.ink{background:var(--ink-deep);color:#fff}
+
+/* blobs */
+.blob{width:9px;height:9px;border-radius:50% 50% 50% 2px;background:var(--violet);display:block;flex:none}
+.blob.a{background:var(--amber)}
+.blob.w{background:#fff}
+.pair{display:flex;gap:3px;flex:none}
+
+/* type helpers */
+.brand{font-size:36px;font-weight:600;letter-spacing:-.035em}
+.brand .dot{color:var(--amber)}
+.mono{font-family:var(--mono)}
+.rail-lab{display:flex;align-items:center;gap:8px;padding:0 0 2px 4px}
+.rail-lab .txt{font-family:var(--mono);font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--violet)}
+.rail-lab .ln{flex:1;height:2px;border-radius:1px;background:var(--rule)}
+
+/* cards */
+.card{background:var(--card);border-radius:22px;padding:15px 16px;box-shadow:var(--hard)}
+.sq{width:44px;height:44px;border-radius:15px;display:flex;align-items:center;justify-content:center;gap:4px;flex:none}
+.sq.violet{background:var(--violet)} .sq.ink{background:var(--ink)} .sq.amber{background:var(--amber)}
+.sq i{width:12px;height:12px;border-radius:50% 50% 50% 2px;display:block}
+.rowt{font-size:16px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.rowm{font-size:13px;color:var(--t2)}
+.pill{padding:4px 9px;border-radius:10px;font-size:11px;font-weight:700}
+.pill.amber{background:var(--amber);color:var(--amber-ink)}
+.chip{padding:8px 15px;border-radius:16px;font-size:13px;font-weight:600}
+.chip.on{background:var(--ink);color:#fff}
+.chip.v{background:var(--violet-tint);color:var(--violet-tint-ink)}
+.chip.a{background:var(--amber-tint);color:var(--amber-ink2)}
+.chip.g{background:oklch(0.89 0.012 288);color:oklch(0.35 0.03 288)}
+.chip.w{background:#fff;color:oklch(0.4 0.05 288)}
+
+/* dock */
+.dock{position:relative;margin:14px 20px 26px;padding:12px 22px;border-radius:28px;background:var(--ink);
+  display:flex;align-items:center;justify-content:space-between;box-shadow:0 10px 26px rgba(26,22,38,.22);flex:none}
+.dock .tab{display:flex;flex-direction:column;align-items:center;gap:5px;width:58px}
+.dock .tab .l{font-size:10px;font-weight:700;color:#fff}
+.dock .tab.off .l{color:rgba(255,255,255,.6);font-weight:600}
+.dock .big{position:absolute;left:50%;top:-26px;transform:translateX(-50%);width:70px;height:70px;border-radius:35px;
+  background:var(--violet);border:4px solid var(--paper);box-shadow:0 12px 26px rgba(88,45,190,.45);
+  display:flex;align-items:center;justify-content:center;gap:5px}
+.dock .big i{width:19px;height:19px;border-radius:50% 50% 50% 3px;display:block}
+
+/* sheets */
+.sheet{position:relative;background:var(--paper-2);border-radius:34px 34px 0 0;padding:12px 18px 34px;
+  display:flex;flex-direction:column;gap:12px;box-shadow:0 -20px 60px rgba(26,22,38,.25)}
+.grab{width:44px;height:5px;border-radius:3px;background:oklch(0.85 0.05 288);align-self:center;margin-bottom:6px}
+.sheet h3{margin:0;font-size:26px;font-weight:600;letter-spacing:-.025em;padding:0 4px}
+.sheet h3 .dot{color:var(--amber)}
+.opt{display:flex;align-items:center;gap:15px;padding:17px;border-radius:24px}
+.opt .ic{width:48px;height:48px;border-radius:16px;display:flex;align-items:center;justify-content:center;gap:4px;flex:none;background:rgba(255,255,255,.2)}
+.opt .ic i{width:13px;height:13px;border-radius:50% 50% 50% 2px;display:block}
+.opt .t{font-size:18px;font-weight:600}
+.opt .d{font-size:13px;line-height:1.35}
+.opt.violet{background:var(--violet);box-shadow:0 4px 0 var(--violet-press);color:#fff}
+.opt.violet .d{color:rgba(255,255,255,.78)}
+.opt.amber{background:var(--amber);box-shadow:0 4px 0 var(--amber-press);color:var(--amber-ink)}
+.opt.amber .d{color:oklch(0.35 0.07 68)}
+.opt.amber .ic{background:rgba(255,255,255,.28)}
+.opt.ink{background:var(--ink);box-shadow:0 4px 0 var(--ink-press);color:#fff}
+.opt.ink .d{color:rgba(255,255,255,.66)}
+.opt.ink .ic{background:rgba(255,255,255,.14)}
+.foot-row{display:flex;align-items:center;justify-content:space-between;padding:15px 6px 0;border-top:2px dotted var(--rule);margin-top:4px}
+.foot-row .l{font-size:14px;font-weight:500;color:oklch(0.4 0.05 288)}
+.tog{width:48px;height:28px;border-radius:14px;background:var(--violet);display:flex;align-items:center;justify-content:flex-end;padding:0 3px}
+.tog i{width:22px;height:22px;border-radius:50% 50% 50% 5px;background:#fff;display:block}
+.tog.off{background:oklch(0.85 0.03 288);justify-content:flex-start}
+
+/* recording */
+.timer{font-family:var(--mono);font-size:60px;font-weight:500;letter-spacing:-.04em;line-height:1}
+.bars{display:flex;align-items:center;gap:5px;height:48px}
+.bars b{flex:1;border-radius:3px;background:rgba(255,255,255,.25);display:block}
+.bars b.on{background:var(--amber)}
+.bars b.dim{background:rgba(255,255,255,.16)}
+.say{font-size:16px;line-height:1.45;text-wrap:pretty;padding-left:16px}
+.who{display:flex;align-items:center;gap:7px}
+.who .nm{font-size:12px;font-weight:700}
+.caret{display:inline-block;width:3px;height:16px;border-radius:2px;background:var(--amber);vertical-align:-2px;margin-left:3px}
+.tap{padding:13px 15px;border-radius:18px;background:var(--amber);display:flex;align-items:center;gap:11px;color:var(--amber-ink)}
+.tap .k{width:20px;height:20px;border-radius:6px;background:var(--amber-ink);display:flex;align-items:center;justify-content:center;flex:none}
+
+/* transcript */
+.gist{padding:15px 17px;border-radius:22px;background:var(--amber-tint);display:flex;flex-direction:column;gap:8px}
+.gist .h{display:flex;align-items:center;gap:7px}
+.gist .h .txt{font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--amber-ink2);font-weight:500}
+.gist .b{font-size:15px;line-height:1.5;color:oklch(0.28 0.06 68);text-wrap:pretty}
+.turn{display:flex;flex-direction:column;gap:5px}
+.turn .h{display:flex;align-items:center;gap:8px}
+.turn .h .nm{font-size:13px;font-weight:700}
+.turn .h .ts{font-family:var(--mono);font-size:11px;color:var(--t3)}
+.turn .b{font-size:16px;line-height:1.5;color:oklch(0.28 0.03 288);padding-left:18px;text-wrap:pretty}
+.hl{background:var(--amber-mark);border-radius:5px;padding:1px 4px}
+.todo{margin:7px 0 0 18px;padding:11px 13px;border-radius:16px;background:var(--violet);display:flex;align-items:center;gap:10px;align-self:flex-start}
+.todo .box{width:17px;height:17px;border-radius:5px;border:2.5px solid #fff;flex:none}
+.todo .t{font-size:13px;font-weight:500;color:#fff}
+.slidecard{border-radius:20px;overflow:hidden;background:#fff;box-shadow:var(--hard)}
+.slidecard .im{height:104px;background:var(--ink);padding:15px 17px}
+.slidecard .im h5{margin:0 0 9px;font-size:13px;color:#fff;font-weight:600}
+.slidecard .im .l{height:5px;border-radius:3px;background:rgba(255,255,255,.24);margin-bottom:6px}
+.slidecard .rd{padding:9px 13px;display:flex;align-items:center;gap:8px;font-family:var(--mono);font-size:11px;color:var(--amber-ink2);background:var(--amber-tint)}
+
+/* player */
+.player{margin:12px 16px 26px;padding:14px 18px 16px;border-radius:26px;background:var(--ink);display:flex;flex-direction:column;gap:12px;flex:none}
+.player .t{display:flex;align-items:center;gap:12px}
+.player .t .ts{font-family:var(--mono);font-size:11px;color:var(--amber);width:38px}
+.player .t .ts.r{color:rgba(255,255,255,.5);text-align:right}
+.track{flex:1;height:5px;border-radius:3px;background:rgba(255,255,255,.2);position:relative}
+.track .f{position:absolute;left:0;top:0;bottom:0;width:45%;border-radius:3px;background:var(--amber)}
+.track .k{position:absolute;left:45%;top:-5px;width:15px;height:15px;border-radius:50% 50% 50% 4px;background:#fff;margin-left:-7px}
+.ctrl{display:flex;align-items:center;justify-content:center;gap:24px}
+.ctrl .s{font-size:13px;font-weight:700;color:rgba(255,255,255,.7)}
+.ctrl .p{width:52px;height:52px;border-radius:26px;background:var(--amber);display:flex;align-items:center;justify-content:center;gap:5px}
+.ctrl .p i{width:4px;height:17px;border-radius:2px;background:var(--amber-ink);display:block}
+
+/* ask */
+.ans{padding:17px;border-radius:24px;background:var(--violet);display:flex;flex-direction:column;gap:11px;box-shadow:0 4px 0 var(--violet-press);color:#fff}
+.ans .h{display:flex;align-items:center;gap:9px}
+.ans .h .txt{font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:rgba(255,255,255,.65)}
+.ans .b{font-size:16px;line-height:1.5;text-wrap:pretty}
+.cites{display:flex;gap:7px;padding-top:2px;flex-wrap:wrap}
+.cite{padding:6px 11px;border-radius:12px;font-family:var(--mono);font-size:11px;font-weight:500}
+.cite.a{background:var(--amber);color:var(--amber-ink)}
+.cite.g{background:rgba(255,255,255,.18);color:#fff}
+.src{padding:14px 16px;border-radius:20px;background:#fff;display:flex;flex-direction:column;gap:6px;box-shadow:var(--hard)}
+.src .h{display:flex;align-items:center;gap:8px}
+.src .h .nm{font-size:13px;font-weight:700}
+.src .h .ts{font-family:var(--mono);font-size:11px;color:var(--t3);margin-left:auto}
+.src .q{font-size:14px;line-height:1.45;color:oklch(0.35 0.03 288);text-wrap:pretty}
+.field{height:44px;border-radius:22px;background:#fff;display:flex;align-items:center;gap:10px;padding:0 15px;box-shadow:var(--hard)}
+.field .txt{font-size:15px;color:oklch(0.55 0.05 288)}
+.kb{height:238px;background:oklch(0.86 0.012 288);border-top:1px solid oklch(0.8 0.02 288);padding:9px 4px;display:flex;flex-direction:column;gap:8px;flex:none}
+.kbr{display:flex;gap:5px;justify-content:center}
+.kbr b{flex:1;height:40px;border-radius:6px;background:#fff;box-shadow:0 1px 0 oklch(0.6 0.02 288);display:block;max-width:34px}
+.kbr b.wide{max-width:none;flex:2}
+.kbr b.go{background:var(--violet)}
+
+/* settings */
+.grp{background:#fff;border-radius:20px;overflow:hidden;box-shadow:var(--hard)}
+.itm{padding:13px 16px;display:flex;align-items:center;gap:12px;border-bottom:1px solid oklch(0.93 0.01 288);font-size:15px}
+.itm:last-child{border-bottom:0}
+.itm .col{flex:1;min-width:0}
+.itm .d{font-size:12px;color:var(--t3);line-height:1.4;margin-top:2px}
+.itm .v{color:var(--t3);font-size:14px}
+.glab{font-family:var(--mono);font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--violet);margin:16px 4px 9px}
+.glab:first-child{margin-top:0}
+.tog.sm{width:44px;height:26px;border-radius:13px}
+.tog.sm i{width:20px;height:20px;border-radius:50% 50% 50% 5px}
+
+/* onboarding */
+.ob{flex:1;display:flex;flex-direction:column;justify-content:center;padding:0 30px;gap:0}
+.ob h2{margin:26px 0 12px;font-size:34px;font-weight:600;letter-spacing:-.03em;line-height:1.12}
+.ob h2 .dot{color:var(--amber)}
+.ob .p{font-size:16px;line-height:1.5;color:var(--t2);margin:0 0 26px;text-wrap:pretty}
+.pt{display:flex;gap:11px;margin-bottom:14px;align-items:flex-start}
+.pt .k{width:10px;height:10px;border-radius:50% 50% 50% 2px;background:var(--violet);flex:none;margin-top:6px}
+.pt .k.a{background:var(--amber)}
+.pt .t{font-size:14px;line-height:1.5;color:var(--t2)}
+.pt .t b{color:var(--ink);font-weight:600}
+.cta{padding:0 24px 34px;display:flex;flex-direction:column;gap:10px;flex:none}
+.btn{height:54px;border-radius:27px;display:flex;align-items:center;justify-content:center;font-size:16px;font-weight:600}
+.btn.v{background:var(--violet);color:#fff;box-shadow:0 4px 0 var(--violet-press)}
+.btn.a{background:var(--amber);color:var(--amber-ink);box-shadow:0 4px 0 var(--amber-press)}
+.btn.q{background:transparent;color:var(--t2);font-weight:500;height:42px;font-size:14.5px;box-shadow:none}
+
+/* camera */
+.cam{flex:1;position:relative;background:linear-gradient(165deg,oklch(0.35 0.06 288),oklch(0.2 0.03 288) 62%);overflow:hidden}
+.wall{position:absolute;inset:15% 9% auto 9%;background:linear-gradient(150deg,#fbfbfd,#e9e9f0);border-radius:6px;padding:24px 22px;
+  transform:perspective(760px) rotateX(6deg) rotateY(-3deg);box-shadow:0 22px 54px rgba(0,0,0,.5)}
+.wall h4{margin:0 0 13px;font-size:17px;font-weight:600;color:var(--ink);letter-spacing:-.02em}
+.wall .l{height:7px;border-radius:3px;background:oklch(0.82 0.02 288);margin-bottom:9px}
+.det{position:absolute;inset:13.5% 7.5% auto 7.5%;height:206px;border:2px solid var(--amber);border-radius:10px;box-shadow:0 0 0 9999px rgba(26,22,38,.42)}
+.det span{position:absolute;top:-12px;left:10px;background:var(--amber);color:var(--amber-ink);font-family:var(--mono);
+  font-size:10px;font-weight:500;padding:3px 8px;border-radius:7px;letter-spacing:.06em;text-transform:uppercase}
+.camfoot{position:absolute;left:0;right:0;bottom:0;padding:18px 22px 34px;background:linear-gradient(transparent,rgba(26,22,38,.88) 36%)}
+.camfoot .rd{font-family:var(--mono);font-size:11px;line-height:1.6;color:rgba(255,255,255,.9);margin-bottom:16px}
+.camfoot .rd i{color:var(--amber);font-style:normal}
+.shut{display:flex;align-items:center;justify-content:space-between}
+.shut .s{font-size:14px;font-weight:600;color:#fff;width:62px}
+.shut .s.r{text-align:right;color:var(--amber);font-family:var(--mono);font-size:13px}
+.shut .b{width:70px;height:70px;border-radius:35px;background:var(--violet);border:4px solid #fff;display:flex;align-items:center;justify-content:center;gap:5px}
+.shut .b i{width:18px;height:18px;border-radius:50% 50% 50% 3px;display:block}
+
+/* generate sheet */
+.tpl{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.tplc{background:#fff;border-radius:18px;padding:14px;box-shadow:var(--hard)}
+.tplc.on{background:var(--violet);box-shadow:0 3px 0 var(--violet-press);color:#fff}
+.tplc .ti{font-size:14px;font-weight:600;margin-bottom:4px}
+.tplc .td{font-size:11.5px;line-height:1.4;color:var(--t2)}
+.tplc.on .td{color:rgba(255,255,255,.75)}
+.tplc .pk{font-family:var(--mono);font-size:9.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--amber-ink2);margin-bottom:6px}
+.secl{font-family:var(--mono);font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--violet);margin:15px 2px 9px}
+.secl:first-child{margin-top:2px}
+
+/* send */
+.file{display:flex;gap:12px;align-items:center;background:#fff;border-radius:20px;padding:14px 15px;box-shadow:var(--hard)}
+.file .ic{width:44px;height:52px;border-radius:9px;background:var(--violet);display:flex;align-items:center;justify-content:center;gap:3px;flex:none}
+.file .ic i{width:11px;height:11px;border-radius:50% 50% 50% 2px;display:block}
+.file .nm{font-size:15px;font-weight:600}
+.file .mt{font-family:var(--mono);font-size:11px;color:var(--t3);margin-top:3px}
+.drops{display:flex;gap:20px;padding:4px 0 6px}
+.drop{width:78px;text-align:center}
+.drop .av{width:62px;height:62px;border-radius:20px;margin:0 auto 7px;display:flex;align-items:center;justify-content:center}
+.drop .av.mac{background:var(--ink)}
+.drop .av.ph{background:var(--amber)}
+.drop .nm{font-size:12px;color:var(--t2);line-height:1.3}
+
+.empty-note{display:flex;align-items:center;gap:10px;padding:6px 4px 0}
+.empty-note .t{font-size:12px;color:var(--t3)}
+</style>
+</head>
+<body>
+
+<div class="wrap">
+
+  <div class="eyebrow">Said &middot; iPhone &middot; 10 screens</div>
+  <h1 class="big">Record the room. Read it back<span class="dot">.</span></h1>
+  <p class="lede">The full loop on the settled identity &mdash; violet, amber, ink, quote-blobs at every scale. Screens are drawn against what an iPhone can actually do, which is not the same list as the Mac.</p>
+
+  <div class="ident">
+    <div class="panel" style="flex-direction:row;align-items:center;gap:24px">
+      <div class="mark"><i></i><i class="a"></i></div>
+      <div>
+        <div class="word">Said<span class="dot">.</span></div>
+        <div style="font-size:14px;color:var(--t2);margin-top:7px">Two strokes, two voices</div>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="lab">Palette</div>
+      <div class="sw">
+        <b style="background:var(--violet)"></b>
+        <b style="background:var(--amber)"></b>
+        <b style="background:var(--ink)"></b>
+        <b style="background:var(--paper-2);box-shadow:inset 0 0 0 1px var(--rule)"></b>
+      </div>
+      <div class="swl">violet 0.52 0.20 288<br>amber&nbsp; 0.78 0.13 68<br>ink&nbsp;&nbsp;&nbsp; 0.22 0.03 288<br>paper&nbsp; 0.975 0.008 288</div>
+    </div>
+    <div class="panel" style="flex:1;min-width:280px;justify-content:center">
+      <div class="lab">Rules carried through</div>
+      <div style="font-size:14px;line-height:1.65;color:var(--t2)">Amber marks whoever is speaking, everywhere. Cards are stickers with a hard 3px edge, never a soft shadow. Timestamps, labels and counts are JetBrains Mono; everything else is Archivo. The blob is the record button, the avatar, the bullet, the scrubber thumb.</div>
+    </div>
+  </div>
+
+  <div class="flag">
+    <div class="lab">Before this gets built</div>
+    <h3>Three things the design promises that iOS won&rsquo;t give us</h3>
+    <ul>
+      <li><span class="k"></span><span><b>&ldquo;A call &mdash; both sides.&rdquo;</b> iOS gives no third-party app access to phone-call audio. Apple&rsquo;s own Call Recording is Phone-app only, with no public API. The mic hears your side plus whatever leaks from the earpiece &mdash; speakerphone works, held-to-ear does not. The source has to be renamed and re-described, or dropped.</span></li>
+      <li><span class="k"></span><span><b>&ldquo;Learns each voice and names it as it goes.&rdquo;</b> Diarization today is a batch pass after the recording stops, and names are typed in by hand. Naming a voice live needs speaker enrollment, which Stage 1 explicitly deferred. Screens show <span class="mono">Speaker 1</span> until someone renames them, or we scope enrollment in.</span></li>
+      <li><span class="k"></span><span><b>&ldquo;My screen.&rdquo;</b> ReplayKit can record the iPhone&rsquo;s own screen through a broadcast extension, so this is buildable &mdash; but it&rsquo;s a new subsystem with its own process, not a port of the Mac&rsquo;s ScreenCaptureKit path. Slide capture through the camera is the cheaper way to keep OCR on the timeline.</span></li>
+    </ul>
+  </div>
+
+  <div class="gal">
+
+    <!-- 1 first run -->
+    <div class="cell">
+      <div class="dev"><div class="scr">
+        <div class="isl"></div>
+        <div class="sb" style="color:var(--ink)"><span>9:41</span><span class="r">&#9679;&#9679;&#9679;&#9679;</span></div>
+        <div class="pane paper">
+          <div class="ob">
+            <div class="mark" style="width:66px;height:66px;border-radius:16px"><i style="width:18px;height:18px"></i><i class="a" style="width:18px;height:18px"></i></div>
+            <h2>It never leaves<br>this iPhone<span class="dot">.</span></h2>
+            <p class="p">Said listens, writes it down and reads it back &mdash; all of it on the device in your hand.</p>
+            <div class="pt"><span class="k"></span><span class="t"><b>No account, ever.</b> Nothing to sign into and nothing to sign out of.</span></div>
+            <div class="pt"><span class="k a"></span><span class="t"><b>Works in a basement.</b> One model downloads today, then Said is offline for good.</span></div>
+            <div class="pt"><span class="k"></span><span class="t"><b>Delete means deleted.</b> No copy waits on a server for you to change your mind.</span></div>
+          </div>
+          <div class="cta">
+            <div class="btn v">Let Said hear you</div>
+            <div class="btn q">What the microphone is used for</div>
+          </div>
+        </div>
+        <div class="hi" style="color:var(--ink)"></div>
+      </div></div>
+      <div class="cap">
+        <div class="n">01 &middot; First run</div>
+        <h2>One claim, one permission</h2>
+        <p>The Mac walks three grants. iPhone needs the mic and nothing else to be useful, so the screen spends its space on the promise instead of a carousel.</p>
+        <ul class="notes">
+          <li><span class="k"></span>Camera is asked for later, the first time someone captures a slide.</li>
+          <li><span class="k"></span>Notifications and Calendar move to Settings &mdash; asking now costs more than it earns.</li>
+          <li><span class="k"></span>Model download follows, with a size figure and real progress.</li>
+        </ul>
+      </div>
+    </div>
+
+    <!-- 2 library -->
+    <div class="cell">
+      <div class="dev"><div class="scr">
+        <div class="isl"></div>
+        <div class="sb" style="color:var(--ink)"><span>9:41</span><span class="r">&#9679;&#9679;&#9679;&#9679;</span></div>
+        <div class="pane paper">
+          <div style="padding:2px 20px 16px;display:flex;align-items:center;justify-content:space-between;flex:none">
+            <div class="brand">Said<span class="dot">.</span></div>
+            <div style="width:38px;height:38px;border-radius:50% 50% 50% 8px;background:var(--ink);display:flex;align-items:center;justify-content:center;color:#fff;font-size:13px;font-weight:600">NK</div>
+          </div>
+          <div style="padding:0 20px 14px;flex:none">
+            <div class="field"><span class="pair"><i class="blob"></i><i class="blob a"></i></span><span class="txt">Search everything said&hellip;</span></div>
+          </div>
+          <div style="padding:0 20px 16px;display:flex;gap:8px;flex:none;overflow:hidden">
+            <span class="chip on">All 42</span><span class="chip v">Lectures</span><span class="chip a">Meetings</span><span class="chip g">Imported</span>
+          </div>
+          <div style="flex:1;overflow:hidden;padding:0 20px;display:flex;flex-direction:column;gap:11px">
+            <div class="rail-lab"><span class="txt">Today</span><span class="ln"></span></div>
+            <div class="card" style="display:flex;align-items:center;gap:14px">
+              <span class="sq amber"><i style="background:#fff"></i><i style="background:var(--amber-ink)"></i></span>
+              <span style="flex:1;min-width:0">
+                <span class="rowt" style="display:block">Sprint planning &mdash; week 33</span>
+                <span class="rowm" style="display:block;margin-top:4px">24 min &middot; 3 voices</span>
+              </span>
+              <span style="display:flex;flex-direction:column;align-items:flex-end;gap:6px;flex:none">
+                <span style="font-size:12px;color:var(--t3)">9:30 AM</span>
+                <span class="pill amber">4 to do</span>
+              </span>
+            </div>
+            <div class="card" style="display:flex;align-items:center;gap:14px">
+              <span class="sq violet"><i style="background:#fff"></i><i style="background:var(--amber)"></i></span>
+              <span style="flex:1;min-width:0">
+                <span class="rowt" style="display:block">Consensus &mdash; lecture 7</span>
+                <span class="rowm" style="display:block;margin-top:4px">51 min &middot; 12 slides read</span>
+              </span>
+              <span style="font-size:12px;color:var(--t3);flex:none">8:02 AM</span>
+            </div>
+            <div class="rail-lab" style="padding-top:8px"><span class="txt">Yesterday</span><span class="ln"></span></div>
+            <div class="card" style="display:flex;align-items:center;gap:14px">
+              <span class="sq ink"><i style="background:#fff"></i><i style="background:var(--amber)"></i></span>
+              <span style="flex:1;min-width:0">
+                <span class="rowt" style="display:block">Coffee with Marcus</span>
+                <span class="rowm" style="display:block;margin-top:4px">38 min &middot; 2 voices</span>
+              </span>
+              <span style="font-size:12px;color:var(--t3);flex:none">4:44 PM</span>
+            </div>
+            <div class="card" style="display:flex;align-items:center;gap:14px">
+              <span class="sq violet" style="background:oklch(0.78 0.05 288)"><i style="background:#fff"></i><i style="background:#fff"></i></span>
+              <span style="flex:1;min-width:0">
+                <span class="rowt" style="display:block">Voice memo 12 Aug</span>
+                <span class="rowm" style="display:block;margin-top:4px">4 min &middot; imported</span>
+              </span>
+              <span style="font-size:12px;color:var(--t3);flex:none">7:15 AM</span>
+            </div>
+            <div class="empty-note"><span class="pair"><i class="blob" style="background:oklch(0.8 0.05 288)"></i><i class="blob" style="background:oklch(0.86 0.06 78)"></i></span><span class="t">38 more, every word searchable</span></div>
+          </div>
+          <div class="dock">
+            <span class="tab"><span style="width:18px;height:14px;border-radius:4px;background:#fff;display:block"></span><span class="l">Library</span></span>
+            <span class="big"><i style="background:#fff"></i><i style="background:var(--amber)"></i></span>
+            <span class="tab off"><span class="pair" style="gap:3px"><i style="width:7px;height:13px;border-radius:4px;background:rgba(255,255,255,.55);display:block"></i><i style="width:7px;height:13px;border-radius:4px;background:var(--amber);display:block"></i></span><span class="l">Ask</span></span>
+          </div>
+        </div>
+        <div class="hi" style="color:var(--ink)"></div>
+      </div></div>
+      <div class="cap">
+        <div class="n">02 &middot; Library</div>
+        <h2>Colour does the sorting</h2>
+        <p>Sticker cards on a violet-tinted page. The tile colour carries the kind of session, so the list reads before you read it &mdash; amber for a room full of people, violet for a lecture, ink for a one-voice memo.</p>
+        <ul class="notes">
+          <li><span class="k"></span>Ask takes the dock&rsquo;s right half. That settles the question you left open on the Mac.</li>
+          <li><span class="k"></span>The record blob is the app icon at 70px &mdash; same drawing, no separate asset.</li>
+          <li><span class="k"></span>Search covers spoken words and text read off slides, one index.</li>
+        </ul>
+      </div>
+    </div>
+
+    <!-- 3 start sheet -->
+    <div class="cell">
+      <div class="dev"><div class="scr">
+        <div class="isl"></div>
+        <div class="sb" style="color:var(--ink)"><span>9:41</span><span class="r">&#9679;&#9679;&#9679;&#9679;</span></div>
+        <div class="pane paper" style="justify-content:flex-end;position:relative;padding-top:0">
+          <div style="position:absolute;inset:0;padding:58px 20px 0;display:flex;flex-direction:column;gap:13px;filter:blur(3px);opacity:.5">
+            <div class="brand">Said<span class="dot">.</span></div>
+            <div style="height:44px;border-radius:22px;background:#fff"></div>
+            <div style="height:74px;border-radius:22px;background:#fff"></div>
+            <div style="height:74px;border-radius:22px;background:#fff"></div>
+          </div>
+          <div style="position:absolute;inset:0;background:oklch(0.35 0.16 288 / .4)"></div>
+          <div class="sheet">
+            <div class="grab"></div>
+            <h3>What are we listening to<span class="dot">?</span></h3>
+            <div class="opt amber">
+              <span class="ic"><i style="background:#fff"></i><i style="background:var(--amber-ink)"></i></span>
+              <span style="flex:1">
+                <span class="t" style="display:block">This room</span>
+                <span class="d" style="display:block;margin-top:3px">People around a table. Said separates the voices afterwards.</span>
+              </span>
+            </div>
+            <div class="opt violet">
+              <span class="ic"><i style="background:#fff"></i><i style="background:var(--amber)"></i></span>
+              <span style="flex:1">
+                <span class="t" style="display:block">A talk with slides</span>
+                <span class="d" style="display:block;margin-top:3px">Point the camera at the screen and Said reads it into the timeline.</span>
+              </span>
+            </div>
+            <div class="opt ink">
+              <span class="ic"><i style="background:#fff;border-radius:3px;width:18px;height:13px"></i></span>
+              <span style="flex:1">
+                <span class="t" style="display:block">Something already recorded</span>
+                <span class="d" style="display:block;margin-top:3px">A voice memo, a call you saved, a video file.</span>
+              </span>
+            </div>
+            <div class="foot-row">
+              <span class="l">Keep it all on this iPhone</span>
+              <span class="tog"><i></i></span>
+            </div>
+          </div>
+        </div>
+        <div class="hi" style="color:var(--ink)"></div>
+      </div></div>
+      <div class="cap">
+        <div class="n">03 &middot; Start</div>
+        <h2>Three characters, not three rows</h2>
+        <p>Your sheet, with the sources swapped for ones an iPhone can honestly deliver. Each keeps its brand colour and pressed edge so the choice still feels like picking a personality.</p>
+        <ul class="notes">
+          <li class="warn"><span class="k"></span><b>&ldquo;A call&rdquo; is gone.</b> There&rsquo;s no legitimate way to capture both sides. Pretending otherwise is a one-star review.</li>
+          <li><span class="k"></span>The toggle is a statement, not a setting &mdash; it&rsquo;s on, it can&rsquo;t be turned off, and it&rsquo;s there to be read.</li>
+          <li class="warn"><span class="k"></span>If screen recording gets scoped in, it becomes a fourth ink-coloured option here.</li>
+        </ul>
+      </div>
+    </div>
+
+    <!-- 4 recording -->
+    <div class="cell">
+      <div class="dev"><div class="scr">
+        <div class="isl"></div>
+        <div class="sb" style="color:#fff"><span>9:41</span><span class="r">&#9679;&#9679;&#9679;&#9679;</span></div>
+        <div class="pane violet">
+          <div style="padding:0 20px 20px;display:flex;align-items:center;justify-content:space-between;flex:none">
+            <span style="display:flex;align-items:center;gap:9px;padding:6px 13px 6px 11px;border-radius:15px;background:rgba(255,255,255,.14)">
+              <i style="width:9px;height:9px;border-radius:50%;background:var(--amber);display:block"></i>
+              <span style="font-size:13px;font-weight:600">Listening &mdash; this room</span>
+            </span>
+            <span style="font-size:12px;font-weight:600;color:rgba(255,255,255,.6)">On this iPhone</span>
+          </div>
+          <div style="padding:0 20px 22px;display:flex;flex-direction:column;gap:16px;flex:none">
+            <div class="timer">18:24</div>
+            <div class="bars">
+              <b style="height:28%"></b><b style="height:52%"></b><b style="height:38%"></b><b style="height:72%"></b><b style="height:44%"></b>
+              <b class="on" style="height:88%"></b><b class="on" style="height:62%"></b><b class="on" style="height:100%"></b><b class="on" style="height:48%"></b>
+              <b class="dim" style="height:20%"></b><b class="dim" style="height:13%"></b><b class="dim" style="height:9%"></b>
+            </div>
+          </div>
+          <div style="flex:1;overflow:hidden;padding:0 20px;display:flex;flex-direction:column;justify-content:flex-end;gap:15px">
+            <div style="display:flex;flex-direction:column;gap:6px;opacity:.45">
+              <span class="who"><i class="blob w"></i><span class="nm" style="color:rgba(255,255,255,.8)">Speaker 1</span></span>
+              <span class="say" style="color:rgba(255,255,255,.85)">&mdash; so the export work carries into next sprint either way, which I don&rsquo;t love.</span>
+            </div>
+            <div style="display:flex;flex-direction:column;gap:6px;opacity:.72">
+              <span class="who"><i class="blob w"></i><span class="nm" style="color:rgba(255,255,255,.8)">Speaker 2</span></span>
+              <span class="say" style="color:rgba(255,255,255,.9)">Only if we keep it as one job. Split compression out and the rest can ship.</span>
+            </div>
+            <div style="display:flex;flex-direction:column;gap:6px">
+              <span class="who"><i class="blob a"></i><span class="nm" style="color:var(--amber)">Speaker 1</span><span style="font-size:11px;font-weight:600;color:var(--amber)">now</span></span>
+              <span class="say">Then let&rsquo;s split it. Compression this sprint, and the case study stops waiting<span class="caret"></span></span>
+            </div>
+            <div class="tap">
+              <span class="k"><i style="width:8px;height:8px;border-radius:50% 50% 50% 2px;background:var(--amber);display:block"></i></span>
+              <span style="font-size:13px;font-weight:600">Tap a line to mark it &mdash; 2 marked</span>
+            </div>
+          </div>
+          <div style="padding:16px 20px 34px;display:flex;gap:11px;flex:none">
+            <span style="flex:1;height:56px;border-radius:28px;background:rgba(255,255,255,.14);display:flex;align-items:center;justify-content:center;gap:9px;font-size:15px;font-weight:600">
+              <i style="width:15px;height:11px;border-radius:3px;border:2px solid var(--amber);display:block"></i>Slide
+            </span>
+            <span style="flex:1.4;height:56px;border-radius:28px;background:var(--amber);color:var(--amber-ink);display:flex;align-items:center;justify-content:center;gap:9px;font-size:16px;font-weight:600;box-shadow:0 4px 0 var(--amber-press)">
+              <i style="width:15px;height:15px;border-radius:4px;background:var(--amber-ink);display:block"></i>Done
+            </span>
+          </div>
+        </div>
+        <div class="hi" style="color:#fff"></div>
+      </div></div>
+      <div class="cap">
+        <div class="n">04 &middot; Listening</div>
+        <h2>Amber is whoever is talking</h2>
+        <p>Older turns fade back, the live one sits at full strength with an amber blob and an amber caret. The rule from your deck does all the work here &mdash; no labels needed to know where to look.</p>
+        <ul class="notes">
+          <li class="warn"><span class="k"></span>Names read <span class="mono">Speaker 1</span> live. Real names arrive when the batch pass finishes, or by hand.</li>
+          <li><span class="k"></span><b>Slide</b> opens the camera without stopping the recording.</li>
+          <li><span class="k"></span>Screen off and it keeps going. A phone call pauses it, and the gap shows in the transcript rather than being stitched over.</li>
+        </ul>
+      </div>
+    </div>
+
+    <!-- 5 slide capture -->
+    <div class="cell">
+      <div class="dev"><div class="scr">
+        <div class="isl"></div>
+        <div class="sb" style="color:#fff"><span>9:41</span><span class="r">&#9679;&#9679;&#9679;&#9679;</span></div>
+        <div class="pane ink" style="padding-top:0">
+          <div class="cam">
+            <div class="wall">
+              <h4>Quorum intersection</h4>
+              <div class="l" style="width:84%"></div><div class="l" style="width:62%"></div><div class="l" style="width:78%"></div><div class="l" style="width:48%"></div>
+            </div>
+            <div class="det"><span>Reading</span></div>
+            <div class="camfoot">
+              <div class="rd"><i>&ldquo;Quorum intersection: any two majorities of an N-node cluster share at least one node.&rdquo;</i></div>
+              <div class="shut">
+                <span class="s">Cancel</span>
+                <span class="b"><i style="background:#fff"></i><i style="background:var(--amber)"></i></span>
+                <span class="s r">18:31</span>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="hi" style="color:#fff"></div>
+      </div></div>
+      <div class="cap">
+        <div class="n">05 &middot; Slide</div>
+        <h2>How the OCR survives the platform</h2>
+        <p>The Mac reads slides off the screen. A phone in a lecture theatre reads them off the wall &mdash; same Vision pass, same event on the timeline, same words in the search index.</p>
+        <ul class="notes">
+          <li><span class="k"></span>Recording never pauses. The amber timestamp is where the frame lands.</li>
+          <li><span class="k"></span>Live read-out before the shutter, so you know it&rsquo;s legible before you take it.</li>
+          <li><span class="k"></span>Shutter is the record blob again &mdash; third appearance of the same shape.</li>
+        </ul>
+      </div>
+    </div>
+
+    <!-- 6 transcript -->
+    <div class="cell">
+      <div class="dev"><div class="scr">
+        <div class="isl"></div>
+        <div class="sb" style="color:var(--ink)"><span>9:41</span><span class="r">&#9679;&#9679;&#9679;&#9679;</span></div>
+        <div class="pane paper">
+          <div style="padding:0 20px 16px;display:flex;flex-direction:column;gap:7px;flex:none">
+            <div style="font-size:28px;font-weight:600;letter-spacing:-.03em;line-height:1.12">Sprint planning &mdash; week 33</div>
+            <div style="display:flex;align-items:center;gap:7px">
+              <span style="display:flex">
+                <i style="width:22px;height:22px;border-radius:50% 50% 50% 5px;background:var(--violet);border:2px solid var(--paper);display:block"></i>
+                <i style="width:22px;height:22px;border-radius:50% 50% 50% 5px;background:var(--amber);border:2px solid var(--paper);display:block;margin-left:-7px"></i>
+                <i style="width:22px;height:22px;border-radius:50% 50% 50% 5px;background:var(--ink);border:2px solid var(--paper);display:block;margin-left:-7px"></i>
+              </span>
+              <span style="font-size:13px;color:var(--t2)">3 voices &middot; 24 min &middot; today</span>
+            </div>
+          </div>
+          <div style="padding:0 20px 14px;display:flex;gap:7px;flex:none">
+            <span class="chip on">Transcript</span><span class="chip w">The gist</span><span class="chip w">To do <span style="color:var(--amber-ink2)">4</span></span>
+          </div>
+          <div style="flex:1;overflow:hidden;padding:4px 20px 0;display:flex;flex-direction:column;gap:16px">
+            <div class="gist">
+              <span class="h"><i class="blob" style="width:11px;height:11px;background:var(--amber-ink2)"></i><span class="txt">In a sentence</span></span>
+              <span class="b">Compression splits out as its own job this sprint. Everything downstream is unblocked, so the case study ships without waiting.</span>
+            </div>
+            <div class="turn">
+              <span class="h"><i class="blob" style="width:10px;height:10px"></i><span class="nm">Priya</span><span class="ts">08:14</span></span>
+              <span class="b">Only if we keep it as one job. Split <span class="hl">compression</span> out and the rest can ship.</span>
+            </div>
+            <div class="slidecard" style="margin-left:18px">
+              <span class="im" style="display:block">
+                <h5>Export pipeline &mdash; current</h5>
+                <span class="l" style="display:block;width:82%"></span><span class="l" style="display:block;width:58%"></span>
+              </span>
+              <span class="rd" style="display:flex"><i class="blob" style="width:9px;height:9px;background:var(--amber-ink2)"></i>read: &ldquo;compress &rarr; render &rarr; deliver&rdquo;</span>
+            </div>
+            <div class="turn">
+              <span class="h"><i class="blob a" style="width:10px;height:10px"></i><span class="nm">You</span><span class="ts">08:41</span></span>
+              <span class="b">Then let&rsquo;s split it. Priya takes compression this sprint.</span>
+              <span class="todo"><i class="box"></i><span class="t">Priya &middot; compression &middot; this sprint</span></span>
+            </div>
+          </div>
+          <div class="player">
+            <div class="t"><span class="ts">08:41</span><span class="track"><i class="f"></i><i class="k"></i></span><span class="ts r">24:06</span></div>
+            <div class="ctrl"><span class="s">15s</span><span class="p"><i></i><i></i></span><span class="s">1.5&times;</span></div>
+          </div>
+        </div>
+        <div class="hi" style="color:var(--ink)"></div>
+      </div></div>
+      <div class="cap">
+        <div class="n">06 &middot; Transcript</div>
+        <h2>Everything anchored to its moment</h2>
+        <p>Amber gist card at the top, violet task stickers sitting inline exactly where they were said, and slides dropped into the flow as cards. The ink player looks like a physical remote and stays put across all three tabs.</p>
+        <ul class="notes">
+          <li><span class="k"></span>Tap any line to seek. Tap a name to rename that voice for the whole session.</li>
+          <li><span class="k"></span>Amber highlight marks a search hit or a phrase a task was pulled from.</li>
+          <li class="warn"><span class="k"></span>Verbatim vs cleaned still needs a home &mdash; probably a long-press, not a fourth chip.</li>
+        </ul>
+      </div>
+    </div>
+
+    <!-- 7 generate -->
+    <div class="cell">
+      <div class="dev"><div class="scr">
+        <div class="isl"></div>
+        <div class="sb" style="color:var(--ink)"><span>9:41</span><span class="r">&#9679;&#9679;&#9679;&#9679;</span></div>
+        <div class="pane paper" style="justify-content:flex-end;position:relative;padding-top:0">
+          <div style="position:absolute;inset:0;padding:58px 20px 0;display:flex;flex-direction:column;gap:13px;filter:blur(3px);opacity:.5">
+            <div style="font-size:28px;font-weight:600">Sprint planning</div>
+            <div style="height:74px;border-radius:22px;background:var(--amber-tint)"></div>
+            <div style="height:60px;border-radius:22px;background:#fff"></div>
+          </div>
+          <div style="position:absolute;inset:0;background:oklch(0.35 0.16 288 / .4)"></div>
+          <div class="sheet" style="gap:8px">
+            <div class="grab"></div>
+            <div style="display:flex;align-items:center;gap:10px;padding:0 4px">
+              <h3 style="flex:1">Make something<span class="dot">.</span></h3>
+              <span class="mono" style="font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--violet)">On this iPhone</span>
+            </div>
+            <div class="secl">Used before</div>
+            <div class="tpl">
+              <div class="tplc on"><div class="ti">Meeting minutes</div><div class="td">Overview, decisions, who owns what</div></div>
+              <div class="tplc"><div class="ti">To-do list</div><div class="td">Just the commitments, timestamped</div></div>
+            </div>
+            <div class="secl">Summaries</div>
+            <div class="tpl">
+              <div class="tplc"><div class="ti">In a sentence</div><div class="td">The gist, nothing else</div></div>
+              <div class="tplc"><div class="ti">Full notes</div><div class="td">Section by section</div></div>
+            </div>
+            <div class="secl">From your packs</div>
+            <div class="tpl">
+              <div class="tplc"><div class="pk">Education</div><div class="ti">Study guide</div><div class="td">Concepts and worked examples</div></div>
+              <div class="tplc"><div class="pk">Education</div><div class="ti">Flashcards</div><div class="td">Q&amp;A pairs you can export</div></div>
+            </div>
+          </div>
+        </div>
+        <div class="hi" style="color:var(--ink)"></div>
+      </div></div>
+      <div class="cap">
+        <div class="n">07 &middot; Make something</div>
+        <h2>Fourteen templates, two taps</h2>
+        <p>A wall of templates is a phone&rsquo;s worst screen. Recency first, then the built-ins, then whatever the enabled packs add &mdash; so the thing you always pick stays one reach away.</p>
+        <ul class="notes">
+          <li><span class="k"></span>Output caches to the session and reopens instantly, same as the Mac.</li>
+          <li><span class="k"></span>Selected card goes solid violet. That&rsquo;s the only decoration in the sheet.</li>
+          <li class="warn"><span class="k"></span>Without Apple Intelligence this sheet doesn&rsquo;t open &mdash; the button explains why instead.</li>
+        </ul>
+      </div>
+    </div>
+
+    <!-- 8 ask -->
+    <div class="cell">
+      <div class="dev"><div class="scr">
+        <div class="isl"></div>
+        <div class="sb" style="color:var(--ink)"><span>9:41</span><span class="r">&#9679;&#9679;&#9679;&#9679;</span></div>
+        <div class="pane paper">
+          <div style="padding:0 20px 14px;display:flex;align-items:center;gap:11px;flex:none">
+            <span class="field" style="flex:1">
+              <span class="pair"><i class="blob"></i><i class="blob a"></i></span>
+              <span style="font-size:15px;color:var(--ink)">what did I promise about export</span>
+              <i style="width:2.5px;height:19px;border-radius:2px;background:var(--amber);display:block"></i>
+            </span>
+            <span style="font-size:15px;font-weight:600;color:var(--violet)">Cancel</span>
+          </div>
+          <div style="flex:1;overflow:hidden;padding:4px 20px 0;display:flex;flex-direction:column;gap:13px">
+            <div class="ans">
+              <span class="h"><span class="pair" style="gap:4px"><i class="blob w" style="width:14px;height:14px;border-radius:50% 50% 50% 3px"></i><i class="blob a" style="width:14px;height:14px;border-radius:50% 50% 50% 3px"></i></span><span class="txt">You said, they said</span></span>
+              <span class="b">Compression splits out as its own job and Priya owns it this sprint. The case study ships without waiting on the full pipeline &mdash; you committed to that twice.</span>
+              <span class="cites"><span class="cite a">Sprint planning 08:41</span><span class="cite g">Coffee with Marcus 31:02</span></span>
+            </div>
+            <div class="rail-lab" style="padding-top:4px"><span class="txt">Said out loud &middot; 4</span><span class="ln"></span></div>
+            <div class="src">
+              <span class="h"><i class="blob" style="width:9px;height:9px"></i><span class="nm">Sprint planning &mdash; week 33</span><span class="ts">08:41</span></span>
+              <span class="q">&ldquo;Then let&rsquo;s split it. Priya takes <span class="hl">compression</span> this sprint.&rdquo;</span>
+            </div>
+            <div class="src">
+              <span class="h"><i class="blob a" style="width:9px;height:9px"></i><span class="nm">Coffee with Marcus</span><span class="ts">31:02</span></span>
+              <span class="q">&ldquo;The case study can&rsquo;t keep waiting on the <span class="hl">export</span> work, it&rsquo;s two months late.&rdquo;</span>
+            </div>
+          </div>
+          <div class="kb">
+            <div class="kbr"><b></b><b></b><b></b><b></b><b></b><b></b><b></b><b></b><b></b><b></b></div>
+            <div class="kbr"><b></b><b></b><b></b><b></b><b></b><b></b><b></b><b></b><b></b></div>
+            <div class="kbr"><b class="wide"></b><b></b><b></b><b></b><b></b><b></b><b></b><b class="wide"></b></div>
+            <div class="kbr"><b class="wide"></b><b class="wide" style="flex:5"></b><b class="wide go"></b></div>
+          </div>
+        </div>
+        <div class="hi" style="color:var(--ink)"></div>
+      </div></div>
+      <div class="cap">
+        <div class="n">08 &middot; Ask</div>
+        <h2>The answer, then the receipts</h2>
+        <p>A violet card carries the answer, amber chips carry the citations, and tapping one lands on the second it was said. Sources sit underneath as quotes, not links &mdash; you can check the claim without leaving.</p>
+        <ul class="notes">
+          <li><span class="k"></span>Same keyword index as the Mac, so the retrieval is auditable rather than magic.</li>
+          <li><span class="k"></span>With the keyboard up there&rsquo;s room for the answer and two sources. That&rsquo;s the right amount.</li>
+        </ul>
+      </div>
+    </div>
+
+    <!-- 9 settings -->
+    <div class="cell">
+      <div class="dev"><div class="scr">
+        <div class="isl"></div>
+        <div class="sb" style="color:var(--ink)"><span>9:41</span><span class="r">&#9679;&#9679;&#9679;&#9679;</span></div>
+        <div class="pane paper">
+          <div style="padding:0 20px 14px;flex:none;display:flex;align-items:center;gap:10px">
+            <span style="font-size:15px;font-weight:600;color:var(--violet)">&lsaquo; Library</span>
+          </div>
+          <div style="padding:0 20px 16px;flex:none"><span style="font-size:34px;font-weight:600;letter-spacing:-.03em">Settings</span></div>
+          <div style="flex:1;overflow:hidden;padding:0 20px">
+            <div class="glab">Listening</div>
+            <div class="grp">
+              <div class="itm"><span class="col">Accuracy<span class="d">Faster drains less battery</span></span><span class="v">Balanced &rsaquo;</span></div>
+              <div class="itm"><span class="col">Language</span><span class="v">English &rsaquo;</span></div>
+              <div class="itm"><span class="col">Separate the voices<span class="d">Runs after you stop. Downloads a small model once.</span></span><span class="tog sm"><i></i></span></div>
+            </div>
+            <div class="glab">Privacy</div>
+            <div class="grp">
+              <div class="itm"><span class="col">Unlock with Face ID</span><span class="tog sm"><i></i></span></div>
+              <div class="itm"><span class="col">Scramble names and numbers<span class="d">Keeps a masked copy next to the real one</span></span><span class="tog sm off"><i></i></span></div>
+              <div class="itm"><span class="col">Delete sessions after</span><span class="v">Never &rsaquo;</span></div>
+            </div>
+            <div class="glab">Storage</div>
+            <div class="grp">
+              <div class="itm"><span class="col">42 sessions<span class="d">3.1 GB, mostly audio</span></span><span class="v">Manage &rsaquo;</span></div>
+            </div>
+          </div>
+        </div>
+        <div class="hi" style="color:var(--ink)"></div>
+      </div></div>
+      <div class="cap">
+        <div class="n">09 &middot; Settings</div>
+        <h2>Say what a switch costs</h2>
+        <p>Grouped stickers instead of the Mac&rsquo;s tabs. Every toggle with a real consequence &mdash; a download, a second stored copy, a battery hit &mdash; says so in the line underneath rather than in a help sheet.</p>
+        <ul class="notes">
+          <li><span class="k"></span>Model choice is framed as accuracy, because nobody outside the repo knows what <span class="mono">base.en</span> means.</li>
+          <li><span class="k"></span>Missing next to the Mac: hotkeys, capture target, calendar auto-start.</li>
+          <li><span class="k"></span>Storage gets its own group. On a phone that number decides whether the app stays installed.</li>
+        </ul>
+      </div>
+    </div>
+
+    <!-- 10 send -->
+    <div class="cell">
+      <div class="dev"><div class="scr">
+        <div class="isl"></div>
+        <div class="sb" style="color:var(--ink)"><span>9:41</span><span class="r">&#9679;&#9679;&#9679;&#9679;</span></div>
+        <div class="pane paper" style="justify-content:flex-end;position:relative;padding-top:0">
+          <div style="position:absolute;inset:0;padding:58px 20px 0;display:flex;flex-direction:column;gap:13px;filter:blur(3px);opacity:.5">
+            <div style="font-size:28px;font-weight:600">Sprint planning</div>
+            <div style="height:74px;border-radius:22px;background:var(--amber-tint)"></div>
+          </div>
+          <div style="position:absolute;inset:0;background:oklch(0.35 0.16 288 / .4)"></div>
+          <div class="sheet">
+            <div class="grab"></div>
+            <h3>Hand it over<span class="dot">.</span></h3>
+            <div class="file">
+              <span class="ic"><i style="background:#fff"></i><i style="background:var(--amber)"></i></span>
+              <span>
+                <span class="nm" style="display:block">Sprint planning &mdash; week 33</span>
+                <span class="mt" style="display:block">24:06 &middot; audio + slides &middot; 31.4 MB</span>
+              </span>
+            </div>
+            <div class="secl">AirDrop</div>
+            <div class="drops">
+              <span class="drop">
+                <span class="av mac"><i style="width:26px;height:18px;border-radius:4px;border:2.5px solid var(--amber);display:block"></i></span>
+                <span class="nm">Nik&rsquo;s MacBook</span>
+              </span>
+              <span class="drop">
+                <span class="av ph"><span class="pair" style="gap:4px"><i class="blob w" style="width:13px;height:13px;border-radius:50% 50% 50% 3px"></i><i class="blob" style="width:13px;height:13px;border-radius:50% 50% 50% 3px;background:var(--amber-ink)"></i></span></span>
+                <span class="nm">Aroha&rsquo;s iPhone</span>
+              </span>
+            </div>
+            <div class="secl">Or save as</div>
+            <div class="grp" style="margin-bottom:6px">
+              <div class="itm"><span class="col">Transcript</span><span class="v">Markdown &rsaquo;</span></div>
+              <div class="itm"><span class="col">Subtitles</span><span class="v">SRT &rsaquo;</span></div>
+              <div class="itm"><span class="col">Document</span><span class="v">PDF &rsaquo;</span></div>
+            </div>
+          </div>
+        </div>
+        <div class="hi" style="color:var(--ink)"></div>
+      </div></div>
+      <div class="cap">
+        <div class="n">10 &middot; Send</div>
+        <h2>A session is a thing you can hand over</h2>
+        <p>Until there&rsquo;s an account, moving a session is a transfer rather than a sync &mdash; so make the object obvious. A <span class="mono">.said</span> bundle is the whole session folder zipped: words, audio, slides, everything.</p>
+        <ul class="notes">
+          <li><span class="k"></span>The Mac claims the file type and imports it whole, keeping the session&rsquo;s identity.</li>
+          <li><span class="k"></span>Size up front. A slide-heavy lecture is not a casual AirDrop.</li>
+          <li class="warn"><span class="k"></span>One-way for now. Editing the same session on both devices is what needs the account, and that&rsquo;s the later problem.</li>
+        </ul>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+</body>
+</html>

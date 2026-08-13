@@ -15,7 +15,7 @@ if [[ -z "${DEVELOPER_DIR:-}" && -d /Applications/Xcode.app/Contents/Developer ]
     export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
 fi
 
-SHAPE="${SHAPE:-comma}"
+SHAPE="${SHAPE:-doc}"
 REACH="${REACH:-1.62}"
 ANGLE="${ANGLE:-225}"
 VARIANT="${VARIANT:-violet}"

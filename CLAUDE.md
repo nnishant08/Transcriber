@@ -17,10 +17,18 @@ begins. An optional on-device **cleanup** view removes fillers/fixes punctuation
 canonical), and users can author **custom summary modes**. Shows in both the **Dock** and the **menu
 bar**. **Everything stays on this Mac — no cloud, no account, works offline.**
 
-> Status: two feature waves shipped & verified (unified store/Library/search; chat & intelligence,
-> capture coverage, output & accuracy, UX & trust), plus **Stage 1** (diarization / multilingual /
-> calendar capture / cleanup + custom modes) built & self-tested, awaiting human smoke-tests.
-> The user iterates with Claude from here.
+> Status: everything through **Stage 2** is shipped and human-verified — the unified store, Library
+> and search; chat & intelligence, capture coverage, output & accuracy, UX & trust; Stage 1
+> (diarization / multilingual / calendar capture / cleanup + custom modes); Stage 2 (Generation
+> Studio / vertical packs / privacy & compliance). Screen recording and the pause / capture-resilience
+> work are built and partly verified.
+>
+> **Phase 1 (cross-platform core) is built and self-tested, awaiting human smoke-tests.** The package
+> is now **`SaidKit` (macOS + iOS) + `Said` (the macOS app)**, every macOS assumption in the shared
+> code is an injectable seam, sessions have a stable `id` and can be handed over as a `.said` bundle,
+> and the app carries the settled violet/amber/ink identity. **Phase 2 builds the iPhone app on top
+> of this** and is written against THIS FILE — see **Design system** for the visual contract and the
+> iOS screen inventory. The user iterates with Claude from here.
 
 ## User guide reference (SOURCE for info sheets / user instructions / quick-starts / FAQs)
 **When asked to produce any USER-FACING material (one-pager, quick-start, how-to, keyboard-shortcut card,
@@ -146,14 +154,133 @@ model selected; calendar capture needs the optional Calendar grant; speaker name
 video file, so long sessions are large (~1–3 GB/hour at 1080p — drop to 720p for all-day capture);
 chat reasons over the transcript, not the video's pixels.
 
+## Design system (SOURCE for any visual work, Mac or iOS)
+Reference artifact: **`Design/Said-iPhone-Screens.html`** — the ten iPhone screens drawn on this
+identity. It is a picture, not a build input: it is in no target's `resources:`, referenced by
+neither `Package.swift` nor `build_app.sh`, and cannot end up inside `Said.app`. **This section is
+the contract; the HTML is the illustration.** Tokens live in `Sources/SaidKit/Theme.swift`.
+
+**Identity.** The name is **Said** with an amber full stop — `Said.` The mark is two quote-blobs
+side by side on a violet ground: the left white, the right amber. Geometry, proportional to the
+icon's edge: **blob 27%, gap 7%, corner radius 50% 50% 50% with the fourth corner at 3%** (the
+tail). `Scripts/GenerateIcon.swift` draws exactly this (`shape=doc`, the default) and renders every
+size natively rather than downscaling from 1024 — **there is no simplified small variant**, because
+the same drawing works down to 16pt.
+
+**The blob is the recurring primitive.** One shape, everywhere, at every scale: the app icon, the
+record button, list avatars, bullets, the scrubber thumb, the camera shutter, the toggle knob.
+
+**Palette.** oklch alongside the sRGB hex so future colours are derived in that space, not eyeballed.
+
+| Token | oklch | Hex |
+|---|---|---|
+| violet (primary interactive) | 0.52 0.20 288 | `0x6949D2` |
+| violet pressed | 0.42 0.19 288 | `0x4F2BAC` |
+| violet deep (recording ground) | 0.30 0.14 288 | `0x2F166E` |
+| violet tint | 0.90 0.07 288 | `0xDBD7FF` |
+| violet tint ink | 0.35 0.15 288 | `0x3B2282` |
+| amber (live / current speaker) | 0.78 0.13 68 | `0xEEA753` |
+| amber pressed | 0.63 0.12 68 | `0xB87A2B` |
+| amber tint | 0.92 0.07 78 | `0xFFE0B0` |
+| amber mark (highlight) | 0.88 0.11 78 | `0xFFCF82` |
+| amber ink (text on amber) | 0.25 0.06 68 | `0x341B00` |
+| amber ink 2 | 0.45 0.10 68 | `0x794900` |
+| ink | 0.22 0.03 288 | `0x1A1828` |
+| ink pressed | 0.15 0.03 288 | `0x0B0917` |
+| ink deep | 0.19 0.03 288 | `0x131220` |
+| paper | 0.96 0.022 288 | `0xF1F0FF` |
+| paper 2 | 0.975 0.015 288 | `0xF6F5FF` |
+| card | — | `0xFFFFFF` |
+| rule / hairline | 0.88 0.05 288 | `0xD5D3F7` |
+| text 2 | 0.50 0.05 288 | `0x615F7F` |
+| text 3 | 0.60 0.04 288 | `0x7F7D97` |
+
+**Speaker slots** — eight hues at the same L/C, rotated in oklch so no chip fights another, cycling
+past 8. **Speaker 1 is violet and speaker 2 is amber, so a two-person recording reads as the brand.**
+
+| Slot | Light | Dark |
+|---|---|---|
+| 1 violet | `0x6851C3` | `0xB3A9FF` |
+| 2 amber | `0xA54E00` | `0xEEA753` |
+| 3 teal | `0x00828F` | `0x17D0D8` |
+| 4 pink | `0xA43687` | `0xEE95D1` |
+| 5 green | `0x227E00` | `0x89CC7B` |
+| 6 rust | `0xB63325` | `0xFF9685` |
+| 7 blue | `0x006AC5` | `0x73BDFF` |
+| 8 olive | `0x796B00` | `0xC4BC4F` |
+
+**Type roles.** Serif for transcript body. System UI for chrome. **Monospace for timestamps, counts,
+eyebrow labels and uppercase section rules** — the mono face now carries labels, not just times.
+Structure is unchanged from the Mac pass; only the roles widened. No bundled font files.
+
+**Component vocabulary.** Cards are **stickers**: solid fill, generous radius, a **hard offset
+shadow (`0 3px 0` in the rule colour)** — never a soft blur. Primary buttons carry a **4px pressed
+edge** in their own darker tone. Chips are pill-shaped and colour-coded **by meaning, not by state
+alone**. Radii sit at `windowRadius 14` / `controlRadius 11` / `cardRadius 12` / `rowRadius 8`.
+
+**THE ONE RULE — amber marks whoever is speaking.** In the live transcript, in the session view, on
+speaker chips, on citation chips. **Nothing else may compete for amber.** The old record RED is
+gone: the record dot, Stop, the meter, "Listening" and the timer are all amber now.
+
+Two consequences, both decisions rather than accidents:
+- **Paused is no longer amber.** It was, and amber now means live — the two states cannot share a
+  colour. Paused renders in the muted ink/text family, so a held session reads as *quieted*, which
+  is what it is, and never competes with live amber or with violet's "this is interactive".
+- **`ok` (the "On-device · offline" badge) uses the amber TINT / ink-2 tones**, not full-strength
+  amber. It is a permanent badge; at full strength it would compete with a live indicator.
+- **Selection stays the SYSTEM accent** (Finder/Mail behaviour). Brand violet is for brand and AI
+  surfaces, never for "this row is selected". `summaryEdge`'s pink→indigo→teal gradient is **removed**
+  — solid violet. One accent gradient in a three-colour identity is one too many.
+
+**iOS screen inventory** (Phase 2 builds these; one line each on why):
+1. **First run** — mic only, one claim. The Mac walks three grants; iPhone needs one to be useful, so the screen spends its space on the promise. Camera is asked for at the first slide capture; Notifications and Calendar move to Settings.
+2. **Library** — the single root, with a three-part dock: Library / record / Ask.
+3. **Source sheet** — three characters, not three rows: *this room*, *a talk with slides*, *something already recorded*.
+4. **Recording** — violet-deep ground; older turns fade back, the live one carries an amber blob and an amber caret.
+5. **Camera slide capture** — recording never pauses; the amber timestamp is where the frame lands.
+6. **Session view** — amber gist card on top, violet task stickers inline where they were said, slide cards on the timeline, one ink player bar across all tabs.
+7. **Generation sheet** — grouped by recency first, then built-ins, then enabled packs.
+8. **Ask** — the answer in a violet card, then the receipts: amber citation chips, sources as quotes.
+9. **Settings** — grouped stickers; **every toggle with a real consequence states what it costs** (a download, a second stored copy, a battery hit) in the line underneath.
+10. **Send** — a session is a thing you can hand over: AirDrop a `.said`, or save as Markdown/SRT/PDF.
+
+**Ask occupies the dock's right third on iPhone.** This settles the placement question the Mac
+redesign left open — **the Mac should follow the phone** when that redesign is implemented.
+
+**Three constraints that shaped the iOS design — recorded so nobody re-litigates them from the mockups:**
+- **Phone-call audio is not capturable.** iOS exposes no API for it and Apple's own call recording is
+  Phone-app only. The iPhone sources are *this room*, *a talk with slides*, and *something already
+  recorded*. **"Record a call" must not appear in any copy.**
+- **Speaker names are not live.** Diarization is a batch pass after stop and names are entered by
+  hand; the live view shows `Speaker 1`. Cross-session voiceprint enrollment stays deferred (the hook
+  comment in `Diarizer.swift` remains the marker).
+- **Screen recording on iPhone is out of scope for Phase 2.** ReplayKit via a broadcast upload
+  extension would make it possible, but that is a separate process with its own lifecycle, not a port
+  of the Mac's ScreenCaptureKit path. **Camera slide capture is how OCR reaches the iOS timeline.**
+
 ## Target & stack
+- **TWO TARGETS** (Phase 1). `Package.swift` declares `platforms: [.macOS(.v14), .iOS("18.0")]`:
+  - **`SaidKit`** (`Sources/SaidKit`, library product) — the cross-platform core: session store &
+    document model, transcription, diarization, on-device intelligence, generation, export, privacy,
+    capture primitives, `Theme`. Depends on WhisperKit + FluidAudio ONLY. **It must never acquire an
+    AppKit / ScreenCaptureKit / KeyboardShortcuts dependency**; `Scripts/verify_ios_build.sh` is the
+    gate that enforces that.
+  - **`Said`** (`Sources/Said`, executable) — the macOS app: windows, menu bar, hotkeys, screen and
+    system-audio capture, and the whole headless `--selftest-*` suite (which tests SaidKit through
+    its PUBLIC API on purpose — the existing suite is the regression proof for the split).
+  - `.iOS("18.0")` uses the STRING form deliberately: the `.v18` enum case needs
+    swift-tools-version 6.0, and bumping the tools version would switch the package into Swift 6
+    language mode (strict concurrency) — a behaviour change this refactor must not make.
 - Apple Silicon, **macOS 14+ deployment target** (raised from 13 in Stage 1 — FluidAudio's platform
   floor is macOS 14; the app is built & run on macOS 26, so the bump is functionally harmless).
+  **iOS 18+** is the new floor: every dependency is satisfied well below it and nothing in the
+  product serves a device that can't reach it. On-device AI stays gated at **macOS 26 / iOS 26**.
   SwiftUI + AppKit. NOTE: the floor bump surfaced `onChange(of:perform:)` deprecation WARNINGS in
   pre-existing view code — left as-is on purpose (presentation files are non-regression territory).
 - Built with **Swift Package Manager** — there is **no selected Xcode**, only Command Line Tools, but
   full **Xcode IS installed** at `/Applications/Xcode.app`. `Scripts/build_app.sh` points the build at
   it via `DEVELOPER_DIR` (needed because a dependency uses the `#Preview` macro plugin from Xcode).
+  The iOS gate needs Xcode too (`xcodebuild`), and sets `DEVELOPER_DIR` the same way.
 - On-device STT: **WhisperKit** (Argmax, CoreML). Model downloads once (~150 MB for base.en), then offline.
 - On-device speaker diarization: **FluidAudio 0.15.2** (FluidInference; Pyannote segmentation +
   WeSpeaker embeddings, CoreML/ANE; zero transitive package deps). Models download once, anonymously.
@@ -162,8 +289,12 @@ chat reasons over the transcript, not the video's pixels.
 - System audio: a **Core Audio process tap** (macOS 14.2+, default) with **ScreenCaptureKit** as the
   fallback. Screen recording owns a SEPARATE video-only `SCStream` → AVAssetWriter (H.264 + AAC).
   Microphone: **AVAudioEngine**.
-- On-device AI summary: Apple **FoundationModels** (Apple Intelligence, macOS 26).
-- App Sandbox **disabled** (personal tool — avoids entitlement friction for TCC + audio).
+- On-device AI summary: Apple **FoundationModels** (Apple Intelligence, macOS 26 / iOS 26).
+- `.said` session bundles: **AppleArchive** + **System** (`FilePath`), LZFSE. System frameworks —
+  no new SPM dependency. Deliberately NOT `ditto`/`zip`: those need `Process`, which does not exist
+  on iOS, and this code is shared.
+- App Sandbox **disabled on macOS** (personal tool — avoids entitlement friction for TCC + audio).
+  iOS sandboxing is Phase 2's concern.
 
 ## Build & run
 ```sh
@@ -171,17 +302,89 @@ Scripts/setup_signing.sh      # ONCE: create the stable self-signed identity (so
 Scripts/make_icon.sh          # ONCE (or when changing the icon): regenerate Resources/AppIcon.icns
 Scripts/build_app.sh          # swift build -c release, assemble + sign + de-quarantine Said.app
 open ./Said.app               # or run ./Said.app/Contents/MacOS/Said to see logs
+
+Scripts/verify_selftests.sh   # the full headless sweep, ENDING with the iOS gate (SKIP_IOS=1 to skip)
+Scripts/verify_ios_build.sh   # the gate on its own: does SaidKit still compile for iPhone?
 ```
 - After `open`, allow **~1–2 s** for LaunchServices; the Transcript window opens on launch.
 - **Fully Quit before relaunching** (menu-bar ▸ Quit, or `pkill -f Said.app`) — otherwise `open`
   just re-activates the running instance instead of starting fresh.
 - Pinned exact dependency versions live in `Package.swift`. WhisperKit/KeyboardShortcuts APIs drift
   across versions — read the pinned tag's source before changing API calls.
+- **`Scripts/verify_ios_build.sh` is a HARD GATE, not a convenience.** It builds the `SaidKit` scheme
+  for `generic/platform=iOS` through `xcodebuild` (SPM alone does not cross-compile to iOS reliably)
+  and fails loudly on any error. A green macOS build and a green self-test sweep say NOTHING about
+  whether the core still compiles for iPhone — one stray `import AppKit` in `SaidKit` and Phase 2 is
+  broken with no other signal. It is wired in as the last step of `verify_selftests.sh`.
+  It needs the `SaidKit` **library product** in `Package.swift` — that is what makes SPM generate a
+  `SaidKit` scheme for `xcodebuild` to build.
 
-## Source map (Sources/Transcriber/)
+## Source map — TWO TARGETS
+The split (Phase 1) is the single most important structural fact about this tree. **Before adding a
+file, decide which target it belongs in**, by one rule: *does it import AppKit, ScreenCaptureKit or
+KeyboardShortcuts, or does it exist only to draw a macOS window?* If yes → `Sources/Said`. If no →
+`Sources/SaidKit`. When in doubt, put it in `SaidKit` and let `verify_ios_build.sh` tell you if you
+were wrong.
+
+### `Sources/SaidKit/` — the cross-platform core (macOS + iOS)
+- `Platform.swift` — **the portability seams.** `SessionLocation` (C1: the session root provider —
+  `~/Desktop/Transcripts` on macOS, the app container's Documents on iOS, injectable for tests);
+  `SessionTrash` (C2: how a session is destroyed — macOS injects `FileManager.trashItem`, iOS removes
+  directly, and the UN-INJECTED macOS default THROWS rather than hard-deleting); `SaidAppInfo`
+  (name/version/platform, stamped into `.said` manifests).
+- `PlatformUI.swift` — **the ONE AppKit/UIKit `#if` in SaidKit, on purpose.** Both branches are real
+  implementations of the same contract: `PlatformFont`/`PlatformColor` typealiases,
+  `PlatformColor.dynamic(light:dark:)` (macOS `NSColor(name:)` block / iOS `UIColor(dynamicProvider:)`),
+  `dynamicColor`/`dynamicWhite` (the primitives every `Theme` token is built from), and
+  `NSAttributedString.saidRTFData()` (macOS keeps AppKit's non-throwing `rtf(from:)` so RTF output is
+  byte-identical; UIKit has no `rtf(...)`, so iOS uses the throwing `data(from:)`).
+- `SessionBundle.swift` — the `.said` format (see its own section below).
+- `Theme.swift` — design tokens (see **Design system**). Imports SwiftUI ONLY; resolution goes
+  through `PlatformUI`, so Phase 2's iOS UI uses these same tokens.
+- Everything else that was portable, unchanged in behaviour: `DocumentBuilder` · `SessionStore` ·
+  `SessionIO` · `SearchIndex` · `TitleGenerator` · `Intelligence` · `Summarizer` · `Generation` ·
+  `GenerationTemplates` · `Packs` (+ `Packs/*.json`) · `Entitlements` · `Retention` · `Redaction` ·
+  `Subtitles` · `Exporter` · `SpeakerAlignment` · `Diarizer` · `AudioSupport` · `AudioFile` ·
+  `AudioCaptureMic` · `TranscriptionEngine` · `Importer` · `ClipExporter` · `Notifier` ·
+  `CalendarMonitor` · `Cleanup` (+ `CustomSummaryMode`) · `CaptureControl`.
+
+### `Sources/Said/` — the macOS app
+`Main` (dispatcher + the whole `SelfTest` suite) · `SaidApp` (was `TranscriberApp`) · `AppModel` ·
+`WindowManager` · `MenuContent` · `MenuCommands` (`SaidCommands`) · `MainWindow` · `TranscriptCanvas` ·
+`TranscriptComponents` · `Materials` (NSVisualEffectView) · `SettingsView` · `LibraryWindow` ·
+`SessionViewer` · `AskWindow` · `OnboardingWindow` · `Shortcuts` · `Sharing` (NSSharingServicePicker) ·
+`ScreenRecorder` · `AudioCaptureSystem` · `AudioCaptureProcessTap` · `SysAudioProbe`.
+
+### Classification notes (things that could have gone either way)
+- **`CaptureControl` → SaidKit.** Not named in the Phase 1 prompt, but it is pure (gate / silence /
+  stall / session clock) and Phase 2 needs all of it. It self-tests headlessly on both platforms.
+- **`AudioCaptureMic` → SaidKit.** The AVAudioEngine tap → `Resampler16k` → `SampleReceiver` chain is
+  identical on both platforms. Its ONE platform difference is the input-route listener, a real
+  two-branch seam: macOS uses a CoreAudio `kAudioHardwarePropertyDefaultInputDevice` listener, iOS
+  uses `AVAudioSession.routeChangeNotification`. A comment marks where `AVAudioSession` CONFIGURATION
+  attaches on iOS — deliberately not added (Phase 2).
+- **`Exporter` → SaidKit.** `WKWebView.createPDF` exists on iOS; `NSRect` became `CGRect`; fonts and
+  the RTF call route through `PlatformUI`. `Sharing` (NSSharingServicePicker) has no iOS equivalent
+  and stays in `Said`.
+- **`ClipExporter` → SaidKit, with NO seam.** Its caption burn-in used `NSFont`/`NSColor`/
+  `NSGraphicsContext`; it now uses **CoreText** (`CTFramesetter`), which draws identically on both
+  platforms against the same `CGContext`. Geometry, size, weight, colour, centring and tail
+  truncation are unchanged. *Prefer this move — CoreGraphics/CoreText instead of a `#if` — wherever
+  it is available.*
+- **`Theme` → SaidKit** despite being presentation: Phase 2's UI needs the same tokens, and the
+  light/dark resolver is a legitimate two-branch seam.
+- **Image currency in SaidKit is `CGImage`** (and `Data` for PNG bytes) — there is no `NSImage`
+  anywhere in the core. Any `NSImage` conversion happens in `Said`, at the view boundary.
+- **`SelfTest` stays in `Said`** and tests SaidKit through its public API. Deliberate: the existing
+  headless suite is what proves the split was inert, so it must not be rewritten.
+- **`FrameChangeDetector` / `SlideOCR` / `SlideChat` / `ScreenCapture` do not exist** — the screenshot
+  feature was removed and replaced by real screen recording (see that section). Any prompt or note
+  referring to them is stale.
+
+### File-by-file (behavioural detail; paths are relative to the target above)
 - `Main.swift` — `@main AppMain`. Dispatches CLI self-test modes (below) else runs the SwiftUI app.
   Contains `SelfTest` (file / streaming / summary verifiers).
-- `TranscriberApp.swift` — `TranscriberApp: App` (a single `MenuBarExtra` scene, `.window` style),
+- `SaidApp.swift` (was `TranscriberApp.swift`) — `SaidApp: App` (a single `MenuBarExtra` scene, `.window` style),
   `MenuBarLabel` (icon reflects recording state), `AppDelegate` (sets `.regular` activation policy,
   runs `AppModel.shared.onLaunch()`, `applicationShouldHandleReopen` reopens window on Dock click,
   logs launch + permission status), and `WindowManager` (NSWindowDelegate; builds the Transcript /
@@ -223,7 +426,9 @@ open ./Said.app               # or run ./Said.app/Contents/MacOS/Said to see log
 - `SettingsView.swift` — `KeyboardShortcuts.Recorder`, model picker, source picker.
 - `Shortcuts.swift` — `KeyboardShortcuts.Name.toggleRecording` (⌥⌘T) + `.togglePause` (⌥⌘P) +
   `.toggleScreenRecording` (⌥⌘S) + `.addBookmark` (⌥⌘B).
-- `Theme.swift` — design tokens (light/dark adaptive colors via dynamic NSColor, fonts, radii).
+- `Theme.swift` (SaidKit) — design tokens: the violet/amber/ink identity, the 8 speaker slots,
+  radii, metrics, fonts. See **Design system** for the values and the amber rule. Light/dark
+  resolution goes through `PlatformUI`, so it imports SwiftUI ONLY and compiles for iOS.
 - `TranscriptComponents.swift` — toolbar atoms (ToolbarIcon, SourceSegmented, Summarize/Stop buttons,
   KbdView), RecordingTimer, LiveMeter, InviteCanvas (record ring), DownloadingCanvas (progress ring).
 - `TranscriptCanvas.swift` — the recording/review transcript (gutter timestamps + serif body, confirmed
@@ -248,7 +453,18 @@ open ./Said.app               # or run ./Said.app/Contents/MacOS/Said to see log
   still decodes. Defines `Bookmark`/`Chapter`. `writeSessionJSON` writes ONLY session.json (leaves
   transcript.md untouched — used by migration, title backfill, and Viewer artifact caching).
   `makeSessionFolder(date:withImages:)`.
-- `Exporter.swift` — single-file HTML (base64-embedded images) + PDF (via `WKWebView.createPDF`).
+- `Exporter.swift` — single-file HTML (base64-embedded images) + PDF (via `WKWebView.createPDF`,
+  which exists on iOS too). RTF fonts/colours and the RTF serialization route through
+  `PlatformUI`; `NSRect` became `CGRect`. No AppKit import.
+- `SessionBundle.swift` (Phase 1) — the `.said` format: `SessionBundleManifest`,
+  `write(sessionDir:to:)`, `read(bundle:into:)` (→ `SessionImportOutcome.imported` /
+  `.alreadyPresent`), `findSession(id:in:)`. AppleArchive + LZFSE; staging dirs on both sides so
+  the manifest never lands in a real session folder and encrypted files are decrypted on the way
+  in / re-encrypted on the way out. See its own section above.
+- `Platform.swift` (Phase 1) — `SessionLocation` (C1 root provider), `SessionTrash` (C2 delete
+  contract; macOS default THROWS if nothing injected), `SaidAppInfo` (name/version/platform).
+- `PlatformUI.swift` (Phase 1) — the ONE AppKit/UIKit seam: `PlatformFont`/`PlatformColor`,
+  `PlatformColor.dynamic`, `dynamicColor`/`dynamicWhite`, `NSAttributedString.saidRTFData()`.
 - `SessionStore.swift` — the unified on-disk store. `SessionInfo` (listing row), `allSessions()`,
   `sessionDirectoryURLs()`; markdown→plain-text + snippet + `[mm:ss]` helpers; `ensureTitle(dir:)`
   (on-device title/tag backfill, updates session.json only); `migrateLegacyFlatFiles()` (non-destructive,
@@ -475,6 +691,50 @@ transcript points at a frame, and every click in the Viewer moves the video.
   generated from the video (a poster frame ~10% in; skipped for encrypted sessions rather than writing
   plaintext to disk for a listing row).
 
+## Session identity & the `.said` bundle (Phase 1 — Sources: DocumentBuilder / SessionStore / SessionBundle / AppModel / SessionViewer)
+**A session is a thing you can hand over.** Until there is an account, moving a session between
+devices is a TRANSFER, not a sync — so the thing being moved is one obvious file.
+
+- **`SessionMeta.id: UUID?`** — a stable identity that survives export, import, and being carried
+  between devices. **Additive and invisible by default:** `decodeIfPresent` on the way in and
+  (synthesized) `encodeIfPresent` on the way out, so a `session.json` written before this field
+  existed decodes unchanged AND **is not rewritten merely by being read**.
+  - New sessions get one at creation. `AppModel` mints `sessionID` once at start, so the live save
+    and the final save write the SAME id. Imports mint one too.
+  - Pre-existing folders are backfilled **lazily**, on the exact `ensureTitle` pattern: off the save
+    path, `writeSessionJSON` ONLY (never re-renders `transcript.md`), serialized behind the same
+    post-save `Task.detached` chain (index → **ensureSessionID** → ensureTitle → Diarization →
+    Cleanup) so it cannot race the other passes' read-modify-write. Legacy sessions pick one up via
+    the `TitleBackfill` actor when the Library first lists them. `ensureSessionID` on a session that
+    already has an id is a complete no-op — no write, no notification.
+  - **Why now:** retrofitting an identity onto thousands of existing folders later is strictly worse
+    than adding it while the schema is already being touched. Nothing in Phase 1 reads it except the
+    bundle's collision rule.
+- **`.said` = one session, whole**: `transcript.md`, `session.json`, `audio.m4a`, `screen.mp4`/
+  `source.*`, `images/` if present, plus a root `manifest.json`
+  (`formatVersion` / `sessionID` / `createdAt` / `producedBy`). Archived with **AppleArchive + LZFSE**
+  (system framework; NOT `ditto`/`zip`, which need `Process` — absent on iOS).
+- **Encryption interaction.** Export stages the folder through `SessionIO.readData`, which
+  transparently strips the `TRENC1` wrapper, so **a bundle always contains plaintext** — an export
+  only the origin Mac's Keychain could open would be useless. Import writes back through
+  `SessionIO.writeData`, so files are re-encrypted iff the RECEIVING device has encryption on.
+  The manifest carries no encryption flag and doesn't need one: `SessionIO` detects the prefix.
+- **Collision rule — deterministic.** If a session with the same `sessionID` is already in the store:
+  **do not import, do not duplicate** — say "Already in your library" and reveal the existing
+  session. Double-clicking the same `.said` twice is therefore idempotent. If the id is absent or
+  unknown, a new folder is created with the normal `makeSessionFolder` naming, the incoming id is
+  KEPT, and the session is indexed.
+- **Mac wiring.** Export: "Send session… (.said)" in the Session Viewer's existing Export menu (the
+  menu was not restructured). Import: `AppDelegate.application(_:open:)` → `AppModel.importFiles`,
+  which routes a `.said` to `SessionBundle.read` instead of the audio/video `Importer` path;
+  everything else about that flow is unchanged. UTI: an **exported** type `com.nikhil.said.session`
+  (extension `said`, conforming to `public.data` + `public.archive`) plus a `CFBundleDocumentTypes`
+  entry at `LSHandlerRank: Owner`, in the Info.plist assembled by `build_app.sh`. Adding the document
+  type does NOT disturb the designated requirement (verified before/after).
+- `--selftest-bundle` is the proof: byte-identical `transcript.md`, every `session.json` field,
+  `images/` at the same relative path, the id, the collision rule, and an encrypted session exporting
+  to a bundle that opens with the key removed entirely.
+
 ## Unified store, Library & full-text search (Prompt 1 — Sources: SessionStore / TitleGenerator / SearchIndex / LibraryWindow / DocumentBuilder / AppModel)
 - **One layout for all sessions** — folders with `transcript.md` + `session.json` (+ `audio.m4a` /
   `screen.mp4`). `AppModel.startFlow` always `makeSessionFolder(date:)`. Migration on launch (see Data
@@ -527,10 +787,10 @@ transcript points at a frame, and every click in the Viewer moves the video.
   in-app surface hosting transcript + playback + bookmarks + summary + chat + export. Library **Open** routes
   here (Reveal in Finder still opens the folder). `WindowManager` also owns `showOnboarding`/`showAsk`.
 
-## UI redesign (presentation only — Sources: Theme / TranscriptWindow / TranscriptComponents / TranscriptCanvas / MenuContent)
+## UI redesign (presentation only — Sources: SaidKit/Theme · Said/MainWindow / TranscriptComponents / TranscriptCanvas / MenuContent)
 - **One UI state** drives the window: `AppModel.uiState ∈ {idle, downloading, recording, summary}`, derived
   from `showingSummary`, `isRecording`, and `status.isPreparing`. Titlebar, canvas, and status bar all swap
-  per state. Reference mockup: `Transcriber-redesign.html`.
+  per state. Reference mockup: `Design/Said-Mac-Redesign.html` (the layout pass; its RED/indigo palette is superseded by the violet/amber identity in **Design system** — only the structure still applies).
 - **The signature**: the streamer's confirmed-vs-hypothesis split is surfaced — `AppModel.displaySegments`
   (confirmed, timestamped) render solid; `hypothesisText` renders dimmed (tertiary) with a blinking caret.
   `StreamingTranscriber.onUpdate` now passes a `LiveTranscript {confirmed:[TranscriptSegment], hypothesis}`
@@ -557,6 +817,9 @@ transcript points at a frame, and every click in the Viewer moves the video.
 
 ## Permissions & code signing (READ THIS)
 - **Microphone** (`NSMicrophoneUsageDescription`) — prompted on first mic use.
+- **`.said` document type** — Phase 1 added an exported UTI (`com.nikhil.said.session`) +
+  `CFBundleDocumentTypes` entry so the Mac claims `.said` files. Verified NOT to disturb the
+  designated requirement (captured `codesign -d -r-` before and after: identical).
 - **Screen Recording** (`NSScreenCaptureUsageDescription`) — required for system audio; triggered by
   ScreenCaptureKit. After granting you **must fully quit & relaunch** (the running process won't pick
   up a fresh grant). Handled with a clear error → System Settings ▸ Privacy & Security ▸ Screen Recording.
@@ -597,7 +860,9 @@ transcript points at a frame, and every click in the Viewer moves the video.
   `openai_whisper-large-v3_turbo`. `DecodingTask.translate` exists but is deliberately NOT wired
   (source-language transcription only; translation is a later stage).
 - **FluidAudio 0.15.2** (git tag `v0.15.2`, exact pin; **platform floor macOS 14**, which forced the
-  deployment-target bump; zero package dependencies). Verified at the tag:
+  deployment-target bump; zero package dependencies). **VERIFIED at the tag for Phase 1: its manifest
+  already declares BOTH `.macOS(.v14)` AND `.iOS(.v17)`, so the existing pin satisfies the iOS floor
+  as-is — NO bump was needed and none was made.** Verified at the tag:
   `DiarizerModels.downloadIfNeeded(progressHandler: (DownloadProgress) -> Void) async throws ->
   DiarizerModels` (anonymous HuggingFace download from `FluidInference/speaker-diarization-coreml` —
   a Bearer token is attached ONLY if an HF_TOKEN-style env var exists, so no account is ever needed;
@@ -672,6 +937,30 @@ Run the built binary (`.build/release/Transcriber` or the bundle's MacOS binary)
   kept, second run a no-op), `--selftest-encrypt [dir]` (OFF passthrough byte-identical; ON on-disk
   bytes not plaintext + read decrypts exactly + transcript.md encrypted; SearchIndex in-memory finds
   terms and writes NO cache file). All write only to temp dirs.
+- **Phase 1 (cross-platform core):**
+  - `--selftest-bundle [dir]` — synthesizes a session (segments, an `images/` frame, a real
+    `audio.m4a`, bookmarks, speaker names) with an id; exports to `.said`; imports into a FRESH root
+    and asserts `transcript.md` is byte-identical, every `session.json` field matches, `images/`
+    round-trips at the same relative path, the id survived, and `manifest.json` did NOT leak into the
+    session folder. Then re-imports into the SAME root and asserts the collision rule fires (reports
+    `.alreadyPresent`, points at the existing folder, creates no duplicate). Then repeats the export
+    with `SessionIO` encryption ON via the `overrideKey` hook, DROPS the key entirely, and asserts the
+    bundle still opens as readable plaintext with its id intact. Temp dirs only.
+  - `--selftest-portability` — the root provider returns `~/Desktop/Transcripts` by default on macOS,
+    honours injection, and resets; `DocumentBuilder.makeSessionFolder` follows it; the trash seam is
+    NOT injected in the CLI binary and the un-injected macOS path **refuses rather than hard-deleting**
+    (the victim file is asserted to still exist); an injected handler receives the URL; and
+    `Bundle.module` resolves `Packs/*.json` from SaidKit.
+  - `--selftest-theme` — every `Theme` token resolves to a concrete colour in BOTH appearances (via
+    `NSAppearance.performAsCurrentDrawingAppearance`), the eight speaker slots are pairwise distinct
+    in both, slot 9 cycles back to slot 1, and slot 0 / negative slots are clamped rather than
+    crashing.
+  - **`Scripts/verify_ios_build.sh`** — not a `--selftest` mode but the same kind of gate, and the
+    LAST step of `verify_selftests.sh`. See "Build & run".
+- **Removed modes.** `--selftest-capture`, `--selftest-ocr` and `--selftest-slidechat` no longer
+  exist — they tested the screenshot/OCR/slide-chat feature that was replaced by real screen
+  recording. `verify_selftests.sh` was still calling all three (i.e. it was failing); Phase 1 removed
+  them and added `--selftest-screenrec`, which had never been wired in.
 - `--retag [dir] [--force]` — maintenance utility (NOT a self-test): fills missing tags on titled-but-
   untagged sessions (keeps the title; skips near-empty `[BLANK_AUDIO]` transcripts) via `generateTags`.
   `--force` regenerates tags even on already-tagged sessions. Defaults to `~/Desktop/Transcripts`.
@@ -727,7 +1016,7 @@ Screen Recording grant + on-screen content — use `--selftest-screenrec-live` f
       leaked from the `**Date:**` header line → now skip the header (legacy → `—`); (2) title/tag parse
       didn't strip markdown-bolded `**Title:**`/`**Tags:**` labels → now stripped, with a display-time
       sanitize guard + no-model self-heal of already-stored titles.
-- [~] **Prompt 2 — Chat & Intelligence / Capture / Output / UX & trust** — per-session chat (cites
+- [x] **Prompt 2 — Chat & Intelligence / Capture / Output / UX & trust** — per-session chat (cites
       `[mm:ss]`) + cross-session Ask + summary suite (styles/action-items/chapters, cached); audio/video
       import; Mic+System mixer (off by default, single-source byte-identical); save-audio + clickable
       transcript playback; SRT/VTT + txt/rtf + share/Obsidian; custom-vocab biasing (empty = no-op); live
@@ -737,10 +1026,9 @@ Screen Recording grant + on-screen content — use `--selftest-screenrec-live` f
       the mixer PCM-reordering race (append inside the lock), session.json last-writer-wins (Viewer merges
       only its owned fields + atomic write), import error-status clobber, slider-scrub vs playback, derived-cue
       overlap, 3-digit-minute timestamps, citation markdown. 2 left by design (transient 2nd import model,
-      singleton observer token). **AWAITING human smoke-tests** (live mic / live system / Mic+System /
-      playback-seek / real file & video import / bookmarks / Notifications prompt / Notes-Obsidian share —
-      can't be verified headlessly).
-- [~] **Stage 1 — Diarization / Multilingual / Calendar capture / Cleanup + custom modes** — FluidAudio
+      singleton observer token). **HUMAN-VERIFIED** (live mic / live system / Mic+System / playback-seek /
+      real file & video import / bookmarks / Notifications prompt / Notes-Obsidian share).
+- [x] **Stage 1 — Diarization / Multilingual / Calendar capture / Cleanup + custom modes** — FluidAudio
       0.15.2 pinned (deployment target raised 13→14, its platform floor); speaker labels + per-session
       rename + colors; multilingual models + detect-once "Auto" + `*.en` guard; calendar prompt/auto-start
       through the existing startFlow with one-shot source override + title seeding; non-destructive
@@ -749,11 +1037,11 @@ Screen Recording grant + on-screen content — use `--selftest-screenrec-live` f
       (diarize/align/detect/multilingual/calendar/cleanup/custom-summary) AND the entire prior suite
       unchanged (file + stream output text identical to pre-build). One prompt bug found & fixed during
       self-test (cleanup model echoed the literal "N|" format token → clearer instructions + defensive
-      parser strip). **AWAITING human smoke-tests** (live 2-speaker diarization + rename persistence,
-      speaker-model first download, live multilingual + Auto indicator, `*.en` guard UX, calendar
-      prompt/auto-start/denial, cleaned-view toggle on a real filler-heavy recording, custom mode
-      end-to-end, full regression sweep — list handed back at the end of the Stage-1 build).
-- [~] **Stage 2 — Generation Studio / Vertical Packs / Privacy & Compliance** —
+      parser strip). **HUMAN-VERIFIED** (live 2-speaker diarization + rename persistence, speaker-model
+      first download, live multilingual + Auto indicator, `*.en` guard UX, calendar prompt/auto-start/
+      denial, cleaned-view toggle on a real filler-heavy recording, custom mode end-to-end, full
+      regression sweep).
+- [x] **Stage 2 — Generation Studio / Vertical Packs / Privacy & Compliance** —
       Feature A: unified `@Generable` Generation Studio (meeting/clinical/interview/sales/study/creator
       templates) decoding to typed values, cached in `meta.generatedArtifacts`, export incl. flashcard/
       quiz CSV; audio clip + audiogram export; the 3 summary styles + Stage-1 custom modes unified into
@@ -767,9 +1055,9 @@ Screen Recording grant + on-screen content — use `--selftest-screenrec-live` f
       with the screenshot feature — chat is text-only. **Build green; ALL self-tests pass** — the 6
       remaining new ones (generate/audiogram/packs/redact/retention/encrypt) AND the entire prior suite
       unchanged (default session.json omits the new keys; file + stream transcription text identical).
-      **AWAITING human smoke-tests** (see the Stage-2 checklist: run each Studio template + audiogram,
-      enable Medical/second pack, redact a PII session, retention sweep with a Keep, optional encryption
-      round-trip + Touch ID, full Stage-0/1 regression sweep).
+      **HUMAN-VERIFIED** (each Studio template + audiogram, Medical/second pack enabled, a PII session
+      redacted, a retention sweep with a Keep, encryption round-trip + Touch ID, full Stage-0/1
+      regression sweep).
 - [~] **Pause / auto-pause / capture resilience** — ⌥⌘P pause+resume (session stays open, paused time
       excluded from audio AND every timestamp via `SessionClock`); auto-pause after 30 s of silence with
       automatic resume + 1 s pre-roll (pre-roll replayed only on an AUTO resume — never after a manual
@@ -789,6 +1077,25 @@ Screen Recording grant + on-screen content — use `--selftest-screenrec-live` f
       ⌥⌘P from another app; the same device switch on Mic and Mic+System (only System Audio has been
       exercised); AirPods connect/disconnect mid-recording; a bookmark dropped after a long pause
       landing at the right place in playback.
+- [~] **Phase 1 — cross-platform core, rebrand, session identity.** The package is split into
+      `SaidKit` (cross-platform) + `Said` (macOS executable); every macOS assumption in the shared
+      code is an injectable seam (session root, delete-to-Trash, light/dark colour resolution,
+      platform fonts, RTF serialization, mic route-change); `Scripts/verify_ios_build.sh` compiles
+      SaidKit for `generic/platform=iOS` and is wired in as the last step of the sweep. Added
+      `SessionMeta.id` (additive, lazily backfilled) and the `.said` session bundle (AppleArchive,
+      export + import + a deterministic collision rule + an exported UTI). Rebranded: `SaidApp`,
+      the violet/amber/ink palette (**amber = live**, the record red is gone), a regenerated icon,
+      the vendored `Design/` screens, and this file's Design system section.
+      **Build green on BOTH platforms; the designated requirement is byte-identical before/after
+      (`identifier "com.said.mac" and certificate leaf = H"191d047d…"`), so TCC grants persist;
+      `--selftest-doc` md5 unchanged and `--selftest` / `--selftest-stream` transcript text
+      byte-identical (only the elapsed-time figure differs, which is not deterministic); the 3 new
+      modes pass and the whole prior suite is unchanged.**
+      **AWAITING human smoke-tests:** see the Phase 1 checklist — launch + no permission re-prompt on
+      mic and system audio, a real end-to-end recording, the palette in both light and dark across
+      every window, amber-as-live, speaker 1 violet / speaker 2 amber, a `.said` round trip through
+      Finder (including the second double-click saying "already in your library"), the pre-existing
+      library intact, and an encrypted round trip.
 
 ## Stage 2 — Generation Studio / Vertical Packs / Privacy & Compliance
 **All additive, all OFF or neutral by default. With defaults untouched a session's `transcript.md` is
@@ -804,7 +1111,7 @@ algorithm / finalPass / diarization / hotkeys / signing.**
   Studio uses cleaned text when the Viewer's Cleaned view is active, else verbatim (documented). Clinical
   SOAP/DAP are labeled "draft, not a medical record". Creator audio: `ClipExporter` clips + audiograms.
   Viewer side-panel is now Summary / Studio / Chat. Video-clip compositing is OUT OF SCOPE.
-- **B — Vertical Packs**: `Packs.swift` + `Entitlements.swift`. Bundled `Sources/Transcriber/Packs/*.json`
+- **B — Vertical Packs**: `Packs.swift` + `Entitlements.swift`. Bundled `Sources/SaidKit/Packs/*.json`
   shipped via SPM `resources:[.copy("Packs")]` → `Bundle.module` (resolves for the raw self-test binary
   AND the .app; `build_app.sh`'s existing `*.bundle` copy handles the .app — no script change needed).
   Enabling packs merges vocab into `effectiveVocabulary` (= user vocab ∪ enabled-pack vocab; empty ⇒ []
@@ -892,9 +1199,32 @@ CleanupPass, so session.json read-modify-writes can't race).
   per-segment `cleanedText` in session.json only (verbatim transcript.md sacred). Calendar capture uses a
   one-shot `sourceOverride` so a meeting recording never flips the user's persisted source. Meeting
   title seeds `meta.title` (ensureTitle keeps it; tags backfill lazily via the Library).
+- **Phase-1 decisions:**
+  - **The macOS session folder STAYS at `~/Desktop/Transcripts`** and is deliberately **not** renamed
+    to `~/Desktop/Said`. Renaming buys a cosmetic win and costs a migration of every existing session
+    folder plus every stored path. If it is ever wanted it is a small, separate, **opt-in** migration
+    on the existing `--selftest-migrate` pattern. Not now.
+  - **`CFBundleIdentifier` stays `com.said.mac`** and the signing identity stays
+    `"Transcriber Local Signing"`. (The Phase 1 prompt said the id was `com.nikhil.transcriber`; it
+    is not — the rebrand commit before Phase 1 already moved it. What matters is that TCC binds
+    grants to the SIGNATURE, so the id and identity that exist today are the ones that must not
+    move. `codesign -d -r-` output was captured before and after and is identical.)
+  - **UserDefaults keys are untouched** — including the NSWindow autosave name
+    `"TranscriberMainWindow"`, which IS a UserDefaults key (`NSWindow Frame TranscriberMainWindow`);
+    renaming it would silently discard every saved window position. The SearchIndex cache folder
+    `Application Support/Transcriber` is likewise kept: a stored path, not a user-visible string.
+  - **`SelfTest` deliberately stayed in `Said`** rather than moving with the code it tests, so the
+    existing headless suite could act as the untouched regression proof for the split.
+  - **Prefer CoreGraphics/CoreText over a platform `#if`.** `ClipExporter`'s caption burn-in moved
+    from AppKit to CoreText and needed no seam at all. Only reach for `PlatformUI` when the platforms
+    genuinely disagree (a concrete font class for RTF; appearance-resolved colour).
+- **Phase 1 — explicitly OUT OF SCOPE** (do not infer any of this from the vendored screens): any iOS
+  UI, `AVAudioSession` configuration, ReplayKit / iPhone screen recording, camera capture, accounts,
+  sync, CloudKit, StoreKit or any commerce (`EntitlementProvider` still grants everything), and the
+  `~/Desktop/Said` folder rename. Phase 2 builds the iOS app on top of what Phase 1 produced.
 
 ## Leftover scaffolding (candidate cleanup)
-- `debugLog()` writes to `/tmp/transcriber_launch.log` + NSLog on every launch, and `AppDelegate` logs a
+- `debugLog()` writes to `<FileManager.temporaryDirectory>/transcriber_launch.log` + NSLog on every launch, and `AppDelegate` logs a
   `perms=…` line. Added while debugging the launch/permission issues; harmless and useful, but not
   "production." Safe to remove now that signing is stable (rebuild won't disturb grants). User was asked
   and hasn't decided yet.
@@ -978,3 +1308,23 @@ CleanupPass, so session.json read-modify-writes can't race).
   fired once this app run.
 - Cleaned view missing → cleanup toggle off when the session was saved, Apple Intelligence
   unavailable, or the pass failed (logged; verbatim always intact). Cleanup never alters transcript.md.
+- **"Deleting a session does nothing / throws."** SaidKit's `SessionTrash` default REFUSES on macOS
+  (`SessionTrashError.noTrashImplementation`) — by design, because "never a hard delete on macOS" is
+  a user-facing promise and a silent `removeItem` is exactly what that promise exists to prevent.
+  The real implementation is injected in `AppModel.onLaunch`. If deletes fail, that injection didn't
+  run (a self-test binary, or a code path that bypassed launch). Self-tests inject their own.
+- **A `.said` won't import / "already in your library".** The collision rule is deterministic and
+  keyed on `SessionMeta.id`: same id ⇒ never import, never duplicate, reveal the existing session.
+  That is correct behaviour, not a failure. A bundle with no id, or an unknown one, always imports.
+- **`swift build` fails with `'v18' is unavailable`.** `Package.swift` uses `.iOS("18.0")` (the string
+  form) precisely to avoid this — `.v18` needs swift-tools-version 6.0. Don't "fix" it by bumping the
+  tools version: that switches the package into Swift 6 language mode.
+- **`verify_ios_build.sh` says "does not contain a scheme named SaidKit".** The `SaidKit` **library
+  product** was removed from `Package.swift`. SPM generates schemes from products, not targets.
+- **A stale resource bundle in the build dir.** After the rename, `.build/…/release/` can still hold
+  a `Transcriber_Transcriber.bundle` from a pre-split build, and `build_app.sh` copies *every*
+  `*.bundle` it finds. Harmless but it ships dead weight — `rm -rf` it (or clean the build dir).
+  The live one is `Said_SaidKit.bundle` (SPM names it `<package>_<target>`).
+- **`--selftest` output differs from a saved baseline.** Compare the transcript TEXT, not the whole
+  line: the `RESULT (0.28s):` timing figure is wall-clock and changes with a warm vs cold model.
+  `--selftest-doc`'s md5 has no such component and IS exactly comparable.

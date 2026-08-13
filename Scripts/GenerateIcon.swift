@@ -37,14 +37,18 @@ let variants: [String: Variant] = [
 let bodyRatio: CGFloat = 824.0 / 1024.0
 let blobRatio: CGFloat =  48.0 / 176.0   // 27.3% of the body
 var gapRatio:  CGFloat =  12.0 / 176.0   //  6.8% of the body
-/// Tail corner radius as a fraction of the STROKE width (the doc's 5px on a 48px blob).
+/// Tail corner radius as a fraction of the STROKE width.
 /// This is the number that decides whether the mark reads as a quote or as a blob.
-var tailFraction: CGFloat = 5.0 / 48.0   // 10.4%
+/// The settled identity specifies the fourth corner at 3% of the ICON EDGE (see the iPhone screens
+/// and CLAUDE.md ▸ Design system). On the 1024 grid: 3% × 1024 = 30.7px against a 225px blob.
+var tailFraction: CGFloat = 30.7 / 225.0   // 13.6% of the stroke = 3% of the icon edge
 let squircleExponent: CGFloat = 5.0      // superellipse power; ~Apple's continuous corner
-/// "comma" = the tapered form (shipping). "doc" = the brand doc's squared-corner form,
-/// kept because it is the settled reference — it reads as blobs rather than quotes at
-/// every size, which is why the shipping mark tapers.
-var shape = "comma"
+/// "doc" = the settled identity's form — a circle with three 50% corners and a small squared
+/// fourth corner (the tail), i.e. CSS `border-radius: 50% 50% 50% 3%`. This is what the iPhone
+/// screens draw at every scale, from the 70px record button down to the 7px bullet, so the app
+/// icon uses it too and the mark is ONE drawing everywhere.
+/// "comma" = an earlier tapered exploration, kept for comparison (SHAPE=comma).
+var shape = "doc"
 var commaReach: CGFloat = 1.62           // tail tip distance, in bowl radii
 /// Tail direction in degrees. 225 = down-left (a closing quote / comma);
 /// 45 = up-right (an opening quote, the 180° rotation of the same form).

@@ -40,9 +40,23 @@
     <string>Said reads your calendar on-device to detect upcoming video meetings and offer a bot-free local recording. Nothing leaves this Mac.</string>
     <key>NSHumanReadableCopyright</key>
     <string>Personal tool. On-device transcription via WhisperKit.</string>
-    <!-- Audio/video files can be opened with / dropped on Said to import them (B1). -->
+    <!-- Audio/video files can be opened with / dropped on Said to import them (B1).
+         A .said bundle is a whole SESSION (Phase 1, D2) — Said OWNS that type, so it is
+         declared Owner/Editor rank while media stays an Alternate viewer. -->
     <key>CFBundleDocumentTypes</key>
     <array>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>Said Session</string>
+            <key>CFBundleTypeRole</key>
+            <string>Editor</string>
+            <key>LSHandlerRank</key>
+            <string>Owner</string>
+            <key>LSItemContentTypes</key>
+            <array>
+                <string>com.nikhil.said.session</string>
+            </array>
+        </dict>
         <dict>
             <key>CFBundleTypeName</key>
             <string>Audio or Video</string>
@@ -55,6 +69,29 @@
                 <string>public.audio</string>
                 <string>public.movie</string>
             </array>
+        </dict>
+    </array>
+    <!-- The .said session bundle: an LZFSE AppleArchive of one session folder. Exported (not
+         imported) because Said defines it. Conforms to public.data + public.archive. -->
+    <key>UTExportedTypeDeclarations</key>
+    <array>
+        <dict>
+            <key>UTTypeIdentifier</key>
+            <string>com.nikhil.said.session</string>
+            <key>UTTypeDescription</key>
+            <string>Said Session</string>
+            <key>UTTypeConformsTo</key>
+            <array>
+                <string>public.data</string>
+                <string>public.archive</string>
+            </array>
+            <key>UTTypeTagSpecification</key>
+            <dict>
+                <key>public.filename-extension</key>
+                <array>
+                    <string>said</string>
+                </array>
+            </dict>
         </dict>
     </array>
 </dict>

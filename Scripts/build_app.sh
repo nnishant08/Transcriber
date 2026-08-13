@@ -1,15 +1,14 @@
 #!/bin/bash
-# Build Transcriber and assemble a runnable, ad-hoc-signed .app bundle.
+# Build Said and assemble a runnable, signed .app bundle.
 # No Xcode required (uses Swift Package Manager + Command Line Tools).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-# PRODUCT_NAME is the SPM target/product (unchanged — renaming it would churn Package.swift
-# and every build path). APP_NAME is what the user sees: the .app, the executable inside it,
-# and CFBundleExecutable in Info.plist.
-PRODUCT_NAME="Transcriber"
+# Since the SaidKit split the SPM executable product IS "Said", so PRODUCT_NAME and APP_NAME
+# finally agree. (SaidKit builds as a library alongside it; its resource bundle is copied below.)
+PRODUCT_NAME="Said"
 APP_NAME="Said"
 CONFIG="${CONFIG:-release}"
 APP="$ROOT/$APP_NAME.app"
@@ -49,8 +48,9 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
 cp "$BIN" "$APP/Contents/MacOS/$APP_NAME"
 
-# Copy any SPM-generated resource bundles (e.g. KeyboardShortcuts localizations,
-# WhisperKit assets) next to the app's resources so Bundle.module resolves them.
+# Copy any SPM-generated resource bundles next to the app's resources so Bundle.module resolves
+# them. Since the split this includes SaidKit_SaidKit.bundle, which carries Packs/*.json — the
+# `--selftest-packs` gate is what proves it was picked up.
 shopt -s nullglob
 copied=0
 for b in "$BIN_DIR"/*.bundle; do

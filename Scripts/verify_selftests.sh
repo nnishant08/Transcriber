@@ -1,7 +1,11 @@
 #!/bin/bash
-# Transcriber — full headless self-test sweep. Judges by exit code. Verify-only; writes to /tmp.
-BIN=".build/release/Transcriber"
-LOG_DIR="/tmp/tr_verify_logs"; mkdir -p "$LOG_DIR"
+# Said — full headless self-test sweep. Judges by exit code. Verify-only; writes to /tmp.
+#
+# Ends with the iOS compile gate (Scripts/verify_ios_build.sh): a green self-test sweep on macOS
+# says nothing about whether SaidKit still compiles for iPhone, and that is the one regression
+# nobody would notice until Phase 2.
+BIN=".build/release/Said"
+LOG_DIR="/tmp/said_verify_logs"; mkdir -p "$LOG_DIR"
 PASS=0; FAIL=0; SKIP=0
 declare -a FAILED
 run() {                       # run <label> <timeout-seconds> <args...>
@@ -25,8 +29,6 @@ echo "=== Core (Prompt 0/1) ==="
 run "file transcription"        300 --selftest /tmp/transcriber_test.wav
 run "streaming + finalPass"     300 --selftest-stream /tmp/tr_long_48k_stereo.wav
 run "summary (availability)"    120 --summarize
-run "frame change detector"      60 --selftest-capture
-run "vision OCR"                 60 --selftest-ocr
 run "document/timeline merge"    60 --selftest-doc
 run "HTML + PDF export"         120 --selftest-export
 run "legacy migration"           60 --selftest-migrate
@@ -63,7 +65,14 @@ run "vertical packs"             60 --selftest-packs
 run "PII/PHI redaction"         120 --selftest-redact
 run "retention sweep"            60 --selftest-retention
 run "encryption seam"           120 --selftest-encrypt
-run "slide-chat selection"       60 --selftest-slidechat
+
+echo "=== Screen recording ==="
+run "screen-recording encoder"   120 --selftest-screenrec
+
+echo "=== Phase 1 (cross-platform core) ==="
+run ".said bundle round-trip"    180 --selftest-bundle
+run "portability seams"           60 --selftest-portability
+run "theme tokens"                60 --selftest-theme
 
 echo
 echo "================================================"
@@ -74,4 +83,17 @@ if [ ${#FAILED[@]} -gt 0 ]; then
   echo "logs: $LOG_DIR"
 fi
 echo "================================================"
+
+# The iOS compile gate. Last, because it is the slowest and the most structural: it is what stops
+# SaidKit from silently re-acquiring an AppKit/ScreenCaptureKit dependency between now and Phase 2.
+echo
+if [ "${SKIP_IOS:-0}" = "1" ]; then
+  echo "==> SKIPPING iOS gate (SKIP_IOS=1)"
+else
+  if ! "$(dirname "$0")/verify_ios_build.sh"; then
+    echo "!! iOS gate FAILED — SaidKit no longer compiles for iOS."
+    FAIL=$((FAIL+1))
+  fi
+fi
+
 exit $([ $FAIL -eq 0 ] && echo 0 || echo 1)
