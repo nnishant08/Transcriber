@@ -25,8 +25,13 @@ public struct SessionHit: Sendable, Identifiable {
     }
 }
 
-/// In-app, on-device keyword full-text index over every session's `transcript.md` (which, for visual
-/// sessions, already contains the OCR'd slide text). No Spotlight, no new dependencies.
+/// In-app, on-device keyword full-text index over every session's `transcript.md`.
+///
+/// A session with slide frames carries its OCR text in the SAME file (Phase 2 interleaves it into
+/// the markdown), so slide text is searchable through this one index with no special handling —
+/// there is deliberately no second index and no parallel OCR store. `--selftest-frames` asserts a
+/// phrase that appeared only on a slide finds the session, and that the hit carries the frame's
+/// `[mm:ss]`. No Spotlight, no new dependencies.
 ///
 /// Correctness always comes from disk: a small JSON cache under Application Support gives a fast cold
 /// start, but `rebuildFromDisk()` re-reads any transcript whose mtime changed and drops vanished

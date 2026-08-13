@@ -58,7 +58,7 @@ struct SearchToken: Identifiable, Equatable {
         var hint: String {
             switch self {
             case .speaker: return "speaker:name"
-            case .has: return "has:screen · has:audio · has:bookmark"
+            case .has: return "has:screen · has:slides · has:audio · has:bookmark"
             case .tag: return "tag:name"
             case .is: return "is:kept · is:imported"
             }
@@ -94,6 +94,7 @@ struct SearchToken: Identifiable, Equatable {
         case .has:
             switch v {
             case "screen", "video", "recording": return s.hasVideo
+            case "slides", "slide", "frames": return s.hasFrames
             case "audio", "playback": return s.meta.audioFile != nil
             case "bookmark", "bookmarks": return !s.meta.bookmarks.isEmpty
             case "summary", "summaries": return !s.meta.summaries.isEmpty
@@ -653,6 +654,10 @@ private struct SessionRow: View {
                 sep; Text(meta.sourceLabel).font(Theme.ui(11.5))
                 if let n = meta.speakerCount, n > 1 { sep; Text("\(n) speakers").font(Theme.ui(11.5)) }
                 if meta.hasVideo { sep; Label("Screen", systemImage: "play.rectangle").font(Theme.ui(11)) }
+                if info?.hasFrames == true {
+                    sep; Label("\(info?.frameCount ?? 0) slides", systemImage: "rectangle.on.rectangle")
+                        .font(Theme.ui(11))
+                }
                 if meta.retentionLocked == true {
                     sep; Image(systemName: "lock.fill").font(.system(size: 8.5))
                 }
@@ -734,6 +739,7 @@ private struct SessionThumbnail: View {
     private var symbol: String {
         guard let info else { return "waveform" }
         if info.meta.imported { return "square.and.arrow.down" }
+        if info.hasFrames { return "rectangle.on.rectangle" }
         return info.hasVideo ? "play.rectangle" : "waveform"
     }
 
@@ -741,7 +747,29 @@ private struct SessionThumbnail: View {
     /// temp file: a listing row is not worth writing plaintext to disk for.
     private func loadThumbnail() async {
         image = nil
-        guard let info, info.hasVideo, let name = info.meta.videoFile else { return }
+        guard let info else { return }
+
+        // Slide sessions poster off their FIRST frame. Same rule as the video path: an encrypted
+        // session is skipped rather than decrypted, because a listing row is not worth writing
+        // plaintext to disk for.
+        if info.hasFrames, let rel = info.firstFramePath {
+            let url = info.dir.appendingPathComponent(rel)
+            image = await Task.detached(priority: .utility) { () -> NSImage? in
+                guard let head = try? FileHandle(forReadingFrom: url).read(upToCount: 8),
+                      !SessionIO.isEncryptedBlob(head),
+                      let data = try? Data(contentsOf: url),
+                      let src = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
+                let opts: [CFString: Any] = [
+                    kCGImageSourceCreateThumbnailFromImageAlways: true,
+                    kCGImageSourceThumbnailMaxPixelSize: 176,
+                ]
+                guard let cg = CGImageSourceCreateThumbnailAtIndex(src, 0, opts as CFDictionary) else { return nil }
+                return NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height))
+            }.value
+            return
+        }
+
+        guard info.hasVideo, let name = info.meta.videoFile else { return }
         let url = info.dir.appendingPathComponent(name)
         let duration = info.meta.durationSeconds ?? 0
         image = await Task.detached(priority: .utility) { () -> NSImage? in

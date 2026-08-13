@@ -14,9 +14,13 @@ enum ExportError: LocalizedError {
 public enum Exporter {
 
     /// Self-contained HTML string for a session folder.
-    static func htmlString(for sessionDir: URL) -> String? {
+    public static func htmlString(for sessionDir: URL) -> String? {
         guard let doc = DocumentBuilder.readSession(sessionDir) else { return nil }
-        return DocumentBuilder.html(meta: doc.meta, segments: doc.segments)
+        // Frame images are read back through SessionIO, so an encrypted session exports correctly
+        // instead of embedding ciphertext as a broken data URI.
+        return DocumentBuilder.html(meta: doc.meta, segments: doc.segments, frames: doc.frames) { rel in
+            try? SessionIO.readData(sessionDir.appendingPathComponent(rel))
+        }
     }
 
     @discardableResult

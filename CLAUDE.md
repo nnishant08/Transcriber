@@ -20,15 +20,18 @@ bar**. **Everything stays on this Mac — no cloud, no account, works offline.**
 > Status: everything through **Stage 2** is shipped and human-verified — the unified store, Library
 > and search; chat & intelligence, capture coverage, output & accuracy, UX & trust; Stage 1
 > (diarization / multilingual / calendar capture / cleanup + custom modes); Stage 2 (Generation
-> Studio / vertical packs / privacy & compliance). Screen recording and the pause / capture-resilience
-> work are built and partly verified.
+> Studio / vertical packs / privacy & compliance) and screen recording. The pause /
+> capture-resilience work is built and partly verified.
 >
-> **Phase 1 (cross-platform core) is built and self-tested, awaiting human smoke-tests.** The package
-> is now **`SaidKit` (macOS + iOS) + `Said` (the macOS app)**, every macOS assumption in the shared
-> code is an injectable seam, sessions have a stable `id` and can be handed over as a `.said` bundle,
-> and the app carries the settled violet/amber/ink identity. **Phase 2 builds the iPhone app on top
-> of this** and is written against THIS FILE — see **Design system** for the visual contract and the
-> iOS screen inventory. The user iterates with Claude from here.
+> **Phases 1 and 2 are built and self-tested, awaiting human smoke-tests.**
+> **Phase 1** made the package **`SaidKit` (macOS + iOS) + `Said` (the macOS app)**: every macOS
+> assumption in the shared code is an injectable seam, sessions have a stable `id` and can be handed
+> over as a `.said` bundle, and the app carries the settled violet/amber/ink identity.
+> **Phase 2** restored the frame/OCR timeline to `SaidKit` and taught the Mac to RENDER it — the Mac
+> still has no way to capture a frame; see **Frame timeline** for the four rules that keep it that
+> way. **Phase 3 builds the iPhone app**, which is the only thing that will ever capture frames, and
+> is written against THIS FILE — see **Design system** for the visual contract and the iOS screen
+> inventory. The user iterates with Claude from here.
 
 ## User guide reference (SOURCE for info sheets / user instructions / quick-starts / FAQs)
 **When asked to produce any USER-FACING material (one-pager, quick-start, how-to, keyboard-shortcut card,
@@ -238,6 +241,8 @@ Two consequences, both decisions rather than accidents:
 3. **Source sheet** — three characters, not three rows: *this room*, *a talk with slides*, *something already recorded*.
 4. **Recording** — violet-deep ground; older turns fade back, the live one carries an amber blob and an amber caret.
 5. **Camera slide capture** — recording never pauses; the amber timestamp is where the frame lands.
+   *"Same Vision pass, same event on the timeline" is true again as of Phase 2, which restored
+   `FrameEvent` and `SlideOCR` to SaidKit and taught the Mac to render them.*
 6. **Session view** — amber gist card on top, violet task stickers inline where they were said, slide cards on the timeline, one ink player bar across all tabs.
 7. **Generation sheet** — grouped by recency first, then built-ins, then enabled packs.
 8. **Ask** — the answer in a violet card, then the receipts: amber citation chips, sources as quotes.
@@ -339,6 +344,10 @@ were wrong.
   `NSAttributedString.saidRTFData()` (macOS keeps AppKit's non-throwing `rtf(from:)` so RTF output is
   byte-identical; UIKit has no `rtf(...)`, so iOS uses the throwing `data(from:)`).
 - `SessionBundle.swift` — the `.said` format (see its own section below).
+- `SlideOCR.swift` (Phase 2) — a thin, stateless Vision wrapper: `recognize` + perspective
+  correction + PNG encoding. **NOT the old `SlideOCR`** — that file was deleted with Visual
+  Capture and this one was written fresh and deliberately smaller. It reads images; it never
+  captures them, and it never decides when a frame should be taken.
 - `Theme.swift` — design tokens (see **Design system**). Imports SwiftUI ONLY; resolution goes
   through `PlatformUI`, so Phase 2's iOS UI uses these same tokens.
 - Everything else that was portable, unchanged in behaviour: `DocumentBuilder` · `SessionStore` ·
@@ -377,9 +386,11 @@ were wrong.
   anywhere in the core. Any `NSImage` conversion happens in `Said`, at the view boundary.
 - **`SelfTest` stays in `Said`** and tests SaidKit through its public API. Deliberate: the existing
   headless suite is what proves the split was inert, so it must not be rewritten.
-- **`FrameChangeDetector` / `SlideOCR` / `SlideChat` / `ScreenCapture` do not exist** — the screenshot
-  feature was removed and replaced by real screen recording (see that section). Any prompt or note
-  referring to them is stale.
+- **`FrameChangeDetector` / `SlideChat` / `ScreenCapture` do not exist** — the screenshot feature was
+  removed and replaced by real screen recording (see that section). Any prompt or note referring to
+  them is stale. **`SlideOCR` DOES exist again as of Phase 2**, but as a new, smaller file serving
+  the iPhone's slide capture — see "Frame timeline". `FrameChangeDetector` specifically stays dead:
+  it decided when to auto-grab a changing screen, and nothing auto-grabs anything any more.
 
 ### File-by-file (behavioural detail; paths are relative to the target above)
 - `Main.swift` — `@main AppMain`. Dispatches CLI self-test modes (below) else runs the SwiftUI app.
@@ -691,6 +702,89 @@ transcript points at a frame, and every click in the Viewer moves the video.
   generated from the video (a poster frame ~10% in; skipped for encrypted sessions rather than writing
   plaintext to disk for a listing row).
 
+## Frame timeline — slides on the transcript (Phase 2 — Sources: DocumentBuilder / SlideOCR / SearchIndex / Exporter / SessionViewer / LibraryWindow)
+**The Mac RENDERS frames. It never captures them.** A frame on a Mac arrived in a `.said` bundle
+from a phone. This is not a restoration of Visual Capture — read the four rules before touching it.
+
+**Why it exists.** Removing the screenshot feature in favour of real screen recording was right *for
+a Mac*: continuous video is a strictly better answer to "capture what was on screen". That reasoning
+does not transfer to a phone. There is no screen to record in a lecture theatre — the slides are on
+a wall across the room, and video of that wall is large, shaky and unsearchable. A handful of stills
+with OCR'd text is the right shape, and **the OCR text landing in the search index — so a session is
+findable by a phrase that was only ever on a slide and never spoken — is the actual differentiator.**
+The moment iPhone writes frames, the Mac must read them, or a `.said` sent Mac-ward silently drops
+the slides. That is the one promise the format exists to make.
+
+**The four rules. Without them the cut feature re-grows:**
+1. **Render, never capture.** No ⌥⌘S grab (that key is screen recording), no capture settings, no
+   auto-detect, no periodic sampling, no frame capture on video import. Decode, display, index,
+   export. `--selftest-frames` and the smoke checklist both police this.
+2. **`FrameEvent` stays three fields** — `time`, `imagePath`, `text`. No dimensions, no capture mode,
+   no change score, no thumbnail path, no source enum.
+3. **`FrameChangeDetector` stays dead.** It existed to decide when to auto-grab a changing screen. On
+   a phone the shutter is a finger; there is nothing to detect. `dHash` / `hamming` / the settle
+   state machine were NOT resurrected.
+4. **Video XOR frames, never both** — enforced, not merely documented (below).
+
+**The model** (`DocumentBuilder.swift`, beside `TranscriptSegment` because it is the same kind of
+thing). `FrameEvent.time` is on `SessionClock`'s pause-compressed timeline, like bookmarks and
+screen-recording frames, which is what makes a frame line up with the audio it was taken during.
+`SessionDoc.frames` is `decodeIfPresent ?? []` and **encoded only when non-empty**, so every session
+the Mac records still writes a `session.json` with no `frames` key.
+
+- **The legacy hazard.** Real sessions on disk carry a `frames` array written by the removed feature,
+  whose elements were `{sessionTime, imagePath, ocrText}`. That does not decode into today's
+  `{time, imagePath, text}` (`time` is non-optional, so it throws). `SessionDoc.init(from:)`
+  therefore decodes `frames` **defensively**: a mismatched array yields `[]` and a readable session,
+  never an error that makes an old session unopenable. Asserted with a hand-built fixture.
+- **The invariant lives in `SessionDoc.visual`** — a validating accessor returning
+  `VisualTimeline{.none,.video,.frames}` — rather than only at the write path. The write path can be
+  bypassed (a hand-edited `session.json`, a bundle from a future build, a legacy folder), whereas
+  every display path has to come through this. **Video wins** if both are somehow present, since it
+  is the larger artifact with the continuous timeline, and the condition is logged rather than
+  silently resolved. `writeSession` also touches `visual` so a bad session is noisy at write time too.
+- **`images/`**, created lazily on first frame write; `slide-0001.png`, zero-padded, monotonic.
+  `makeSessionFolder` did NOT regain a `withImages:` parameter. Frame images route through
+  `SessionIO`, so at-rest encryption stays transparent.
+
+**`SlideOCR`** (SaidKit) — **a new file, not the old one.** Deliberately smaller: a stateless Vision
+wrapper that Phase 3's camera composes. `recognize(cgImage:fast:)` (`.accurate` by default, `.fast`
+for a live pre-shutter read-out) joins lines with `" · "` and returns **nil, never `""`**, so
+`FrameEvent.text` stays honestly absent. Plus `correctingPerspective(of:)` (`VNDetectRectangles` →
+`CIPerspectiveCorrection`) which **returns the original unchanged when no plausible quad is found —
+a capture is never lost to a failed correction** — and `pngData(from:)`. `CGImage`/`Data` currency
+throughout; no `NSImage`. No camera, no `AVCaptureSession`, no UI: that is Phase 3.
+
+**Transcript, search, export.**
+- Markdown interleaves frames by time, matching the removed feature's output exactly so transcripts
+  already on disk still parse: `![03:12](images/slide-0004.png)` followed by a `<details>` block of
+  OCR text. **On a tie, text comes before the frame.** With no frames the output is byte-identical —
+  `--selftest-doc`'s case-1 md5 is unchanged from pre-Phase-2 and proves it.
+- **The `[mm:ss]` anchor lives in the image's ALT TEXT, not leading the line, and that is fine.**
+  `SearchIndex.extractSnippets` calls `firstTimestamp(in:)` *before* it skips `![` lines, so a hit in
+  the OCR text below still carries the frame's timestamp. Verified rather than assumed: **the
+  existing tokenizer needed no change and no second index was added.**
+- **OCR text does NOT feed auto-titling.** `plainText` includes it (so it is indexed), but a slide's
+  bullet points are not what a session is *about*, and a title generated from them reads worse than
+  one generated from speech. Left as-is deliberately.
+- HTML/PDF export embeds frames as base64 data URIs with the OCR text beneath, styled on the
+  **current** identity tokens (violet/amber/ink) rather than the pre-rebrand greys the surrounding
+  export CSS still uses. `Subtitles` (SRT/VTT) ignores frames entirely — a subtitle track is speech.
+
+**Mac display.** Viewer frame cards inline at their timestamp — image, mono `[mm:ss]`, collapsible
+OCR text — seeking through the existing `goTo`, with **no second seek path**. `activeSegmentID` now
+resolves against the merged timeline, so seeking to a frame's time scrolls to the frame card rather
+than the speech line before it. Library rows get a first-frame thumbnail (same skip-if-encrypted rule
+as the video poster frame) and a slide count, plus a `has:slides` search token.
+
+**`.said` needs no format change and `formatVersion` STAYS 1.** `images/` already round-tripped
+(`stageDecrypted` copies directories recursively, `installPayload` recreates them); adding frames
+changes the archive's *contents*, not its *structure*. A Phase-1-era Mac reading a Phase-3 iPhone
+bundle extracts everything correctly and simply doesn't render the frames — **degradation, not
+corruption**. Bumping the version would make old builds refuse the file, which is strictly worse.
+`--selftest-bundle` asserts frames survive as data (element for element) and as files (every
+`imagePath` resolves).
+
 ## Session identity & the `.said` bundle (Phase 1 — Sources: DocumentBuilder / SessionStore / SessionBundle / AppModel / SessionViewer)
 **A session is a thing you can hand over.** Until there is an account, moving a session between
 devices is a TRANSFER, not a sync — so the thing being moved is one obvious file.
@@ -887,7 +981,10 @@ Run the built binary (`.build/release/Transcriber` or the bundle's MacOS binary)
 - `--selftest-screenrec-live [seconds]` — LIVE probe: records the real main display for N seconds while
   feeding synthetic audio through the same `SampleReceiver` path. Needs the Screen Recording grant, so
   run the BUNDLE binary: `./Said.app/Contents/MacOS/Said --selftest-screenrec-live 8`.
-- `--selftest-doc` — synthetic segments + frame events → prints merged Markdown; asserts ordering.
+- `--selftest-doc` — TWO cases. Case 1 (segments only) is byte-for-byte the pre-Phase-2 output, so
+  its md5 stays exactly comparable; case 2 adds frames and asserts they merge by time, that a tie
+  puts text before the frame, and that the OCR block appears only when there is OCR text. The
+  description used to claim "frame events" while none existed — it is accurate again as of Phase 2.
 - `--selftest-export [session-folder]` — builds HTML + PDF (synthesises a session if none). Runs a main
   run loop so WKWebView can render the PDF.
 - `--selftest-migrate [dir]` — synthesises legacy flat `.md` files, migrates, and asserts each became
@@ -937,6 +1034,16 @@ Run the built binary (`.build/release/Transcriber` or the bundle's MacOS binary)
   kept, second run a no-op), `--selftest-encrypt [dir]` (OFF passthrough byte-identical; ON on-disk
   bytes not plaintext + read decrypts exactly + transcript.md encrypted; SearchIndex in-memory finds
   terms and writes NO cache file). All write only to temp dirs.
+- **Phase 2 (visual timeline):** `--selftest-frames [dir]` — headless (Core Graphics draws the
+  slides, so no camera and no permissions): a synthetic slide OCRs to its own words; a skewed
+  photograph of it detects + perspective-corrects and reads no worse than the skew (`>=` rather than
+  a strict `>`, because Vision often reads a moderate skew perfectly and a strict improvement would
+  be flaky); a featureless image returns the ORIGINAL unchanged rather than nil, a crash, or a
+  garbage crop; `FrameEvent`s round-trip through `session.json` and an EMPTY array writes no
+  `frames` key; a legacy old-shape `{sessionTime, ocrText}` array decodes to `[]` with the session
+  still readable; the video-XOR-frames invariant resolves to video and logs; frames interleave into
+  the markdown by time; a phrase only ever on a slide is found by `SearchIndex` and the hit carries
+  the frame's `[mm:ss]`; and HTML export embeds the image with the OCR text on current tokens.
 - **Phase 1 (cross-platform core):**
   - `--selftest-bundle [dir]` — synthesizes a session (segments, an `images/` frame, a real
     `audio.m4a`, bookmarks, speaker names) with an id; exports to `.said`; imports into a FRESH root
@@ -987,9 +1094,12 @@ Screen Recording grant + on-screen content — use `--selftest-screenrec-live` f
 - [x] Live **system-audio** transcription (user-verified, incl. while listening on AirPods).
 - [x] Global hotkey ⌥⌘T; auto-save timestamped `.md` to `~/Desktop/Transcripts/`.
 - [x] On-device AI summary (Apple Intelligence) via the Summarize button.
-- [~] **Screen recording (replaces Visual Capture)** — the screenshot/slide feature was REMOVED (its
+- [x] **Screen recording (replaces Visual Capture)** — the screenshot/slide feature was REMOVED (its
       four files, the ⌥⌘S grab, the OCR pass, the interleaved image timeline, `FrameEvent`, and the
-      macOS-27 slide-chat hook) and replaced by real screen recording: ⌥⌘S / *Record screen + audio*
+      macOS-27 slide-chat hook) and replaced by real screen recording. **Phase 2 later restored the
+      MODEL half of that — `FrameEvent`, `SlideOCR`, the interleaved timeline — for the iPhone, and
+      the Mac renders frames but still cannot capture them; see "Frame timeline". The ⌥⌘S grab, the
+      auto-detect and `FrameChangeDetector` stayed dead.** The screen recording itself: ⌥⌘S / *Record screen + audio*
       records the screen AND the audio into one session (`screen.mp4`, H.264 + AAC), on the transcript's
       own pause-compressed clock, with the session's own audio muxed in live. Settings pick target
       (display / window / app), quality (720p·15 / 1080p·24 / 1440p·30) and the audio source; a live
@@ -1001,9 +1111,9 @@ Screen Recording grant + on-screen content — use `--selftest-screenrec-live` f
       (encoder: video+audio tracks, true duration, out-of-order rejection) passes, and the whole prior
       sweep is unchanged** (doc / migrate / index / export / import / pause / align / calendar / packs /
       vocab / bookmarks / mix / audio-save / srt / redact / retention / encrypt, plus file + streaming
-      transcription byte-for-byte). **AWAITING human smoke-tests:** a real ⌥⌘S recording (display, then a
-      single window / app), video+transcript sync after a ⌥⌘P pause, click-to-seek in the Viewer, closing
-      a recorded window mid-session (audio must continue), file size at each quality, and a video import
+      transcription byte-for-byte). **HUMAN-VERIFIED:** a real ⌥⌘S recording (display, then a single
+      window / app), video+transcript sync after a ⌥⌘P pause, click-to-seek in the Viewer, closing a
+      recorded window mid-session (audio continued), file size at each quality, and a video import
       playing back.
 - [x] **Unified session store + Library + full-text search** (Prompt 1) — all sessions save as folders;
       legacy flat `.md` migrate non-destructively (backup + idempotent); auto title/tags on-device with
@@ -1077,6 +1187,22 @@ Screen Recording grant + on-screen content — use `--selftest-screenrec-live` f
       ⌥⌘P from another app; the same device switch on Mic and Mic+System (only System Audio has been
       exercised); AirPods connect/disconnect mid-recording; a bookmark dropped after a long pause
       landing at the right place in playback.
+- [~] **Phase 2 — the visual timeline (render-only on Mac).** Restored the frame/OCR model to
+      SaidKit so Phase 3's iPhone slide capture has something to write into, and taught the Mac to
+      read it: `FrameEvent` (three fields) on `SessionDoc`, a new and smaller `SlideOCR`, markdown
+      interleaving that matches the removed feature's output exactly, HTML/PDF export on current
+      tokens, Viewer frame cards with click-to-seek through the existing `goTo`, Library thumbnails
+      + slide counts + `has:slides`. **The Mac gained no way to capture a frame**, `FrameChangeDetector`
+      stayed dead, and video-XOR-frames is enforced in `SessionDoc.visual` rather than merely
+      documented. **Byte-identical defaults proven:** `--selftest-doc`'s case-1 md5 is unchanged from
+      pre-build, a session with no frames writes no `frames` key, and the whole prior suite passes.
+      `--selftest-frames` (29 assertions) passes; `--selftest-bundle` and `--selftest-doc` gained new
+      cases with their old assertions intact; the iOS gate is green.
+      **AWAITING human smoke-tests:** see the Phase 2 checklist — a normal session unchanged, a ⌥⌘S
+      screen recording still correct after a pause, frames rendering at the right timestamps with
+      working click-to-seek, a slide-only phrase found by search, HTML/PDF export carrying the
+      images, the pre-existing library intact (especially any session with a leftover `frames`
+      array), and no capture path anywhere on the Mac.
 - [~] **Phase 1 — cross-platform core, rebrand, session identity.** The package is split into
       `SaidKit` (cross-platform) + `Said` (macOS executable); every macOS assumption in the shared
       code is an injectable seam (session root, delete-to-Trash, light/dark colour resolution,

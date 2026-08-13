@@ -69,6 +69,9 @@ run "encryption seam"           120 --selftest-encrypt
 echo "=== Screen recording ==="
 run "screen-recording encoder"   120 --selftest-screenrec
 
+echo "=== Phase 2 (visual timeline) ==="
+run "frames / SlideOCR"          300 --selftest-frames
+
 echo "=== Phase 1 (cross-platform core) ==="
 run ".said bundle round-trip"    180 --selftest-bundle
 run "portability seams"           60 --selftest-portability

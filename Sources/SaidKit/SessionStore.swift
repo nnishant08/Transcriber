@@ -13,10 +13,26 @@ public struct SessionInfo: Identifiable, Sendable {
     public let dir: URL
     public let meta: SessionMeta
     public let snippet: String
+    /// Slide frames on this session's timeline (Phase 2). Carried on the listing row so the Library
+    /// needs no second read of `session.json` per row. Always 0 for Mac-recorded sessions.
+    public let frameCount: Int
+    /// Relative path of the first frame, for the row thumbnail. Nil when there are no frames.
+    public let firstFramePath: String?
+
+    public init(dir: URL, meta: SessionMeta, snippet: String,
+                frameCount: Int = 0, firstFramePath: String? = nil) {
+        self.dir = dir
+        self.meta = meta
+        self.snippet = snippet
+        self.frameCount = frameCount
+        self.firstFramePath = firstFramePath
+    }
 
     public var id: String { dir.path }
     /// The session has a video (a screen recording, or an imported video) to play with the transcript.
     public var hasVideo: Bool { meta.hasVideo }
+    /// The session has slide frames. Mutually exclusive with `hasVideo` (Phase 2, §P3).
+    public var hasFrames: Bool { frameCount > 0 }
     public var date: Date { meta.date }
 
     /// The stored title (re-sanitized as a display guard against any historically messy value),
@@ -65,9 +81,15 @@ public enum SessionStore {
     public static func allSessions(root: URL = SessionStore.root) -> [SessionInfo] {
         var infos: [SessionInfo] = []
         for dir in sessionDirectoryURLs(root: root) {
-            let meta = DocumentBuilder.readSession(dir)?.meta ?? synthMeta(dir: dir)
+            let doc = DocumentBuilder.readSession(dir)
+            let meta = doc?.meta ?? synthMeta(dir: dir)
             let snip = snippet(plainText: transcriptPlainText(dir: dir))
-            infos.append(SessionInfo(dir: dir, meta: meta, snippet: snip))
+            // Resolve the video-XOR-frames invariant once, at listing time.
+            var frames: [FrameEvent] = []
+            if case .frames(let f) = doc?.visual { frames = f.sorted { $0.time < $1.time } }
+            infos.append(SessionInfo(dir: dir, meta: meta, snippet: snip,
+                                     frameCount: frames.count,
+                                     firstFramePath: frames.first?.imagePath))
         }
         infos.sort { $0.meta.date > $1.meta.date }
         return infos

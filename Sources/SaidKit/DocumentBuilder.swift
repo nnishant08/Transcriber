@@ -28,6 +28,43 @@ public struct TranscriptSegment: Sendable, Codable {
     }
 }
 
+/// A still frame on the session's timeline — a slide photographed by the iPhone, with whatever text
+/// Vision read off it (Phase 2).
+///
+/// **Deliberately three fields.** The removed Visual Capture feature carried capture modes, change
+/// scores and dimensions because it decided *for itself* when to grab a frame. Nothing does that any
+/// more: on the phone the shutter is a finger. A fourth field here would be the first step back
+/// toward the feature that was cut.
+///
+/// **The Mac renders these; it never produces them.** Frames arrive on a Mac only inside a `.said`
+/// bundle from a phone.
+///
+/// `time` is on `SessionClock`'s pause-compressed timeline — the same clock as bookmarks, segments
+/// and screen-recording frames — which is what makes a frame line up with the audio it was taken
+/// during.
+public struct FrameEvent: Sendable, Codable, Equatable {
+    public var time: TimeInterval
+    /// Relative to the session folder, e.g. `images/slide-0004.png`, so the folder stays movable.
+    public var imagePath: String
+    /// Vision's reading of the slide. `nil` — never `""` — when OCR found nothing or wasn't run.
+    public var text: String?
+
+    public init(time: TimeInterval, imagePath: String, text: String? = nil) {
+        self.time = time
+        self.imagePath = imagePath
+        self.text = text
+    }
+}
+
+/// Which visual timeline a session has. A session has a video OR frames, never both (Phase 2, §P3);
+/// this type is where that invariant is resolved so no display code ever has to reconcile two
+/// visual timelines against one clock.
+public enum VisualTimeline: Sendable, Equatable {
+    case none
+    case video(String)
+    case frames([FrameEvent])
+}
+
 /// A user-dropped marker captured live (⌥⌘B) or added in the Viewer, in seconds from session T0.
 public struct Bookmark: Sendable, Codable, Identifiable, Hashable {
     public var time: TimeInterval
@@ -212,15 +249,57 @@ public struct SessionMeta: Sendable, Codable {
 public struct SessionDoc: Sendable, Codable {
     public var meta: SessionMeta
     public var segments: [TranscriptSegment]
+    /// Still frames on the timeline (Phase 2). Empty for every session the Mac records — the Mac
+    /// renders frames but never captures them — so an audio-only `session.json` gains no key.
+    public var frames: [FrameEvent]
 
-    public init(meta: SessionMeta, segments: [TranscriptSegment]) {
+    public init(meta: SessionMeta, segments: [TranscriptSegment], frames: [FrameEvent] = []) {
         self.meta = meta
         self.segments = segments
+        self.frames = frames
     }
 
-    // Decoded explicitly so a pre-screen-recording `session.json` — which carries a `frames` array
-    // from the removed screenshot feature — still decodes cleanly. The extra key is simply ignored.
-    enum CodingKeys: String, CodingKey { case meta, segments }
+    enum CodingKeys: String, CodingKey { case meta, segments, frames }
+
+    /// Decoded explicitly, and DEFENSIVELY on `frames`.
+    ///
+    /// There are real sessions on disk carrying a `frames` array written by the removed Visual
+    /// Capture feature, whose elements were `{sessionTime, imagePath, ocrText}` — a shape that does
+    /// not decode into today's `{time, imagePath, text}` (`time` is non-optional, so it throws).
+    /// A legacy array must therefore yield an EMPTY array and a readable session, never an error
+    /// that makes an old session unopenable. Verified by `--selftest-frames`.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        meta = try c.decode(SessionMeta.self, forKey: .meta)
+        segments = try c.decode([TranscriptSegment].self, forKey: .segments)
+        frames = (try? c.decodeIfPresent([FrameEvent].self, forKey: .frames)) as? [FrameEvent] ?? []
+    }
+
+    /// Encoded only when non-empty, so a session with no frames produces `session.json` with no
+    /// `frames` key at all — byte-identical to pre-Phase-2 output.
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(meta, forKey: .meta)
+        try c.encode(segments, forKey: .segments)
+        if !frames.isEmpty { try c.encode(frames, forKey: .frames) }
+    }
+
+    /// The session's ONE visual timeline (Phase 2, §P3 invariant).
+    ///
+    /// Enforced here, in a validating accessor, rather than only at the write path: the write path
+    /// can be bypassed (a hand-edited `session.json`, a bundle from a future build, a legacy
+    /// folder), whereas every display path has to come through this. If a session somehow has both,
+    /// **video wins** — it is the larger artifact and the one with a continuous timeline — and the
+    /// condition is logged rather than silently resolved.
+    public var visual: VisualTimeline {
+        let hasVideo = meta.videoFile?.isEmpty == false
+        if hasVideo && !frames.isEmpty {
+            NSLog("[Session] invariant violated: both videoFile and \(frames.count) frame(s) present; video wins")
+        }
+        if let v = meta.videoFile, !v.isEmpty { return .video(v) }
+        if !frames.isEmpty { return .frames(frames) }
+        return .none
+    }
 }
 
 // MARK: - DocumentBuilder
@@ -251,7 +330,10 @@ public enum DocumentBuilder {
 
     /// Write `transcript.md` + machine-readable `session.json` into the session folder.
     public static func writeSession(_ doc: SessionDoc, to sessionDir: URL) {
-        let md = markdown(meta: doc.meta, segments: doc.segments)
+        // `visual` is consulted for its side effect: it logs if the video-XOR-frames invariant is
+        // violated, so a bad session is noisy at the write path as well as at every display path.
+        _ = doc.visual
+        let md = markdown(meta: doc.meta, segments: doc.segments, frames: doc.frames)
         // Route through SessionIO so encryption-at-rest (Feature C4) is transparent. When encryption
         // is OFF (default) this is a byte-identical plain UTF-8 write — same bytes as before.
         try? SessionIO.writeText(md, to: sessionDir.appendingPathComponent("transcript.md"))
@@ -276,7 +358,24 @@ public enum DocumentBuilder {
 
     // MARK: Markdown
 
-    public static func markdown(meta: SessionMeta, segments: [TranscriptSegment]) -> String {
+    /// One entry on the merged transcript timeline.
+    private enum TimelineItem {
+        case text(TranscriptSegment)
+        case frame(FrameEvent)
+    }
+
+    /// Merge segments and frames by time. On a tie, TEXT comes before the frame — matching the
+    /// removed feature's ordering, so a transcript re-rendered from an old session is unchanged.
+    private static func timeline(segments: [TranscriptSegment], frames: [FrameEvent]) -> [TimelineItem] {
+        var items: [(time: TimeInterval, order: Int, item: TimelineItem)] = []
+        for s in segments { items.append((s.start, 0, .text(s))) }
+        for f in frames { items.append((f.time, 1, .frame(f))) }
+        items.sort { $0.time != $1.time ? $0.time < $1.time : $0.order < $1.order }
+        return items.map(\.item)
+    }
+
+    public static func markdown(meta: SessionMeta, segments: [TranscriptSegment],
+                                frames: [FrameEvent] = []) -> String {
         var out = "# Transcript — \(humanStamp.string(from: meta.date))\n\n"
         out += "- **Source:** \(meta.sourceLabel)\n"
         out += "- **Model:** \(meta.modelName)\n"
@@ -290,36 +389,78 @@ public enum DocumentBuilder {
         }
         out += "\n---\n\n"
 
-        let lines = segments.compactMap { seg -> String? in
-            let text = seg.text.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !text.isEmpty else { return nil }
-            // Diarized sessions prefix a resolved speaker label AFTER the [mm:ss] anchor, so
-            // click-to-seek, SearchIndex parsing, and stripLeadingTimestamp all keep working.
-            // No speaker (feature off / pre-Stage-1 session) → byte-identical to before.
-            let label = seg.speaker.map { "**\(meta.speakerLabel($0)):** " } ?? ""
-            return "[\(timestamp(seg.start))] \(label)\(text)\n"
+        // Each block ends in exactly one "\n" and blocks are joined by "\n", so consecutive entries
+        // are separated by a blank line. Keeping that discipline — rather than appending "\n\n" per
+        // item — is what makes the no-frames output BYTE-IDENTICAL to pre-Phase-2, which
+        // `--selftest-doc`'s md5 assertion proves.
+        let blocks = timeline(segments: segments, frames: frames).compactMap { item -> String? in
+            switch item {
+            case .text(let seg):
+                let text = seg.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !text.isEmpty else { return nil }
+                // Diarized sessions prefix a resolved speaker label AFTER the [mm:ss] anchor, so
+                // click-to-seek, SearchIndex parsing, and stripLeadingTimestamp all keep working.
+                // No speaker (feature off / pre-Stage-1 session) → byte-identical to before.
+                let label = seg.speaker.map { "**\(meta.speakerLabel($0)):** " } ?? ""
+                return "[\(timestamp(seg.start))] \(label)\(text)\n"
+
+            case .frame(let f):
+                // The form the removed feature emitted, matched exactly, because transcripts on disk
+                // were written this way and every reader still expects it. The `[mm:ss]` anchor lives
+                // in the image's ALT TEXT rather than leading the line — which works because
+                // `SearchIndex.extractSnippets` runs `firstTimestamp(in:)` BEFORE it skips `![`
+                // lines, so a hit in the OCR text below still carries this frame's timestamp.
+                let ts = timestamp(f.time)
+                var block = "![\(ts)](\(f.imagePath))\n"
+                if let ocr = f.text?.trimmingCharacters(in: .whitespacesAndNewlines), !ocr.isEmpty {
+                    block += "\n<details><summary>On-slide text (\(ts))</summary>\n\n```\n\(ocr)\n```\n\n</details>\n"
+                }
+                return block
+            }
         }
-        if lines.isEmpty {
+        if blocks.isEmpty {
             out += "_(no speech detected)_\n"
             return out
         }
-        out += lines.joined(separator: "\n")
+        out += blocks.joined(separator: "\n")
         return out
     }
 
     // MARK: HTML (self-contained)
 
-    static func html(meta: SessionMeta, segments: [TranscriptSegment]) -> String {
+    /// - Parameter imageData: resolves a frame's relative `imagePath` to PNG bytes, so the export
+    ///   stays a SINGLE self-contained file (images embedded as base64 data URIs). Sessions with no
+    ///   frames never call it, and the output is unchanged from before Phase 2.
+    static func html(meta: SessionMeta, segments: [TranscriptSegment],
+                     frames: [FrameEvent] = [],
+                     imageData: (String) -> Data? = { _ in nil }) -> String {
         var body = ""
-        for seg in segments {
-            let text = seg.text.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !text.isEmpty else { continue }
-            let label = seg.speaker.map { "<b>\(escape(meta.speakerLabel($0))):</b> " } ?? ""
-            body += "<p><span class=\"ts\">\(timestamp(seg.start))</span> \(label)\(escape(text))</p>\n"
+        for item in timeline(segments: segments, frames: frames) {
+            switch item {
+            case .text(let seg):
+                let text = seg.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !text.isEmpty else { continue }
+                let label = seg.speaker.map { "<b>\(escape(meta.speakerLabel($0))):</b> " } ?? ""
+                body += "<p><span class=\"ts\">\(timestamp(seg.start))</span> \(label)\(escape(text))</p>\n"
+
+            case .frame(let f):
+                let ts = timestamp(f.time)
+                if let data = imageData(f.imagePath) {
+                    let uri = "data:image/png;base64,\(data.base64EncodedString())"
+                    body += "<figure class=\"slide\"><img src=\"\(uri)\" alt=\"Slide at \(ts)\"/>"
+                    body += "<figcaption><span class=\"ts\">\(ts)</span></figcaption></figure>\n"
+                } else {
+                    body += "<p class=\"ts\">[slide image \(ts) missing]</p>\n"
+                }
+                if let ocr = f.text?.trimmingCharacters(in: .whitespacesAndNewlines), !ocr.isEmpty {
+                    body += "<details class=\"ocr\"><summary>On-slide text (\(ts))</summary><pre>\(escape(ocr))</pre></details>\n"
+                }
+            }
         }
 
         var meta1 = "<li><b>Source:</b> \(escape(meta.sourceLabel))</li><li><b>Model:</b> \(escape(meta.modelName))</li>"
         if let v = meta.videoFile { meta1 += "<li><b>Screen recording:</b> \(escape(v))</li>" }
+        if !frames.isEmpty { meta1 += "<li><b>Slides:</b> \(frames.count)</li>" }
         if let t = meta.targetLabel { meta1 += "<li><b>Capture target:</b> \(escape(t))</li>" }
 
         return """
@@ -333,6 +474,21 @@ public enum DocumentBuilder {
           ul.meta li { display: inline-block; margin-right: 16px; }
           hr { border: none; border-top: 1px solid #e0e0e0; margin: 20px 0; }
           .ts { color: #8a8a8e; font-variant-numeric: tabular-nums; font-size: 12px; margin-right: 6px; }
+          /* Frames, on the current Said identity tokens (violet #6949D2 / amber #EEA753 /
+             ink #1A1828 / rule #D5D3F7) — NOT the pre-rebrand greys the surrounding CSS uses. */
+          figure.slide { margin: 22px 0; padding: 0; background: #fff; border-radius: 12px;
+                         box-shadow: 0 3px 0 #D5D3F7; overflow: hidden; }
+          figure.slide img { display: block; width: 100%; height: auto; }
+          figure.slide figcaption { padding: 8px 13px; background: #FFE0B0; }
+          figure.slide figcaption .ts { color: #794900; font-weight: 600; margin: 0;
+                                        font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+          details.ocr { margin: -14px 0 22px; padding: 10px 13px; border-left: 3px solid #6949D2;
+                        background: #F1F0FF; border-radius: 0 8px 8px 0; }
+          details.ocr summary { cursor: pointer; color: #6949D2; font-size: 12px; font-weight: 600;
+                                font-family: ui-monospace, "SF Mono", Menlo, monospace;
+                                text-transform: uppercase; letter-spacing: .08em; }
+          details.ocr pre { margin: 8px 0 0; white-space: pre-wrap; font-size: 13px; color: #1A1828;
+                            font-family: ui-monospace, "SF Mono", Menlo, monospace; }
         </style></head><body>
         <h1>Transcript — \(escape(humanStamp.string(from: meta.date)))</h1>
         <ul class="meta">\(meta1)</ul><hr>

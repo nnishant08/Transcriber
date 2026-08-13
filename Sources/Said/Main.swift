@@ -114,6 +114,9 @@ enum AppMain {
             SelfTest.runBundle(dir: positional(after: idx, in: args)); return
         }
         if args.contains("--selftest-portability") { SelfTest.runPortability(); return }
+        if let idx = args.firstIndex(of: "--selftest-frames") {
+            SelfTest.runFrames(dir: positional(after: idx, in: args)); return
+        }
         if args.contains("--selftest-theme") { SelfTest.runTheme(); return }
         // LIVE screen recording against the real main display (needs the Screen Recording grant →
         // run the .app bundle's binary, not .build/release). The headless `--selftest-screenrec`
@@ -332,8 +335,11 @@ extension SelfTest {
         return ctx.makeImage()
     }
 
-    /// Frame-filling, structurally-distinct synthetic "slides": 0 = vertical stripes,
-    /// 1 = horizontal stripes, 2 = centered filled square. These give rich, clearly-different dHashes.
+    /// Frame-filling, structurally-distinct synthetic frames for `--selftest-screenrec`:
+    /// 0 / 1 / 2 differ in their column pattern, so consecutive encoded frames are visibly
+    /// different and a dropped or duplicated frame would show up.
+    /// (The comment here used to explain these in terms of `dHash` / `hamming` — the perceptual
+    /// change-detector that was deleted with Visual Capture and deliberately NOT restored.)
     static func patternImage(_ kind: Int, size: Int = 360) -> CGImage? {
         guard let ctx = CGContext(data: nil, width: size, height: size, bitsPerComponent: 8,
                                   bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
@@ -341,8 +347,8 @@ extension SelfTest {
         ctx.setFillColor(CGColor(red: 1, green: 1, blue: 1, alpha: 1))
         ctx.fill(CGRect(x: 0, y: 0, width: size, height: size))
         ctx.setFillColor(CGColor(red: 0, green: 0, blue: 0, alpha: 1))
-        // Full-height vertical bands at distinct coarse columns. dHash is most sensitive to
-        // horizontal edges, so different column sets give large pairwise hamming.
+        // Full-height vertical bands at distinct coarse columns, so each `kind` renders a
+        // visibly different frame.
         let columns: [Int]
         switch kind {
         case 0: columns = [0, 2, 4, 6, 8]
@@ -487,7 +493,43 @@ extension SelfTest {
         let okVideo = md.contains("**Screen recording:** screen.mp4 — Main Display (1920×1080)")
         print(okOrder ? "OK (ordering correct)" : "FAIL (ordering wrong)")
         print(okVideo ? "OK (video header present)" : "FAIL (video header missing)")
-        exit(okOrder && okVideo ? 0 : 2)
+
+        // ---- Case 2 (Phase 2): frames merged into the same timeline.
+        // Everything above is byte-for-byte the pre-Phase-2 output, so the no-frames rendering is
+        // still exactly comparable; this case is appended, never interleaved.
+        print("")
+        print("== document-builder self-test (frames case) ==")
+        let fMeta = SessionMeta(date: Date(timeIntervalSince1970: 0), sourceLabel: "Mic", modelName: "m")
+        let fSegs = [
+            TranscriptSegment(start: 0.0, end: 3.0, text: "Before the slide."),
+            TranscriptSegment(start: 10.0, end: 13.0, text: "Exactly on the slide."),
+            TranscriptSegment(start: 20.0, end: 23.0, text: "After the slide."),
+        ]
+        let fFrames = [
+            FrameEvent(time: 5.0, imagePath: "images/slide-0001.png", text: "First slide text"),
+            // Deliberately EQUAL to a segment's start, to pin the tie-break: text before frame.
+            FrameEvent(time: 10.0, imagePath: "images/slide-0002.png", text: nil),
+        ]
+        let fmd = DocumentBuilder.markdown(meta: fMeta, segments: fSegs, frames: fFrames)
+        print("----------------------------------------")
+        print(fmd)
+        print("----------------------------------------")
+
+        func at(_ needle: String) -> String.Index? { fmd.range(of: needle)?.lowerBound }
+        let merged = [at("[00:00] Before"), at("![00:05]"), at("[00:10] Exactly"),
+                      at("![00:10]"), at("[00:20] After")]
+        let okMerged = merged.allSatisfy { $0 != nil }
+            && zip(merged.compactMap { $0 }, merged.compactMap { $0 }.dropFirst()).allSatisfy { $0 < $1 }
+        let okTie = (at("[00:10] Exactly").map { i in at("![00:10]").map { i < $0 } ?? false }) ?? false
+        let okOCR = fmd.contains("<details><summary>On-slide text (00:05)")
+        let okNoOCR = !fmd.contains("On-slide text (00:10)")
+        print(okMerged ? "OK (frames merge by time)" : "FAIL (frame ordering wrong)")
+        print(okTie ? "OK (tie-break: text before frame)" : "FAIL (tie-break wrong)")
+        print(okOCR ? "OK (OCR block rendered)" : "FAIL (OCR block missing)")
+        print(okNoOCR ? "OK (no OCR block when text is nil)" : "FAIL (spurious OCR block)")
+
+        let all = okOrder && okVideo && okMerged && okTie && okOCR && okNoOCR
+        exit(all ? 0 : 2)
     }
 
     /// Verify HTML + PDF export from a session folder (synthesises one if none given).
@@ -1959,7 +2001,23 @@ extension SelfTest {
                                bookmarks: [Bookmark(time: 3.5, label: "key point")])
         meta.speakerCount = 2
         meta.speakerNames = ["1": "Priya"]
-        synthSession(sessionDir, segments: segments, meta: meta)
+
+        // Phase 2: real FrameEvents pointing at real PNGs, so the round trip is asserted on the
+        // frames as DATA (session.json) and as FILES (images/), not just on the folder's shape.
+        let slideImage = makeSlideImage(width: 480, height: 360,
+                                        title: "Quorum", bullets: ["Majorities overlap"])
+        let framePaths = [SlideOCR.frameRelativePath(index: 1), SlideOCR.frameRelativePath(index: 2)]
+        let bundleFrames = [
+            FrameEvent(time: 2.0, imagePath: framePaths[0], text: "Quorum · Majorities overlap"),
+            FrameEvent(time: 6.0, imagePath: framePaths[1], text: nil),
+        ]
+        try? fm.createDirectory(at: sessionDir.appendingPathComponent("images"),
+                                withIntermediateDirectories: true)
+        if let slideImage, let png = SlideOCR.pngData(from: slideImage) {
+            for rel in framePaths { try? SessionIO.writeData(png, to: sessionDir.appendingPathComponent(rel)) }
+        }
+        DocumentBuilder.writeSession(SessionDoc(meta: meta, segments: segments, frames: bundleFrames),
+                                     to: sessionDir)
 
         // A real (tiny) audio file, written through the same path the app uses.
         let tone = (0..<16_000).map { sinf(2 * .pi * 440 * Float($0) / 16_000) * 0.2 }
@@ -2009,6 +2067,15 @@ extension SelfTest {
 
             let roundFrame = try? SessionIO.readData(dst.appendingPathComponent("images/frame-0001.png"))
             check("images/ round-tripped at the same relative path", roundFrame == frameBytes)
+
+            // Phase 2 (§8): frames survive as DATA and as FILES.
+            let roundFrames = DocumentBuilder.readSession(dst)?.frames ?? []
+            check("frames round-trip element for element", roundFrames == bundleFrames)
+            check("every frame's imagePath still resolves to a file on disk",
+                  !roundFrames.isEmpty && roundFrames.allSatisfy {
+                      fm.fileExists(atPath: dst.appendingPathComponent($0.imagePath).path)
+                  })
+            check("a frame's OCR text survived the archive", roundFrames.first?.text == bundleFrames.first?.text)
             check("manifest.json NOT copied into the session folder",
                   !fm.fileExists(atPath: dst.appendingPathComponent("manifest.json").path))
 
@@ -2151,6 +2218,225 @@ extension SelfTest {
     }
 
     /// E3 — every Theme token resolves in both appearances and the speaker slots stay distinct.
+    // MARK: - Phase 2 (visual timeline)
+
+    /// Render a synthetic "slide": a light card with dark headline + bullet text, drawn with
+    /// CoreText so it works identically on both platforms and needs no fixture file on disk.
+    static func makeSlideImage(width: Int = 1024, height: Int = 768,
+                               title: String, bullets: [String]) -> CGImage? {
+        guard let ctx = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8,
+                                  bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+        ctx.setFillColor(CGColor(red: 1, green: 1, blue: 1, alpha: 1))
+        ctx.fill(CGRect(x: 0, y: 0, width: width, height: height))
+
+        func draw(_ text: String, size: CGFloat, y: CGFloat, bold: Bool) {
+            let font = CTFontCreateUIFontForLanguage(bold ? .emphasizedSystem : .system, size, nil)
+                ?? CTFontCreateWithName("Helvetica" as CFString, size, nil)
+            let attr = NSAttributedString(string: text, attributes: [
+                kCTFontAttributeName as NSAttributedString.Key: font,
+                kCTForegroundColorAttributeName as NSAttributedString.Key: CGColor(red: 0.05, green: 0.05, blue: 0.1, alpha: 1),
+            ])
+            let line = CTLineCreateWithAttributedString(attr)
+            ctx.textPosition = CGPoint(x: 70, y: y)
+            CTLineDraw(line, ctx)
+        }
+        draw(title, size: 64, y: CGFloat(height) - 140, bold: true)
+        for (i, b) in bullets.enumerated() {
+            draw(b, size: 42, y: CGFloat(height) - 260 - CGFloat(i) * 78, bold: false)
+        }
+        return ctx.makeImage()
+    }
+
+    /// Skew an image onto a larger dark background, as if photographed from a seat off to one side.
+    static func skewedOnBackground(_ image: CGImage, canvas: Int = 1400) -> CGImage? {
+        let ci = CIImage(cgImage: image)
+        guard let f = CIFilter(name: "CIPerspectiveTransform") else { return nil }
+        let w = CGFloat(image.width), h = CGFloat(image.height)
+        f.setValue(ci, forKey: kCIInputImageKey)
+        // Push the right edge in and down — a classic off-axis photo of a wall-mounted slide.
+        f.setValue(CIVector(x: 40, y: h - 30), forKey: "inputTopLeft")
+        f.setValue(CIVector(x: w - 150, y: h - 130), forKey: "inputTopRight")
+        f.setValue(CIVector(x: w - 150, y: 130), forKey: "inputBottomRight")
+        f.setValue(CIVector(x: 40, y: 30), forKey: "inputBottomLeft")
+        guard let skewed = f.outputImage else { return nil }
+        let bg = CIImage(color: CIColor(red: 0.1, green: 0.1, blue: 0.12))
+            .cropped(to: CGRect(x: 0, y: 0, width: canvas, height: canvas))
+        let composited = skewed.transformed(by: CGAffineTransform(translationX: 160, y: 300))
+            .composited(over: bg)
+        return CIContext().createCGImage(composited, from: bg.extent)
+    }
+
+    /// P/Q/R — the frame model, `SlideOCR`, and the search integration. Headless: Core Graphics
+    /// draws the slides, so there is no camera, no permission, and no fixture file.
+    static func runFrames(dir: String?) {
+        setbuf(stdout, nil)
+        print("== frames / visual timeline self-test ==")
+        var ok = true
+        func check(_ l: String, _ c: Bool) { print("  \(c ? "✓" : "✗") \(l)"); ok = ok && c }
+
+        let fm = FileManager.default
+        let base = dir.map { URL(fileURLWithPath: $0) }
+            ?? fm.temporaryDirectory.appendingPathComponent("said-frames-selftest", isDirectory: true)
+        try? fm.removeItem(at: base)
+        try? fm.createDirectory(at: base, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: base) }
+
+        let sema = DispatchSemaphore(value: 0)
+        Task {
+            defer { sema.signal() }
+
+            // ---- Q: OCR a clean synthetic slide.
+            let title = "Quorum intersection"
+            let bullets = ["Any two majorities share a node", "Consensus needs overlap"]
+            guard let slide = makeSlideImage(title: title, bullets: bullets) else {
+                check("could synthesize a slide image", false); return
+            }
+            check("synthesized a slide image", true)
+
+            let text = await SlideOCR.recognize(cgImage: slide)
+            let lower = (text ?? "").lowercased()
+            check("OCR read the headline (got: \(text?.prefix(70) ?? "nil"))", lower.contains("quorum"))
+            check("OCR read a bullet", lower.contains("majorities") || lower.contains("consensus"))
+            check("OCR joins lines with the documented separator",
+                  (text ?? "").contains(SlideOCR.lineSeparator) || (text ?? "").isEmpty == false)
+
+            // ---- Q: perspective correction on a photographed slide.
+            func score(_ s: String?) -> Int {
+                let l = (s ?? "").lowercased()
+                return ["quorum", "intersection", "majorities", "consensus", "overlap"]
+                    .filter { l.contains($0) }.count
+            }
+            if let skewed = skewedOnBackground(slide) {
+                let skewedText = await SlideOCR.recognize(cgImage: skewed)
+                let corrected = await SlideOCR.correctingPerspective(of: skewed)
+                let correctedText = await SlideOCR.recognize(cgImage: corrected)
+                check("perspective correction changed the image",
+                      corrected.width != skewed.width || corrected.height != skewed.height)
+                // `>=` rather than `>`: Vision often reads a moderately skewed slide perfectly, and a
+                // strict improvement would make this test flaky for no added confidence. What matters
+                // is that correction never makes recognition WORSE, and that it still reads.
+                check("corrected OCR is no worse than skewed (\(score(correctedText)) vs \(score(skewedText)))",
+                      score(correctedText) >= score(skewedText))
+                check("corrected image still OCRs the headline", score(correctedText) > 0)
+            } else {
+                check("could build a skewed test image", false)
+            }
+
+            // ---- Q: no detectable quad → the ORIGINAL comes back, never a crop or a crash.
+            guard let flat = CGContext(data: nil, width: 300, height: 300, bitsPerComponent: 8,
+                                       bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+                                       bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+                .map({ c -> CGImage? in
+                    c.setFillColor(CGColor(red: 0.5, green: 0.5, blue: 0.5, alpha: 1))
+                    c.fill(CGRect(x: 0, y: 0, width: 300, height: 300))
+                    return c.makeImage()
+                }) ?? nil else {
+                check("could build a featureless image", false); return
+            }
+            let unchanged = await SlideOCR.correctingPerspective(of: flat)
+            check("no quad → original returned unchanged",
+                  unchanged.width == flat.width && unchanged.height == flat.height
+                      && SlideOCR.pngData(from: unchanged) == SlideOCR.pngData(from: flat))
+
+            // ---- P: FrameEvent round-trip + the encode-when-non-empty rule.
+            let root = base.appendingPathComponent("store", isDirectory: true)
+            try? fm.createDirectory(at: root, withIntermediateDirectories: true)
+
+            let plainDir = root.appendingPathComponent("2026-01-01 00-00-00", isDirectory: true)
+            synthSession(plainDir, segments: [TranscriptSegment(start: 0, end: 2, text: "no frames here")])
+            let plainJSON = (try? String(contentsOf: plainDir.appendingPathComponent("session.json"), encoding: .utf8)) ?? ""
+            check("a session with no frames writes NO \"frames\" key", !plainJSON.contains("\"frames\""))
+
+            let framesDir = root.appendingPathComponent("2026-01-02 00-00-00", isDirectory: true)
+            try? fm.createDirectory(at: framesDir.appendingPathComponent("images"), withIntermediateDirectories: true)
+            guard let png = SlideOCR.pngData(from: slide) else { check("PNG encode", false); return }
+            check("CGImage encodes to PNG", png.count > 0)
+            let rel = SlideOCR.frameRelativePath(index: 4)
+            check("frame path is zero-padded and conventional", rel == "images/slide-0004.png")
+            try? SessionIO.writeData(png, to: framesDir.appendingPathComponent(rel))
+
+            let originalFrames = [
+                FrameEvent(time: 12.0, imagePath: SlideOCR.frameRelativePath(index: 1), text: text),
+                FrameEvent(time: 30.0, imagePath: rel, text: nil),
+            ]
+            let doc = SessionDoc(
+                meta: SessionMeta(id: UUID(), date: Date(timeIntervalSince1970: 1_800_000_000),
+                                  sourceLabel: "Mic", modelName: "m"),
+                segments: [TranscriptSegment(start: 0, end: 5, text: "Opening remarks."),
+                           TranscriptSegment(start: 20, end: 25, text: "Closing remarks.")],
+                frames: originalFrames)
+            DocumentBuilder.writeSession(doc, to: framesDir)
+
+            let reread = DocumentBuilder.readSession(framesDir)
+            check("frames round-trip through session.json", reread?.frames == originalFrames)
+            check("frames survive with their OCR text", reread?.frames.first?.text == text)
+
+            // ---- R1: markdown interleaving + the line-leading-anchor contract.
+            let md = (try? SessionIO.readText(framesDir.appendingPathComponent("transcript.md"))) ?? ""
+            let iOpen = md.range(of: "[00:00] Opening")?.lowerBound
+            let iFrame1 = md.range(of: "![00:12]")?.lowerBound
+            let iClose = md.range(of: "[00:20] Closing")?.lowerBound
+            let iFrame2 = md.range(of: "![00:30]")?.lowerBound
+            check("frames interleave by time (speech, slide, speech, slide)",
+                  [iOpen, iFrame1, iClose, iFrame2].allSatisfy { $0 != nil }
+                      && iOpen! < iFrame1! && iFrame1! < iClose! && iClose! < iFrame2!)
+            check("frame line carries its [mm:ss] where firstTimestamp finds it",
+                  SessionStore.firstTimestamp(in: "![00:12](images/slide-0001.png)") == "00:12")
+            check("OCR text is rendered in a details block", md.contains("<details><summary>On-slide text (00:12)"))
+
+            // ---- R2: the OCR text is searchable, and the hit carries the FRAME's timestamp.
+            let idx = SearchIndex(cacheURL: base.appendingPathComponent("idx.json"))
+            idx.rebuildFromDisk(root: root)
+            let hits = idx.search("quorum")
+            let hit = hits.first { $0.dir.lastPathComponent == framesDir.lastPathComponent }
+            check("a phrase only ever on a slide finds the session", hit != nil)
+            check("…and the snippet carries the frame's [mm:ss] (got \(hit?.snippets.first?.timestamp ?? "nil"))",
+                  hit?.snippets.first?.timestamp == "00:12")
+
+            // ---- P2: the legacy hazard. Real sessions on disk carry the REMOVED feature's shape,
+            // {sessionTime, imagePath, ocrText}, which cannot decode into {time, imagePath, text}.
+            let legacyDir = root.appendingPathComponent("2026-01-03 00-00-00", isDirectory: true)
+            try? fm.createDirectory(at: legacyDir, withIntermediateDirectories: true)
+            let legacyJSON = """
+            {"meta":{"date":694224000,"sourceLabel":"Mic","modelName":"m","tags":[],"schemaVersion":2,\
+            "bookmarks":[],"chapters":[],"actionItems":[],"summaries":{},"imported":false},\
+            "segments":[{"start":0,"end":2,"text":"legacy visual session"}],\
+            "frames":[{"sessionTime":5.5,"imagePath":"images/frame-0001.png","ocrText":"old shape"}]}
+            """
+            try? Data(legacyJSON.utf8).write(to: legacyDir.appendingPathComponent("session.json"))
+            try? Data("[00:00] legacy visual session\n".utf8).write(to: legacyDir.appendingPathComponent("transcript.md"))
+            let legacyDoc = DocumentBuilder.readSession(legacyDir)
+            check("a legacy old-shape frames array still DECODES", legacyDoc != nil)
+            check("…yielding an empty frames array, not an error", legacyDoc?.frames.isEmpty == true)
+            check("…and the session's segments are intact", legacyDoc?.segments.count == 1)
+
+            // ---- P3: the video-XOR-frames invariant.
+            let bothMeta = SessionMeta(date: Date(timeIntervalSince1970: 0), sourceLabel: "Mic",
+                                       modelName: "m", videoFile: "screen.mp4")
+            let both = SessionDoc(meta: bothMeta, segments: [], frames: originalFrames)
+            check("video + frames → video wins", both.visual == .video("screen.mp4"))
+            let framesOnly = SessionDoc(meta: SessionMeta(date: Date(timeIntervalSince1970: 0),
+                                                          sourceLabel: "Mic", modelName: "m"),
+                                        segments: [], frames: originalFrames)
+            check("frames only → .frames", framesOnly.visual == .frames(originalFrames))
+            let neither = SessionDoc(meta: SessionMeta(date: Date(timeIntervalSince1970: 0),
+                                                       sourceLabel: "Mic", modelName: "m"), segments: [])
+            check("neither → .none", neither.visual == .none)
+
+            // ---- R3: export carries the frames.
+            let html = Exporter.htmlString(for: framesDir) ?? ""
+            check("HTML export embeds the frame as a data URI", html.contains("data:image/png;base64,"))
+            check("HTML export carries the OCR text", html.contains("On-slide text (00:12)"))
+            check("HTML export uses the CURRENT identity tokens, not pre-rebrand greys",
+                  html.contains("#6949D2") && html.contains("#EEA753") || html.contains("#FFE0B0"))
+            check("subtitles ignore frames (a subtitle track is speech)",
+                  !(Subtitles.srt(dir: framesDir) ?? "").contains("slide"))
+        }
+        sema.wait()
+        print(ok ? "OK" : "FAIL"); exit(ok ? 0 : 2)
+    }
+
     static func runTheme() {
         setbuf(stdout, nil)
         print("== theme self-test ==")

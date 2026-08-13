@@ -15,6 +15,9 @@ final class SessionViewerModel: ObservableObject {
     let dir: URL
     @Published var meta: SessionMeta
     @Published var segments: [TranscriptSegment]
+    /// Still frames on the timeline (Phase 2). Non-empty ONLY for sessions that arrived from an
+    /// iPhone in a `.said` bundle — the Mac renders frames but never captures them.
+    @Published var frames: [FrameEvent] = []
 
     // Playback — ONE timeline with two possible engines. A session with a screen recording plays the
     // video (which already carries the same audio); otherwise the saved audio file plays alone. Every
@@ -70,6 +73,44 @@ final class SessionViewerModel: ObservableObject {
 
     func speakerName(_ slot: Int) -> String { meta.speakerLabel(slot) }
 
+    /// One row of the transcript column: a spoken segment or a slide frame.
+    enum TimelineRow: Identifiable {
+        case segment(index: Int, seg: TranscriptSegment)
+        case frame(FrameEvent)
+
+        var id: String {
+            switch self {
+            case .segment(let i, _):  return "seg-\(i)"
+            case .frame(let f):       return "frame-\(f.imagePath)"
+            }
+        }
+        var time: TimeInterval {
+            switch self {
+            case .segment(_, let s):  return s.start
+            case .frame(let f):       return f.time
+            }
+        }
+    }
+
+    /// Segments and frames merged by time, matching the order `DocumentBuilder.markdown` writes:
+    /// on a tie, text before frame. Recomputed rather than stored, because `segments` can change
+    /// (speaker rename re-renders) and a stale merge would silently reorder the transcript.
+    var timelineRows: [TimelineRow] {
+        var rows: [(TimeInterval, Int, TimelineRow)] = []
+        for (i, s) in segments.enumerated() { rows.append((s.start, 0, .segment(index: i, seg: s))) }
+        for f in frames { rows.append((f.time, 1, .frame(f))) }
+        rows.sort { $0.0 != $1.0 ? $0.0 < $1.0 : $0.1 < $1.1 }
+        return rows.map(\.2)
+    }
+
+    /// PNG bytes for a frame, read through `SessionIO` so an encrypted session still displays.
+    func frameImage(_ f: FrameEvent) -> CGImage? {
+        guard let data = try? SessionIO.readData(dir.appendingPathComponent(f.imagePath)),
+              let src = CGImageSourceCreateWithData(data as CFData, nil),
+              let img = CGImageSourceCreateImageAtIndex(src, 0, nil) else { return nil }
+        return img
+    }
+
     init(dir: URL) {
         self.dir = dir
         let doc = DocumentBuilder.readSession(dir)
@@ -80,6 +121,9 @@ final class SessionViewerModel: ObservableObject {
         self.summaryStyle = AppModel.shared.defaultSummaryStyle
         self.actionItems = doc?.meta.actionItems ?? []
         self.chapters = doc?.meta.chapters ?? []
+        // The video-XOR-frames invariant (Phase 2, §P3) is resolved ONCE here, by SessionDoc.visual,
+        // so nothing below ever has to reconcile two visual timelines against one clock.
+        if case .frames(let f) = doc?.visual { self.frames = f.sorted { $0.time < $1.time } }
         if let cached = self.meta.summaries[summaryStyle.rawValue] { self.summaryText = cached }
         setupVideo()
         if !hasVideo { setupAudio() }   // the video already carries the session's audio
@@ -185,9 +229,16 @@ final class SessionViewerModel: ObservableObject {
         segments.firstIndex { currentTime >= $0.start && currentTime < $0.end }
             ?? segments.lastIndex { $0.start <= currentTime }
     }
+    /// The transcript row a seek should scroll to.
+    ///
+    /// Resolved against the MERGED timeline, not just segments, so seeking to a frame's timestamp —
+    /// by clicking the frame, an AI citation, or a search hit on its OCR text — scrolls to the frame
+    /// card rather than to the speech line before it. On a tie the frame wins, matching the merge
+    /// order (text before frame) so the last row at that instant is the frame.
     private func activeSegmentID(at t: TimeInterval) -> String? {
-        if let i = segments.lastIndex(where: { $0.start <= t }) { return "seg-\(i)" }
-        return segments.isEmpty ? nil : "seg-0"
+        let rows = timelineRows
+        if let row = rows.last(where: { $0.time <= t }) { return row.id }
+        return rows.first?.id
     }
 
     // MARK: Summary suite (cached in session.json)
@@ -706,17 +757,25 @@ struct SessionViewer: View {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 0) {
                         if !lib.chapters.isEmpty { chaptersStrip }
-                        ForEach(Array(lib.segments.enumerated()), id: \.offset) { i, seg in
-                            TranscriptLine(index: i, seg: seg,
-                                           text: lib.displayText(seg),
-                                           speaker: seg.speaker.map { (lib.speakerName($0), Theme.speakerColor($0)) },
-                                           active: lib.activeIndex == i,
-                                           bookmarked: isBookmarked(seg),
-                                           onTap: { lib.goTo(seg.start) },
-                                           onRename: seg.speaker.map { slot in
-                                               { (name: String) in lib.renameSpeaker(slot: slot, to: name) }
-                                           })
-                                .id("seg-\(i)")
+                        ForEach(lib.timelineRows) { row in
+                            switch row {
+                            case .segment(let i, let seg):
+                                TranscriptLine(index: i, seg: seg,
+                                               text: lib.displayText(seg),
+                                               speaker: seg.speaker.map { (lib.speakerName($0), Theme.speakerColor($0)) },
+                                               active: lib.activeIndex == i,
+                                               bookmarked: isBookmarked(seg),
+                                               onTap: { lib.goTo(seg.start) },
+                                               onRename: seg.speaker.map { slot in
+                                                   { (name: String) in lib.renameSpeaker(slot: slot, to: name) }
+                                               })
+                                    .id("seg-\(i)")
+                            case .frame(let f):
+                                // Click-to-seek goes through the SAME `goTo` as lines, bookmarks,
+                                // chapters and AI citations. No second seek path (Phase 2, §S).
+                                FrameCard(frame: f, image: lib.frameImage(f)) { lib.goTo(f.time) }
+                                    .id(row.id)
+                            }
                         }
                         if lib.segments.isEmpty {
                             Text("No transcript text.").font(Theme.ui(13)).foregroundStyle(Theme.text3).padding(24)
@@ -930,6 +989,101 @@ struct SessionViewer: View {
 }
 
 // MARK: - Subviews
+
+/// A slide frame on the transcript timeline (Phase 2).
+///
+/// Render only — there is no way to produce one of these on a Mac. A frame is here because the
+/// session arrived from an iPhone in a `.said` bundle.
+///
+/// Styled as a sticker card on the current Theme tokens: solid surface, generous radius, a hard
+/// offset edge in the rule colour rather than a soft blur. The timestamp is amber-on-amber-tint,
+/// because amber marks position on the timeline.
+private struct FrameCard: View {
+    let frame: FrameEvent
+    let image: CGImage?
+    let onTap: () -> Void
+
+    @State private var showOCR = false
+    @State private var hovering = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Group {
+                if let image {
+                    Image(decorative: image, scale: 1)
+                        .resizable().aspectRatio(contentMode: .fit)
+                } else {
+                    // The session.json knows about a frame whose file didn't survive. Say so
+                    // plainly rather than rendering an empty box.
+                    HStack(spacing: 7) {
+                        Image(systemName: "photo").font(.system(size: 13))
+                        Text("Slide image missing").font(Theme.ui(12))
+                    }
+                    .foregroundStyle(Theme.text3)
+                    .frame(maxWidth: .infinity).padding(.vertical, 26)
+                    .background(Theme.surface2)
+                }
+            }
+            .frame(maxWidth: .infinity)
+            .clipShape(UnevenRoundedRectangle(topLeadingRadius: Theme.cardRadius,
+                                              bottomLeadingRadius: 0, bottomTrailingRadius: 0,
+                                              topTrailingRadius: Theme.cardRadius))
+
+            HStack(spacing: 8) {
+                Text(DocumentBuilder.timestamp(frame.time))
+                    .font(Theme.mono(11, weight: .medium))
+                    .foregroundStyle(Theme.okText)
+                Text("SLIDE")
+                    .font(Theme.mono(9.5, weight: .semibold)).tracking(1.1)
+                    .foregroundStyle(Theme.okText.opacity(0.75))
+                Spacer(minLength: 0)
+                if frame.text?.isEmpty == false {
+                    Button { showOCR.toggle() } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: showOCR ? "chevron.down" : "chevron.right")
+                                .font(.system(size: 8, weight: .bold))
+                            Text("On-slide text").font(Theme.ui(11))
+                        }
+                        .foregroundStyle(Theme.accent)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, 12).padding(.vertical, 7)
+            .background(Theme.okSoft)
+
+            if showOCR, let ocr = frame.text, !ocr.isEmpty {
+                Text(ocr)
+                    .font(Theme.mono(11.5))
+                    .foregroundStyle(Theme.text)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 12).padding(.vertical, 9)
+                    .background(Theme.surface2)
+            }
+        }
+        .background(Theme.surface)
+        .clipShape(RoundedRectangle(cornerRadius: Theme.cardRadius))
+        .overlay(
+            RoundedRectangle(cornerRadius: Theme.cardRadius)
+                .stroke(hovering ? Theme.accentBorder : Theme.hairline, lineWidth: 1)
+        )
+        // The identity's hard offset edge — never a soft blur.
+        .background(
+            RoundedRectangle(cornerRadius: Theme.cardRadius)
+                .fill(Theme.hairline2).offset(y: 3)
+        )
+        .padding(.leading, 44).padding(.trailing, 8)
+        .padding(.vertical, 9)
+        .contentShape(Rectangle())
+        .onTapGesture(perform: onTap)
+        .onHover { hovering = $0 }
+        .help("Jump to \(DocumentBuilder.timestamp(frame.time))")
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Slide at \(DocumentBuilder.timestamp(frame.time))")
+        .accessibilityHint("Seeks playback to this slide")
+    }
+}
 
 private struct TranscriptLine: View {
     let index: Int
