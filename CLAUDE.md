@@ -1,4 +1,4 @@
-# Transcriber
+# Said
 
 A macOS app for live, **100% on-device** speech-to-text. A global hotkey (⌥⌘T) toggles recording;
 audio comes from the **microphone**, **system audio**, or **both at once** (switchable). Live text
@@ -40,7 +40,7 @@ language (Spanish, French, German, Japanese, …) or **Auto-detect**, which list
 seconds and locks one language for the whole session. The `*.en` models stay English-only and the UI
 guides a model switch rather than producing wrong-language output.
 
-**Calendar-aware capture (bot-free)** — optional: Transcriber watches your calendar (read on-device
+**Calendar-aware capture (bot-free)** — optional: Said watches your calendar (read on-device
 only) for events with a video-meeting link (Zoom, Teams, Meet, Webex, Whereby) and either **prompts**
 you ("Meeting starting — record?") or **auto-starts** a local recording at your lead time. No bot joins
 the call — it's just local system-audio capture; the meeting title becomes the session title.
@@ -169,11 +169,11 @@ chat reasons over the transcript, not the video's pixels.
 ```sh
 Scripts/setup_signing.sh      # ONCE: create the stable self-signed identity (so TCC grants persist)
 Scripts/make_icon.sh          # ONCE (or when changing the icon): regenerate Resources/AppIcon.icns
-Scripts/build_app.sh          # swift build -c release, assemble + sign + de-quarantine Transcriber.app
-open ./Transcriber.app        # or run ./Transcriber.app/Contents/MacOS/Transcriber to see logs
+Scripts/build_app.sh          # swift build -c release, assemble + sign + de-quarantine Said.app
+open ./Said.app               # or run ./Said.app/Contents/MacOS/Said to see logs
 ```
 - After `open`, allow **~1–2 s** for LaunchServices; the Transcript window opens on launch.
-- **Fully Quit before relaunching** (menu-bar ▸ Quit, or `pkill -f Transcriber.app`) — otherwise `open`
+- **Fully Quit before relaunching** (menu-bar ▸ Quit, or `pkill -f Said.app`) — otherwise `open`
   just re-activates the running instance instead of starting fresh.
 - Pinned exact dependency versions live in `Package.swift`. WhisperKit/KeyboardShortcuts APIs drift
   across versions — read the pinned tag's source before changing API calls.
@@ -569,7 +569,7 @@ transcript points at a frame, and every click in the Viewer moves the video.
   **stable self-signed identity** "Transcriber Local Signing" in an isolated keychain
   (`Scripts/setup_signing.sh`); `build_app.sh` uses it if present (else ad-hoc). The designated
   requirement is byte-identical across rebuilds (verified), so grants now persist. If permissions ever
-  act stale: `tccutil reset ScreenCapture com.nikhil.transcriber` (and `Microphone`), then re-grant.
+  act stale: `tccutil reset ScreenCapture com.said.mac` (and `Microphone`), then re-grant.
 - The global hotkey uses Carbon RegisterEventHotKey → **no permission dialog** normally.
 
 ## Pinned dependency API facts (verified at the tag — read before changing calls)
@@ -676,7 +676,7 @@ Run the built binary (`.build/release/Transcriber` or the bundle's MacOS binary)
   untagged sessions (keeps the title; skips near-empty `[BLANK_AUDIO]` transcripts) via `generateTags`.
   `--force` regenerates tags even on already-tagged sessions. Defaults to `~/Desktop/Transcripts`.
 - `--selftest-sysaudio [seconds]` — LIVE diagnostic (NOT headless; needs the Screen Recording grant, so
-  run the BUNDLE binary: `./Transcriber.app/Contents/MacOS/Transcriber --selftest-sysaudio 30`). Prints,
+  run the BUNDLE binary: `./Said.app/Contents/MacOS/Said --selftest-sysaudio 30`). Prints,
   twice a second, the captured RMS / peak / exact-zero % alongside the default output device's live
   mute + volume, plus the `recentAllZero` verdict the status-bar warning uses. This is the tool for
   "system audio recorded nothing" reports — it separates "the OS handed us digital silence" from
