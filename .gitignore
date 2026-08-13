@@ -4,12 +4,13 @@
 Package.pins
 
 # Assembled app bundle (a build output of Scripts/build_app.sh)
-Transcriber.app/
 *.app/
 
-# Xcode / DerivedData (not used for the build, but ignore defensively)
+# Xcode. NOTE: an .xcodeproj is NOT ignored — the future iOS app target needs one committed,
+# so a fresh clone builds with no setup step. Only Xcode's per-user state is ignored.
 DerivedData/
 *.xcodeproj/project.xcworkspace/xcuserdata/
+*.xcworkspace/xcuserdata/
 xcuserdata/
 
 # Machine-local Claude Code settings (permission allowlist; not portable)
