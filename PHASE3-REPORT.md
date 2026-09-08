@@ -46,13 +46,13 @@ position:
    nothing while reporting success, live transcription windows dropped on the floor, a duplicate
    chunk written into the semantic index on every word-timed session, and one sentence split into
    two lines under the same speaker label. None would have produced an error or a log line.
-5. **A self-audit of the six modified files the review's groups did not cover** found seven more —
-   see §3b — including the largest single defect in the build: **cross-session voiceprints could
-   never fire**, because nothing in app code ever enrolled a voice, so the store stayed empty and
-   every session returned at the empty-store guard.
+5. **The last two review groups, plus a self-audit of the six modified files no group covered**,
+   found nine more — see §3b — including the largest single defect in the build: **cross-session
+   voiceprints could never fire**, because nothing in app code ever enrolled a voice, so the store
+   stayed empty and every session returned at the empty-store guard.
 
 **That the reviews found what they did is the strongest available argument that more remains.**
-Twenty-one defects in code this carefully written — and the count rose every time the search widened,
+Twenty-five defects in code this carefully written — and the count rose every time the search widened,
 never because the code got worse. The last pass, over files no reviewer had been assigned, found an
 entire feature that could not fire. Treat the first real build as part of the work, not a formality,
 and treat "nobody has looked at this file yet" as the strongest predictor of where the next one is.
@@ -317,10 +317,13 @@ survives a split; slide grouping asserts both the case the new metric closes (a 
 the one it opens (a short reading inside a long one). **A fix without the test that would have caught
 it is half a fix**, and on this build — where nothing can be compiled — it is less than half.
 
-## 3b. Defects found auditing what the review did not cover
+## 3b. Defects found by the last two review groups, and by auditing what no group covered
 
-The review fleet named six file groups. Six modified files fell outside all of them, and the last
-group's findings went further than compile errors. Read the same way, they yielded seven more.
+The last two review groups reported after §3a was written, and they went past compile errors into
+behaviour. Separately, the fleet named six file groups and **six modified files fell outside all of
+them**; those were audited by hand, the same way. Nine defects between them — four from
+`review:said-ui`, one from `review:said-integration`, three from the self-audit, and one found while
+investigating the last of those.
 
 **The one that matters most: cross-session voiceprints could never fire.** `VoiceprintStore.enroll`
 had no caller anywhere in app code — only in `--selftest-voiceprint`. So the store began empty and
@@ -339,7 +342,9 @@ enrolled. Then two writers: confirming a proposal enrols into the profile it mat
 speaker OFFERS ("Remember Alice's voice?"). An offer rather than an enrolment, because naming a line
 in a transcript must not silently create a biometric record of someone else.
 
-The rest:
+The rest, in the order they were found:
+
+**From `review:said-ui`:**
 
 1. **Keyword search never saw corrections.** Re-indexing after an edit was a complete no-op — the
    index tokenizes `transcript.md`, which the overlay deliberately never touches, and the entry it
@@ -353,20 +358,37 @@ The rest:
    `meta.language` is written only when the language is *not* `"en"`, so the sheet handed
    `EngineRouter` a nil language, whose `.automatic` branch routes to Whisper by rule. The most
    common session there is, and the exact case the command exists to speed up.
-3. **`SessionMeta.modelName` read from the `Said` module** — a compile error; that field is one of
-   three in the struct that never gained `public`.
-4. **`SearchIndex.tokenize` called from the `Said` module** — the same, and made public with a
-   reason: it is the definition of "a searchable word" in Said, and a second copy would be a place
-   for the index and the slide segmenter to drift apart.
-5. **A failed edit write left the model inconsistent.** `persistEdits` returned early on a throw with
+3. **A failed edit write left the model inconsistent.** `persistEdits` returned early on a throw with
    `edits` already mutated, so the correction silently did not appear, the undo stack held an entry
    for something never displayed, and the unwritten edit would be flushed by the next successful one.
    The derived state is now refreshed either way and the failure is surfaced.
+**From the self-audit of the six uncovered files:**
+
+4. **`SessionMeta.modelName` read from the `Said` module** — a compile error; that field is one of
+   three in the struct that never gained `public`.
+5. **`SearchIndex.tokenize` called from the `Said` module** — the same, and made public with a
+   reason: it is the definition of "a searchable word" in Said, and a second copy would be a place
+   for the index and the slide segmenter to drift apart.
 6. **`SampleSink.largestIncrementalRead` documented an assertion that did not exist** — it named
    `--selftest-stream`, which drives the Whisper path and by construction could never exercise the
    incremental reader. The assertions now exist in `--selftest-pause`. The property also read outside
    the lock that guards its writer, which is the kind of exception an `@unchecked Sendable` promise
    must not carry.
+
+**From `review:said-integration`, and one thing it led to:**
+
+7. **`--selftest-engine-route` never exercised a first run.** Every assertion left at least one
+   engine installed, so none of the router's neither-installed fall-throughs were covered — and those
+   are the branches where a router decides to spend someone's bandwidth. The reported defect (that
+   `.automatic` routes to Parakeet when neither is on disk) turned out to be correct behaviour with a
+   FALSE stated invariant: routing away from Parakeet there would make the default engine
+   permanently unreachable, since nothing else installs it. What was wrong was the reason string —
+   a bare "Parakeet" for a multi-hundred-megabyte download, shown in the status bar — and §10.2a's
+   description of the mechanism. Both fixed; seven assertions added.
+8. **Pressing Stop during an Auto session could hang the UI.** `stopFlow` cancels the detection task
+   and then awaits it, while Phase 3's re-route inside that task awaits `engine.prepare` — a CoreML
+   load, possibly a first-run download — which does not observe cancellation. Found while confirming
+   #7. The swap is now skipped once Stop has been pressed.
 
 ---
 

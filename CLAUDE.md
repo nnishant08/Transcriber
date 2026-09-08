@@ -1750,8 +1750,8 @@ Screen Recording grant + on-screen content — use `--selftest-screenrec-live` f
       **⚠️ NOT COMPILED, NOT RUN, NOT TESTED** — built in a container with no Swift toolchain. Every
       third-party API was verified against the pinned dependency source, and an adversarial compile
       review was run over every new and changed file, then a self-audit over the six modified files
-      the review's groups had not been assigned. Between them they found **twenty-one** real defects
-      — seven compile errors that would have stopped the build dead, eleven logic bugs a green build
+      the review's groups had not been assigned. Between them they found **twenty-five** real defects
+      — seven compile errors that would have stopped the build dead, fifteen logic bugs a green build
       would still have shipped (including **cross-session voiceprints, which could never fire at
       all**: nothing in app code ever enrolled a voice, so the store stayed empty and every session
       returned at the empty-store guard), and the rest data races and wrong doc-claims. All are fixed
