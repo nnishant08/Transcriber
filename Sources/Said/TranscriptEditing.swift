@@ -62,11 +62,18 @@ extension SessionViewerModel {
     }
 
     private func persistEdits() {
+        // The write can fail, and the derived state is refreshed EITHER WAY. Returning early left
+        // `edits` already mutated while `editedSegments`, `unanchoredEditCount` and `showEdited`
+        // still described the previous state — so the correction silently did not appear, the undo
+        // stack held an entry for something never displayed, and the unwritten edit would be flushed
+        // to disk by the next successful one. An unsaved edit that is visible and reported is a
+        // recoverable situation; an invisible one is not.
         do {
             try EditStore.write(edits, dir: dir)
+            editError = nil
         } catch {
             NSLog("[Edits] could not save: \(error)")
-            return
+            editError = "That correction could not be saved (\(error.localizedDescription))."
         }
         refreshEditedSegments()
         unanchoredEditCount = EditOverlay.unanchored(edits, in: segments).count
@@ -134,6 +141,13 @@ struct TranscriptEditControls: View {
                 .font(Theme.ui(10.5)).foregroundStyle(.orange)
                 .help("The transcript changed — most likely re-transcribed — so these corrections no "
                       + "longer line up with any words. They are kept, not deleted.")
+        }
+        if let problem = lib.editError {
+            Label(problem, systemImage: "exclamationmark.triangle.fill")
+                .font(Theme.ui(10.5)).foregroundStyle(.red).lineLimit(1)
+                .help("The correction is applied in this window but was not written to the session "
+                      + "folder. Check that the folder is writable.")
+                .onTapGesture { lib.editError = nil }
         }
         if let notice = lib.learnedNotice {
             Text(notice).font(Theme.ui(10.5)).foregroundStyle(Theme.text3).lineLimit(1)

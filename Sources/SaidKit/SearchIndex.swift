@@ -175,6 +175,18 @@ public final class SearchIndex: @unchecked Sendable {
         var freq: [String: Int] = [:]
         for term in Self.tokenize(text) { freq[term, default: 0] += 1 }
 
+        // Corrections are searchable, even though `transcript.md` never changes (Phase 3, §6).
+        //
+        // The edit overlay is deliberately not written into the verbatim file, so re-indexing after
+        // an edit used to be a complete no-op: the corrected word reached the SEMANTIC index (which
+        // chunks `EditStore.editedSegments`) and never reached this one, and the two disagreed about
+        // the same session. What is missing is exactly the CORRECTED words — an edit's ORIGINAL is
+        // still in the verbatim text and stays findable, which is right, since someone may well
+        // search for what the machine wrote. So the delta is added rather than the text re-derived.
+        for edit in EditStore.read(dir: dir) {
+            for term in Self.tokenize(edit.corrected) { freq[term, default: 0] += 1 }
+        }
+
         // Slide text, counted once per SPAN. `transcriptPlainText` above already contains the OCR
         // text once per captured FRAME — which is exactly the flooding problem: a slide left up for
         // ten minutes contributes its words dozens of times and drowns out the speech. Recording
@@ -234,7 +246,12 @@ public final class SearchIndex: @unchecked Sendable {
             let dir = URL(fileURLWithPath: e.path)
             let meta = DocumentBuilder.readSession(dir)?.meta
                 ?? SessionMeta(date: e.date, sourceLabel: "Unknown", modelName: "", title: e.title, tags: e.tags)
-            let snippets = Self.extractSnippets(dir: dir, terms: terms, limit: 3)
+            var snippets = Self.extractSnippets(dir: dir, terms: terms, limit: 3)
+            // A term that exists only in a CORRECTION is in the index but not in `transcript.md`,
+            // so the verbatim scan finds nothing and the hit would arrive with no excerpt at all.
+            // Fall back to the edited view — and only then, so an unedited session does exactly what
+            // it always did, down to the same allocations.
+            if snippets.isEmpty { snippets = Self.editedSnippets(dir: dir, terms: terms, limit: 3) }
             hits.append(SessionHit(dir: dir, meta: meta, score: score, matchCount: matchCount, snippets: snippets))
         }
         hits.sort { $0.score == $1.score ? $0.meta.date > $1.meta.date : $0.score > $1.score }
@@ -257,6 +274,25 @@ public final class SearchIndex: @unchecked Sendable {
             else { if cur.count >= 2 { out.append(cur) }; cur = "" }
         }
         if cur.count >= 2 { out.append(cur) }
+        return out
+    }
+
+    /// Snippets from the EDITED view, for terms that exist only in a correction.
+    ///
+    /// Separate from `extractSnippets` rather than folded into it: that function scans the raw
+    /// markdown line by line and is on the path of every search, and the overlay costs a session
+    /// read plus an apply. This runs only when the verbatim scan came back empty.
+    static func editedSnippets(dir: URL, terms: [String], limit: Int) -> [SearchSnippet] {
+        guard !EditStore.read(dir: dir).isEmpty,
+              let doc = DocumentBuilder.readSession(dir) else { return [] }
+        let segments = EditStore.editedSegments(dir: dir, segments: doc.segments)
+        var out: [SearchSnippet] = []
+        for seg in segments {
+            let tokens = Set(tokenize(seg.text))
+            guard terms.contains(where: { tokens.contains($0) }) else { continue }
+            out.append(SearchSnippet(timestamp: DocumentBuilder.timestamp(seg.start), text: seg.text))
+            if out.count >= limit { break }
+        }
         return out
     }
 
@@ -302,9 +338,20 @@ public final class SearchIndex: @unchecked Sendable {
 
     // MARK: - Persistence
 
+    /// The session's freshness stamp: the LATER of `transcript.md` and `edits.json`.
+    ///
+    /// Both, because both feed the index. Watching only the transcript would make `rebuildFromDisk`
+    /// skip an edited session as "still fresh" forever — the corrections would be indexed by the
+    /// `index(sessionDir:)` call that follows an edit and then silently lost at the next launch,
+    /// which is a worse failure than never indexing them at all, because it is intermittent.
     private func transcriptMTime(_ dir: URL) -> Date {
-        (try? dir.appendingPathComponent("transcript.md").resourceValues(forKeys: [.contentModificationDateKey]))?
-            .contentModificationDate ?? Date()
+        func mtime(_ name: String) -> Date? {
+            (try? dir.appendingPathComponent(name).resourceValues(forKeys: [.contentModificationDateKey]))?
+                .contentModificationDate
+        }
+        guard let transcript = mtime("transcript.md") else { return Date() }
+        guard let edits = mtime(EditStore.fileName) else { return transcript }
+        return max(transcript, edits)
     }
 
     private func loadCache() {

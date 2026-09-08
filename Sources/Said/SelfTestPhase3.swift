@@ -362,6 +362,19 @@ extension SelfTest {
         c.check("clear-all empties the store", CorrectionMemory.all().isEmpty)
         CorrectionMemory.overrideStoreURL = nil
 
+        // ---- Keyword search sees corrections, even though `transcript.md` never changes.
+        // Re-indexing after an edit was a complete no-op before Phase 3's fix: the corrected word
+        // reached the semantic index and never reached this one, so the two disagreed about the same
+        // session. The ORIGINAL must stay findable too — someone may search for what the machine
+        // wrote — so both are asserted.
+        try? EditStore.write([e1], dir: dir)
+        let editIndex = SearchIndex(cacheURL: tempDir("edit-index").appendingPathComponent("c.json"))
+        editIndex.index(sessionDir: dir)
+        let corrected = editIndex.search(e1.corrected)
+        c.check("a corrected word is findable", corrected.count == 1)
+        c.check("…and the hit carries an excerpt", corrected.first?.snippets.isEmpty == false)
+        c.check("the original spelling stays findable", editIndex.search(e1.original).count == 1)
+
         // ---- `.said` round trip carries the edits.
         try? EditStore.write([e1], dir: dir)
         let bundle = tempDir("edit-bundle").appendingPathComponent("s.said")
@@ -445,6 +458,44 @@ extension SelfTest {
         let after = VoiceprintStore.all().first.map { VoiceprintMatcher.distance(from: aliceAgain, to: $0) } ?? 1
         c.check("appending a sample improves the next match", after < before)
         c.check("session count increments", VoiceprintStore.all().first?.sessionCount == 2)
+
+        // ---- The session stash: what makes enrolment possible at all.
+        //
+        // Enrolment happens LATER than extraction — the vectors come from the post-save diarization
+        // pass, the decision "that's Alice" comes from the Viewer minutes or days afterwards. Phase 3
+        // shipped without this and the feature was inert: `enroll` had no caller outside this file,
+        // so the store stayed empty and `VoiceprintPass` returned at its empty-store guard forever.
+        let session = UUID()
+        VoiceprintStore.stashEmbeddings(sessionID: session, embeddings: [1: [alice], 2: [bob]])
+        let stashed = VoiceprintStore.stashedEmbeddings(sessionID: session)
+        c.check("a session's per-slot embeddings round-trip", stashed[1] == [alice] && stashed[2] == [bob])
+        c.check("an unknown session has no stash",
+                VoiceprintStore.stashedEmbeddings(sessionID: UUID()).isEmpty)
+        c.check("a nil session id is not a crash",
+                VoiceprintStore.stashedEmbeddings(sessionID: nil).isEmpty)
+        // The bootstrap, end to end: an empty store plus a stash becomes a store with one voice.
+        VoiceprintStore.deleteAll()
+        VoiceprintStore.stashEmbeddings(sessionID: session, embeddings: [1: [alice]])
+        let boot = VoiceprintStore.stashedEmbeddings(sessionID: session)[1] ?? []
+        _ = VoiceprintStore.enroll(name: "Alice", embeddings: boot)
+        c.check("an empty store can be bootstrapped from a stash",
+                VoiceprintStore.all().first?.name == "Alice")
+        VoiceprintStore.discardStash(sessionID: session)
+        c.check("a stash can be discarded once its speakers are named",
+                VoiceprintStore.stashedEmbeddings(sessionID: session).isEmpty)
+        // The stash is raw material for a voiceprint, so "delete all voices" must take it too —
+        // otherwise the biometric data the user asked to be rid of is still on disk.
+        VoiceprintStore.stashEmbeddings(sessionID: session, embeddings: [1: [alice]])
+        VoiceprintStore.deleteAll()
+        c.check("delete-all takes the stashes with it",
+                VoiceprintStore.stashedEmbeddings(sessionID: session).isEmpty)
+        // Feature OFF stashes nothing — no biometric vectors are written when it is not in use.
+        VoiceprintStore.isEnabled = false
+        VoiceprintStore.stashEmbeddings(sessionID: session, embeddings: [1: [alice]])
+        c.check("feature off: nothing is stashed",
+                VoiceprintStore.stashedEmbeddings(sessionID: session).isEmpty)
+        VoiceprintStore.isEnabled = true
+        _ = VoiceprintStore.enroll(name: "Alice", embeddings: [alice])
 
         // ---- Deletion is complete.
         if let id = VoiceprintStore.all().first?.id { VoiceprintStore.delete(id: id) }

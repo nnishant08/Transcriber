@@ -1094,6 +1094,21 @@ alongside the turns, grouped by the SAME slot mapping `normalize` derives (via
 - **A match is a PROPOSAL, never an assignment.** The pass writes `meta.voiceprintProposals` and
   nothing else — it does not set `speakerNames`, does not re-render `transcript.md`, does not
   re-index. The Viewer asks.
+- **Enrolment is bootstrapped by NAMING someone, and that is the only writer.** Matching needs a
+  non-empty store, and a store only becomes non-empty when a user says who somebody is — so without
+  this the feature is inert: nothing to match against, no proposal ever generated, no observable
+  behaviour from turning it on. Renaming a speaker in the Viewer therefore OFFERS ("Remember Alice's
+  voice?"), and confirming a proposal enrols the samples into the profile it matched (`existing:`,
+  so samples ATTACH to that identity — two stored voiceprints are still never merged). An offer, not
+  an enrolment: a voiceprint is biometric data about someone else, so naming a line in a transcript
+  must not silently create one.
+- **The session stash is what makes that possible.** Extraction happens in the post-save pass;
+  the decision happens in the Viewer, minutes or days later. `VoiceprintStore.stashEmbeddings` keeps
+  the per-slot vectors — in **Application Support, keyed by session id, never in the session folder**
+  (same mechanism as the store; anything in a session folder travels in a `.said`), bounded to the
+  30 most recent sessions, discarded once its speakers are named, and taken by "delete all voices"
+  because a stash is the raw material of a voiceprint. It is written BEFORE the empty-store guard —
+  that ordering is the whole bootstrap.
 - **Two candidates within `ambiguityMargin` (0.08) produce `.ambiguous`, which asks rather than
   picking.** Declining teaches nothing: a "no" is evidence these are different people, so folding the
   samples in would make the next match worse.
@@ -1734,13 +1749,16 @@ Screen Recording grant + on-screen content — use `--selftest-screenrec-live` f
       gate, the storage panel, one re-transcribe command, six pure self-tests and `--compare-engines`.
       **⚠️ NOT COMPILED, NOT RUN, NOT TESTED** — built in a container with no Swift toolchain. Every
       third-party API was verified against the pinned dependency source, and an adversarial compile
-      review was run over every new and changed file. Between them they found **fourteen** real
-      defects — five compile errors that would have stopped the build dead, five logic bugs a green
-      build would still have shipped, and the rest data races and wrong doc-claims. All are fixed and
-      recorded in `PHASE3-REPORT.md` §3/§3a; the ones the self-test suite ran straight past landed
-      with the assertion that would have caught them. **Expect more on the first real build** — that
-      a careful review found fourteen is the argument that a compiler will find more, not that it
-      won't. §0 of that report lists exactly what was and was not verified; §15 is the order to work
+      review was run over every new and changed file, then a self-audit over the six modified files
+      the review's groups had not been assigned. Between them they found **twenty-one** real defects
+      — seven compile errors that would have stopped the build dead, eleven logic bugs a green build
+      would still have shipped (including **cross-session voiceprints, which could never fire at
+      all**: nothing in app code ever enrolled a voice, so the store stayed empty and every session
+      returned at the empty-store guard), and the rest data races and wrong doc-claims. All are fixed
+      and recorded in `PHASE3-REPORT.md` §3/§3a/§3b; the ones the self-test suite ran straight past
+      landed with the assertion that would have caught them. **Expect more on the first real build**
+      — the count rose every time the search widened, never because the code got worse, and the last
+      pass found an entire inert feature in files nobody had been asked to read. §0 of that report lists exactly what was and was not verified; §15 is the order to work
       in.
       **AWAITING everything:** a build, the self-test sweep, the iOS gate, the baselines,
       `--compare-engines` over real sessions (which is what should actually decide the default

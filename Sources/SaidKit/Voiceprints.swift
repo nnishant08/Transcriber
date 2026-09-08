@@ -220,10 +220,94 @@ public enum VoiceprintStore {
     /// than an empty container that still says a store existed.
     public static func deleteAll() {
         try? FileManager.default.removeItem(at: activeURL)
+        discardAllStashes()
     }
 
     public static func match(embeddings: [[Float]]) -> VoiceprintMatch {
         VoiceprintMatcher.match(embeddings: embeddings, against: all())
+    }
+
+    // MARK: The session stash — what makes enrollment possible at all
+
+    /// Where a finished session's per-slot voice embeddings wait for the user to name someone.
+    ///
+    /// **This exists because enrollment happens LATER than extraction.** The embeddings are produced
+    /// by the post-save diarization pass; the user decides "that's Alice" minutes or days afterwards,
+    /// in the Viewer. Without somewhere to keep them, there is nothing to enroll when the decision is
+    /// finally made — which is exactly the state Phase 3 shipped in until this was added: `enroll`
+    /// had no caller outside the self-tests, so the store stayed empty forever and the whole feature
+    /// was inert.
+    ///
+    /// **Deliberately NOT in the session folder.** Everything in a session folder travels inside a
+    /// `.said`, and voice embeddings are biometric data about other people. Keeping them in
+    /// Application Support is the same mechanism that keeps the store itself out of bundles by
+    /// construction rather than by remembering to filter — see `SessionBundle.write`.
+    static var stashDirectory: URL {
+        let dir = activeURL.deletingLastPathComponent()
+            .appendingPathComponent("session-voices", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }
+
+    /// How many sessions' embeddings are kept. A stash is only useful until its session has been
+    /// named, and an unbounded pile of biometric vectors for sessions nobody ever named is a
+    /// liability rather than a feature. Oldest are pruned on each write.
+    public static let maxStashedSessions = 30
+
+    /// Keep this session's per-slot embeddings so a later "that's Alice" has something to enroll.
+    public static func stashEmbeddings(sessionID: UUID?, embeddings: [Int: [[Float]]]) {
+        guard isEnabled, let sessionID, !embeddings.isEmpty else { return }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        // Keys are ints; JSON object keys must be strings, and `[Int: X]` encodes as an ARRAY under
+        // the default strategy — which round-trips, but only if both sides agree. Stringifying is
+        // the readable, unambiguous choice.
+        let byString = Dictionary(uniqueKeysWithValues: embeddings.map { (String($0.key), $0.value) })
+        guard let data = try? encoder.encode(byString) else { return }
+        let url = stashDirectory.appendingPathComponent("\(sessionID.uuidString).json")
+        try? SessionIO.writeData(data, to: url)
+        pruneStash()
+    }
+
+    /// This session's per-slot embeddings, if they are still stashed.
+    public static func stashedEmbeddings(sessionID: UUID?) -> [Int: [[Float]]] {
+        guard let sessionID else { return [:] }
+        let url = stashDirectory.appendingPathComponent("\(sessionID.uuidString).json")
+        guard FileManager.default.fileExists(atPath: url.path),
+              let data = try? SessionIO.readData(url),
+              let byString = try? JSONDecoder().decode([String: [[Float]]].self, from: data)
+        else { return [:] }
+        return Dictionary(uniqueKeysWithValues: byString.compactMap { key, value in
+            Int(key).map { ($0, value) }
+        })
+    }
+
+    /// Forget one session's stash. Called once its speakers have been named, and by "delete all".
+    public static func discardStash(sessionID: UUID?) {
+        guard let sessionID else { return }
+        try? FileManager.default.removeItem(
+            at: stashDirectory.appendingPathComponent("\(sessionID.uuidString).json"))
+    }
+
+    /// Keep only the newest `maxStashedSessions` stashes.
+    static func pruneStash() {
+        let fm = FileManager.default
+        guard let files = try? fm.contentsOfDirectory(
+            at: stashDirectory, includingPropertiesForKeys: [.contentModificationDateKey],
+            options: [.skipsHiddenFiles]) else { return }
+        guard files.count > maxStashedSessions else { return }
+        let dated = files.map { url -> (URL, Date) in
+            let d = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?
+                .contentModificationDate ?? .distantPast
+            return (url, d)
+        }.sorted { $0.1 > $1.1 }
+        for (url, _) in dated.dropFirst(maxStashedSessions) { try? fm.removeItem(at: url) }
+    }
+
+    /// Remove every stash. Part of "delete all voices": a stash is the raw material of a voiceprint,
+    /// so leaving the stashes behind would leave the biometric data the user asked to be rid of.
+    public static func discardAllStashes() {
+        try? FileManager.default.removeItem(at: stashDirectory)
     }
 
     // MARK: Voices arriving in a `.said`
@@ -319,6 +403,15 @@ public enum VoiceprintPass {
 
     public static func run(dir: URL, embeddings: [Int: [[Float]]]) async {
         guard VoiceprintStore.isEnabled, !embeddings.isEmpty else { return }
+
+        // Stash BEFORE the empty-store guard, and that ordering is the whole bootstrap. Matching
+        // needs a non-empty store, but a store only becomes non-empty when a user names someone —
+        // which happens later, in the Viewer, long after these vectors were computed. Stashing only
+        // when there was already something to match against would mean the first person could never
+        // be enrolled, and the feature would stay inert forever, which is exactly what it did.
+        let sessionID = DocumentBuilder.readSession(dir)?.meta.id
+        VoiceprintStore.stashEmbeddings(sessionID: sessionID, embeddings: embeddings)
+
         let store = VoiceprintStore.all()
         guard !store.isEmpty else { return }   // nothing enrolled yet — nothing to propose
 

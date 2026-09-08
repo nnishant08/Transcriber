@@ -116,7 +116,12 @@ struct RetranscribeSheet: View {
         let dir = lib.dir
         let preference = choice
         let variant = whisperVariant.rawValue
-        let language = lib.meta.language
+        // `?? "en"` because a nil `meta.language` provably MEANS English: `AppModel.sessionMeta`
+        // writes the key only when the session language is not "en". Passing the raw nil through
+        // would hand `EngineRouter.choose` an unknown language, whose `.automatic` branch routes to
+        // Whisper — so "Automatic" could never pick Parakeet on an ordinary English session, which
+        // is the most common session there is and the case this command exists to speed up.
+        let language = lib.meta.language ?? "en"
         let vocabulary = model.effectiveVocabulary
 
         Task {
@@ -209,8 +214,12 @@ enum Retranscriber {
 struct VoiceprintProposalBar: View {
     @ObservedObject var lib: SessionViewerModel
 
+    /// A computed property rather than a `let` inside `body`: nothing here depends on result-builder
+    /// subtleties, and the bar now has two independent reasons to appear.
+    private var proposals: [VoiceprintProposal] { lib.meta.voiceprintProposals ?? [] }
+
     var body: some View {
-        if let proposals = lib.meta.voiceprintProposals, !proposals.isEmpty {
+        if !proposals.isEmpty || lib.voiceOffer != nil {
             VStack(alignment: .leading, spacing: 8) {
                 ForEach(proposals, id: \.slot) { p in
                     HStack(spacing: 10) {
@@ -235,6 +244,19 @@ struct VoiceprintProposalBar: View {
                             .controlSize(.small)
                     }
                 }
+                // The bootstrap: the user has just named someone, and this asks whether to remember
+                // the voice. Without it the store can never stop being empty and no proposal above
+                // can ever be generated — so this row is what turns the feature on in practice.
+                if let offer = lib.voiceOffer {
+                    HStack(spacing: 10) {
+                        Circle().fill(Theme.speakerColor(offer.slot)).frame(width: 8, height: 8)
+                        Text("Remember \(offer.name)'s voice, so Said can suggest them in future "
+                             + "sessions?").font(Theme.ui(12))
+                        Spacer()
+                        Button("Remember") { lib.acceptVoiceOffer() }.controlSize(.small)
+                        Button("Not now") { lib.declineVoiceOffer() }.controlSize(.small)
+                    }
+                }
             }
             .padding(10)
             .background(RoundedRectangle(cornerRadius: 8).fill(Theme.accentSoft))
@@ -243,13 +265,71 @@ struct VoiceprintProposalBar: View {
     }
 }
 
+/// A pending "remember this voice?" question about one speaker in one session.
+struct VoiceEnrollmentOffer: Identifiable, Equatable {
+    let slot: Int
+    let name: String
+    var id: Int { slot }
+}
+
 extension SessionViewerModel {
 
     /// Accept a proposed identity: name the speaker for this session, and add this session's voice
     /// samples to that person's profile so future matching improves.
+    ///
+    /// The enrollment is the half that was missing. Naming without enrolling made every confirmation
+    /// a one-session fact: the profile never learned what this person sounds like in this room, on
+    /// this mic, on this day, which is precisely the variation cross-session matching exists to
+    /// absorb. `existing:` carries the matched profile's id so the samples ATTACH to that identity —
+    /// two stored voiceprints are still never merged with each other (§7.4).
     func acceptVoiceprint(slot: Int, name: String) {
+        let matched = (meta.voiceprintProposals ?? []).first { $0.slot == slot }
         renameSpeaker(slot: slot, to: name)
+        enrollVoice(slot: slot, name: name, existing: matched?.voiceprintID)
+        // `renameSpeaker` would otherwise ask again about the person just confirmed.
+        voiceOffer = nil
         dismissProposal(slot: slot)
+    }
+
+    /// Offer to remember a renamed speaker's voice — the bootstrap path, and the only way the store
+    /// can ever stop being empty.
+    ///
+    /// Silent when the feature is off, when the name was cleared, when this session's embeddings are
+    /// no longer stashed, or when a profile of that name already carries this session — so an
+    /// ordinary rename in an ordinary session shows nothing at all.
+    func offerVoiceEnrollment(slot: Int, name: String) {
+        guard VoiceprintStore.isEnabled, !name.isEmpty, name != "Speaker \(slot)" else { return }
+        guard !VoiceprintStore.stashedEmbeddings(sessionID: meta.id).isEmpty else { return }
+        guard !(meta.voiceprintProposals ?? []).contains(where: { $0.slot == slot }) else { return }
+        voiceOffer = VoiceEnrollmentOffer(slot: slot, name: name)
+    }
+
+    /// Take the offer: add this session's samples for that slot to the named profile, creating it if
+    /// this is the first time. Nothing is written until this is called.
+    func acceptVoiceOffer() {
+        guard let offer = voiceOffer else { return }
+        let existing = VoiceprintStore.all()
+            .first { $0.name.localizedCaseInsensitiveCompare(offer.name) == .orderedSame }
+        enrollVoice(slot: offer.slot, name: offer.name, existing: existing?.id)
+        voiceOffer = nil
+    }
+
+    func declineVoiceOffer() { voiceOffer = nil }
+
+    /// The one place that writes to the voiceprint store from the app.
+    private func enrollVoice(slot: Int, name: String, existing: UUID?) {
+        let stash = VoiceprintStore.stashedEmbeddings(sessionID: meta.id)
+        guard let vectors = stash[slot], !vectors.isEmpty else {
+            NSLog("[Voiceprint] nothing stashed for slot \(slot) — not enrolling")
+            return
+        }
+        // Bounded here as well as in `enroll`: a long session can produce dozens of turns for one
+        // speaker, and handing them all over would let a single session dominate a profile that is
+        // supposed to represent a person across many.
+        let sample = Array(vectors.prefix(4))
+        if VoiceprintStore.enroll(name: name, embeddings: sample, existing: existing) != nil {
+            NSLog("[Voiceprint] remembered \(name) from \(dir.lastPathComponent)")
+        }
     }
 
     /// Decline. The proposal goes away and nothing is learned from it — in particular the rejected

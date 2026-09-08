@@ -68,12 +68,22 @@ final class SessionViewerModel: ObservableObject {
     /// One-shot notice when a correction crosses the learning threshold, e.g.
     /// "Said will listen for *anastomosis* from now on."
     @Published var learnedNotice: String?
+    /// Set when `edits.json` could not be written. The correction still shows in the Edited view —
+    /// the in-memory state is refreshed either way — but the user has to be told it did not reach
+    /// disk, because a silently-unsaved edit looks identical to a saved one until the app restarts.
+    @Published var editError: String?
     /// Set when an edit invalidates cached summaries. Shown as an affordance rather than silently
     /// re-running expensive generation (§6.3).
     @Published var summariesAreStale = false
     /// Edits that no longer anchor — after a re-transcription reshaped the segments. Kept in the
     /// file, never deleted (§6.5); this is what tells the user.
     @Published var unanchoredEditCount = 0
+
+    /// A pending "remember this voice?" offer, set when a speaker is renamed while cross-session
+    /// voiceprints are on and this session's embeddings are still stashed. One at a time: the offer
+    /// names a specific person and stacking several would turn a consent step into a dialog to
+    /// dismiss. Rendered by `VoiceprintProposalBar`.
+    @Published var voiceOffer: VoiceEnrollmentOffer?
 
     /// The window's `UndoManager`, handed in by the view.
     ///
@@ -423,6 +433,12 @@ final class SessionViewerModel: ObservableObject {
             DocumentBuilder.writeSession(doc, to: dir)
             Task.detached { SearchIndex.shared.index(sessionDir: self.dir) }
         }
+        // Naming a speaker is the only moment the app learns that this voice belongs to this person,
+        // and it is the moment cross-session voiceprints have to be bootstrapped from — the store
+        // starts empty, so without an offer here nothing can ever be enrolled and matching never
+        // fires. It is an OFFER, not an enrollment: a voiceprint is biometric data about someone
+        // else, so naming a line in a transcript must not silently create one (§7.4, §1.6).
+        offerVoiceEnrollment(slot: slot, name: name)
         objectWillChange.send()   // chips resolve names via meta — refresh the visible transcript
     }
 

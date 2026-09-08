@@ -46,10 +46,16 @@ position:
    nothing while reporting success, live transcription windows dropped on the floor, a duplicate
    chunk written into the semantic index on every word-timed session, and one sentence split into
    two lines under the same speaker label. None would have produced an error or a log line.
+5. **A self-audit of the six modified files the review's groups did not cover** found seven more —
+   see §3b — including the largest single defect in the build: **cross-session voiceprints could
+   never fire**, because nothing in app code ever enrolled a voice, so the store stayed empty and
+   every session returned at the empty-store guard.
 
-**That the review found what it did is the strongest available argument that more remains.** Eleven
-defects in code this carefully written, from one pass, means the compiler will find more. Treat the
-first real build as part of the work, not a formality.
+**That the reviews found what they did is the strongest available argument that more remains.**
+Twenty-one defects in code this carefully written — and the count rose every time the search widened,
+never because the code got worse. The last pass, over files no reviewer had been assigned, found an
+entire feature that could not fire. Treat the first real build as part of the work, not a formality,
+and treat "nobody has looked at this file yet" as the strongest predictor of where the next one is.
 
 ---
 
@@ -311,6 +317,59 @@ survives a split; slide grouping asserts both the case the new metric closes (a 
 the one it opens (a short reading inside a long one). **A fix without the test that would have caught
 it is half a fix**, and on this build — where nothing can be compiled — it is less than half.
 
+## 3b. Defects found auditing what the review did not cover
+
+The review fleet named six file groups. Six modified files fell outside all of them, and the last
+group's findings went further than compile errors. Read the same way, they yielded seven more.
+
+**The one that matters most: cross-session voiceprints could never fire.** `VoiceprintStore.enroll`
+had no caller anywhere in app code — only in `--selftest-voiceprint`. So the store began empty and
+stayed empty, `VoiceprintPass.run` returned at its `guard !store.isEmpty` on every session, no
+`meta.voiceprintProposals` was ever written, and the proposal bar never rendered. **Turning the
+feature on in Settings produced no observable behaviour whatsoever.**
+
+The root cause is a timing gap the design never closed: embeddings are extracted by the post-save
+pass, but the decision "that's Alice" is made in the Viewer, minutes or days later. There was nowhere
+for the vectors to wait. Fixed with a **session stash** — per-slot embeddings keyed by session id, in
+Application Support (never the session folder: anything in a session folder travels in a `.said`, and
+these are biometric data), bounded to 30 sessions, discarded once named, and removed by "delete all
+voices". It is written *before* the empty-store guard, which is the entire bootstrap: stashing only
+when there was already something to match against would mean the first person could never be
+enrolled. Then two writers: confirming a proposal enrols into the profile it matched, and renaming a
+speaker OFFERS ("Remember Alice's voice?"). An offer rather than an enrolment, because naming a line
+in a transcript must not silently create a biometric record of someone else.
+
+The rest:
+
+1. **Keyword search never saw corrections.** Re-indexing after an edit was a complete no-op — the
+   index tokenizes `transcript.md`, which the overlay deliberately never touches, and the entry it
+   wrote was identical to the one before. The semantic index, one line away in the same function,
+   *does* apply the overlay, so the two disagreed about the same session. Now the corrected words are
+   added to the term table (the originals stay findable — someone may search for what the machine
+   wrote), the freshness stamp is the later of `transcript.md` and `edits.json` so a rebuild cannot
+   skip an edited session as "fresh", and a term that exists only in a correction falls back to
+   snippets from the edited view instead of arriving with no excerpt.
+2. **"Automatic" in Re-transcribe could never choose Parakeet on an English session.**
+   `meta.language` is written only when the language is *not* `"en"`, so the sheet handed
+   `EngineRouter` a nil language, whose `.automatic` branch routes to Whisper by rule. The most
+   common session there is, and the exact case the command exists to speed up.
+3. **`SessionMeta.modelName` read from the `Said` module** — a compile error; that field is one of
+   three in the struct that never gained `public`.
+4. **`SearchIndex.tokenize` called from the `Said` module** — the same, and made public with a
+   reason: it is the definition of "a searchable word" in Said, and a second copy would be a place
+   for the index and the slide segmenter to drift apart.
+5. **A failed edit write left the model inconsistent.** `persistEdits` returned early on a throw with
+   `edits` already mutated, so the correction silently did not appear, the undo stack held an entry
+   for something never displayed, and the unwritten edit would be flushed by the next successful one.
+   The derived state is now refreshed either way and the failure is surfaced.
+6. **`SampleSink.largestIncrementalRead` documented an assertion that did not exist** — it named
+   `--selftest-stream`, which drives the Whisper path and by construction could never exercise the
+   incremental reader. The assertions now exist in `--selftest-pause`. The property also read outside
+   the lock that guards its writer, which is the kind of exception an `@unchecked Sendable` promise
+   must not carry.
+
+---
+
 ## 4. §5.2a — the language-detection chicken-and-egg, resolved
 
 The problem is real: if Parakeet is primary you cannot detect the language with Whisper without
@@ -417,7 +476,7 @@ unmodified. `--selftest-align` asserts the dispatcher and that function agree el
 
 | Constant | Value | Why, and how confident |
 |---|---|---|
-| `VoiceprintMatcher.maxDistance` | **0.45** cosine distance | Measured in the same units FluidAudio clusters in (`SpeakerOperations.cosineDistance`), so directly comparable to the diarizer's own `clusteringThreshold` of 0.7 — and deliberately far tighter. Cross-session matching holds neither mic nor room fixed, and the costs are wildly asymmetric: a miss costs one click, a false merge silently attributes one person's words to another. WeSpeaker same-speaker pairs typically sit at 0.1–0.4 and different-speaker at 0.7–1.0; 0.45 is inside that gap, on the safe side. **Reasoned from the literature, not measured on real data.** Wants tuning against real multi-session recordings. |
+| `VoiceprintMatcher.maxDistance` | **0.45** cosine distance | Measured in the same units FluidAudio clusters in (`SpeakerUtilities.cosineDistance`), so directly comparable to the diarizer's own `clusteringThreshold` of 0.7 — and deliberately far tighter. Cross-session matching holds neither mic nor room fixed, and the costs are wildly asymmetric: a miss costs one click, a false merge silently attributes one person's words to another. WeSpeaker same-speaker pairs typically sit at 0.1–0.4 and different-speaker at 0.7–1.0; 0.45 is inside that gap, on the safe side. **Reasoned from the literature, not measured on real data.** Wants tuning against real multi-session recordings. |
 | `SlideSegmenter.similarityThreshold` | **0.75** Jaccard over OCR word sets | The same static slide read twice by Vision typically agrees on >90% of words; a real slide change usually shares only stock words and lands well below half. 0.75 sits in the empty middle, biased toward NOT collapsing — wrongly splitting one slide costs a duplicate card, wrongly merging two costs a slide that vanishes from the timeline. **Reasoned, not measured.** |
 | `SpeakerAlignment.minimumRunWords` | **3** | Diarizer boundaries are not exact, so the word or two either side of a real turn change is routinely misattributed. Splitting on one stray word would manufacture a one-word "Speaker 2:" line inside someone else's sentence far more often than it would catch a real interruption. Three words is about the shortest real turn ("no, that's wrong"). **Reasoned, not measured.** |
 | `SearchIndex.slideMatchWeight` | **0.35** | Slide text is denser and noisier than speech; weighting equally lets a slide-heavy session outrank one where the topic was actually discussed. Not near zero, because a phrase that appeared *only* on a slide must still surface — that is the capability Wave 5 exists for. |
