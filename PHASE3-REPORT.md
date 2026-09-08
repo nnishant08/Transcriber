@@ -41,7 +41,14 @@ position:
    first-party API this phase newly depends on is not recalled from memory.
 3. **A parallel verification pass** re-read the dependency at the pinned tag independently and found
    three real defects in the first draft, all fixed — see §3.
-4. **An adversarial compile review** was run over every new and changed file.
+4. **An adversarial compile review** over every new and changed file found five more, all fixed —
+   see §3a. Two of them would have shipped as *silent wrongness*: vocabulary biasing that did
+   nothing while reporting success, and live transcription windows dropped on the floor. Neither
+   would have produced an error, a log line, or a visibly broken transcript.
+
+**That the review found what it did is the strongest available argument that more remains.** Five
+defects in code this carefully written, from one pass, means the compiler will find more. Treat the
+first real build as part of the work, not a formality.
 
 ---
 
@@ -218,6 +225,36 @@ A second, independent read of the pinned tag found three real defects in the fir
 
 ---
 
+## 3a. Defects found by the adversarial compile review
+
+A second fleet re-read every new and changed file against the pinned dependency sources, hunting
+compile errors and logic bugs — the job a compiler would have done. It found five real defects. Two
+of them would have shipped as silent wrongness, which is the category that matters.
+
+1. **`WhisperKit.WordTiming` does not resolve** — a compile error. The module exports an
+   `open class WhisperKit`, and **a type shadows a module name**, so the qualified spelling reads as
+   a nested type inside the class. Fixed by inference; only `SaidKit.WordTiming` is spelled out
+   (safe, since nothing shadows `SaidKit`).
+2. **The same trap in `FluidAudio.Language`** — the module exports a `public struct FluidAudio`
+   whose own source comment calls it a "namespace collision". Found by the reviewer *and*
+   independently while sweeping for the first one.
+3. **Vocabulary terms were never tokenized — biasing was a complete no-op that reported success.**
+   See §5; this is the most important finding in the build.
+4. **Live windows were permanently dropped.** `SlidingWindowAsrManager` emits each window exactly
+   once and never revises it; `isConfirmed` describes whether *that* window cleared the confidence
+   bar, not a promise to re-send. Discarding the words of an unconfirmed update therefore lost that
+   speech for good. The vendor's own `updateTranscriptionState` promotes the PREVIOUS volatile text
+   on a confirmed window; `ParakeetStream` now mirrors that, and `snapshotSegments` includes the
+   trailing pending window — otherwise every session was silently truncated by up to one window.
+5. **A `CancellationError` poisoned the Whisper word-timestamp path.** The catch around the
+   word-timestamp pass was unconditional, so stopping a recording would mark the model as unable to
+   produce word timings for the rest of the app run *and* pay for a second full transcription pass on
+   the way out. Cancellation now rethrows.
+
+Plus a data race (`wordTimestampsUnsupported` read outside the lock that guards its mutation) and a
+misplaced `ModelGate.syncToDependencies()` call that had landed inside a `didSet` instead of the
+launch path — where it actually matters, because a `didSet` does not fire on initialisation.
+
 ## 4. §5.2a — the language-detection chicken-and-egg, resolved
 
 The problem is real: if Parakeet is primary you cannot detect the language with Whisper without
@@ -250,9 +287,26 @@ route correctly. Smoke-test item 4.
 
 ## 5. §5.4 — does vocabulary biasing work on Parakeet?
 
-**The mechanism exists, is public, and is wired up on both paths. Whether it measurably improves
-recognition is UNVERIFIED, because it needs models and audio.** `--selftest-bias` is the test; it
-prints the exact `say`/`afconvert` commands to make a fixture.
+**The mechanism exists, is public, and is now correctly wired on both paths. Whether it measurably
+improves recognition is UNVERIFIED, because it needs models and audio.** `--selftest-bias` is the
+test; it prints the exact `say`/`afconvert` commands to make a fixture.
+
+> **It was wired and INERT in the first draft, and nothing about the code said so.** Terms were built
+> as `CustomVocabularyTerm(text:)`, leaving both `tokenIds` and `ctcTokenIds` nil. Both rescoring
+> paths do `let vocabTokens = term.ctcTokenIds ?? term.tokenIds` followed by
+> `guard let vocabTokens, !vocabTokens.isEmpty else { continue }` — so **every term was skipped**,
+> the rescorer found nothing to do, and custom vocabulary and the vertical packs did nothing at all.
+> The transcript came out fine; it was simply unbiased, and no log line, no error and no API result
+> would have said otherwise.
+>
+> This is the exact failure §5.4 exists to prevent, and it is worth dwelling on *how* it hid: the
+> initializer is public, takes the obvious argument, and compiles. The tell was only visible by
+> reading the consumer. Terms are now tokenized with `CtcTokenizer` before the context is built,
+> mirroring the vendor's `loadWithCtcTokens` — which, tellingly, is the only place in their entire
+> tree that builds a usable context.
+>
+> **Smoke-test item 2 is therefore not optional.** It is the only thing that can distinguish "wired
+> correctly" from "wired and inert" for real.
 
 What was established by reading the source:
 
