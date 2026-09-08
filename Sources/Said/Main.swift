@@ -86,22 +86,22 @@ enum AppMain {
         if args.contains("--selftest-voiceprint") { SelfTest.runVoiceprint(); return }
         if args.contains("--selftest-slides") { SelfTest.runSlides(); return }
         if args.contains("--selftest-semantic") { SelfTest.runSemantic(); return }
+        // These three block on a semaphore and then `exit()`, like the majority of the existing
+        // modes — no trailing run loop, which would only hang if the function ever returned.
+        // Safe to block main: nothing on their await paths is @MainActor-isolated.
         if let idx = args.firstIndex(of: "--selftest-parakeet") {
-            SelfTest.runParakeet(path: positional(after: idx, in: args))
-            RunLoop.main.run(); return
+            SelfTest.runParakeet(path: positional(after: idx, in: args)); return
         }
         if let idx = args.firstIndex(of: "--selftest-bias") {
             let terms = (value(of: "--terms", in: args) ?? "")
                 .split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
                 .filter { !$0.isEmpty }
-            SelfTest.runBias(path: positional(after: idx, in: args), terms: terms)
-            RunLoop.main.run(); return
+            SelfTest.runBias(path: positional(after: idx, in: args), terms: terms); return
         }
         if let idx = args.firstIndex(of: "--compare-engines") {
             SelfTest.runCompareEngines(folder: positional(after: idx, in: args),
                                        termsPath: value(of: "--terms-file", in: args),
-                                       out: value(of: "--out", in: args))
-            RunLoop.main.run(); return
+                                       out: value(of: "--out", in: args)); return
         }
         if let idx = args.firstIndex(of: "--selftest-detect") {
             SelfTest.runDetect(path: positional(after: idx, in: args)); return

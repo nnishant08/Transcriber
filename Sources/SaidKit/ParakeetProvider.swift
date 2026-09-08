@@ -258,8 +258,15 @@ public final class ParakeetProvider: TranscriptionProvider, @unchecked Sendable 
             let (_, replacement) = pending.remove(at: j)
             // Keep whatever punctuation the decoder attached to the END of the original word, so a
             // sentence-final "anastomosis." does not lose its full stop to the correction.
-            let trailing = String(out[i].text.reversed().prefix(while: \.isPunctuation).reversed())
-            out[i] = WordTiming(text: replacement + trailing,
+            // Written as a plain loop rather than a `reversed().prefix(while:).reversed()` chain:
+            // the chain is three layers of generic wrappers deep and its inference is not worth
+            // betting on in code that could not be compiled when it was written.
+            var tail: [Character] = []
+            for ch in out[i].text.reversed() {
+                guard ch.isPunctuation else { break }
+                tail.insert(ch, at: 0)
+            }
+            out[i] = WordTiming(text: replacement + String(tail),
                                 start: out[i].start, end: out[i].end, confidence: out[i].confidence)
             if pending.isEmpty { break }
         }
