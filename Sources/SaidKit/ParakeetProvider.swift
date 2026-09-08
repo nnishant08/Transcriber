@@ -147,9 +147,16 @@ public final class ParakeetProvider: TranscriptionProvider, @unchecked Sendable 
         CustomVocabularyContext(terms: bias.terms.map { CustomVocabularyTerm(text: $0) })
     }
 
-    private func fluidLanguage(_ code: String?) -> FluidAudio.Language? {
+    /// Said's ISO code → FluidAudio's script-filter hint.
+    ///
+    /// **Written unqualified, deliberately.** `FluidAudio.Language` looks like the safe spelling and
+    /// is not: the module also exports a `public struct FluidAudio`, and a type shadows a module
+    /// name, so that reads as a nested type inside the struct and fails to resolve. (Exactly the
+    /// same trap as `WhisperKit.WordTiming` — see `WhisperProvider`.) Nothing else in scope here
+    /// declares a top-level `Language`, so the bare name is unambiguous.
+    private func fluidLanguage(_ code: String?) -> Language? {
         guard let code else { return nil }
-        return FluidAudio.Language(rawValue: ParakeetLanguages.normalize(code))
+        return Language(rawValue: ParakeetLanguages.normalize(code))
     }
 
     // MARK: Batch transcription
