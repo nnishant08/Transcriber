@@ -420,14 +420,24 @@ public struct SessionDoc: Sendable, Codable {
     /// Still frames on the timeline (Phase 2). Empty for every session the Mac records — the Mac
     /// renders frames but never captures them — so an audio-only `session.json` gains no key.
     public var frames: [FrameEvent]
+    /// Slide SPANS derived from `frames` (Phase 3, Wave 5): "slide 4 was up from 12:03 to 18:40".
+    ///
+    /// A materialised view, refreshed by `writeSession` on every write and never edited
+    /// independently — `frames` stays the single source of truth. Cached rather than always
+    /// recomputed because the Library draws a row per session and re-segmenting every one of them
+    /// on every keystroke of a search is work with no payoff. Read it through `slideSpans`, which
+    /// falls back to deriving when the cache is absent.
+    public var slides: [SlideSpan]?
 
-    public init(meta: SessionMeta, segments: [TranscriptSegment], frames: [FrameEvent] = []) {
+    public init(meta: SessionMeta, segments: [TranscriptSegment], frames: [FrameEvent] = [],
+                slides: [SlideSpan]? = nil) {
         self.meta = meta
         self.segments = segments
         self.frames = frames
+        self.slides = slides
     }
 
-    enum CodingKeys: String, CodingKey { case meta, segments, frames }
+    enum CodingKeys: String, CodingKey { case meta, segments, frames, slides }
 
     /// Decoded explicitly, and DEFENSIVELY on `frames`.
     ///
@@ -441,6 +451,9 @@ public struct SessionDoc: Sendable, Codable {
         meta = try c.decode(SessionMeta.self, forKey: .meta)
         segments = try c.decode([TranscriptSegment].self, forKey: .segments)
         frames = (try? c.decodeIfPresent([FrameEvent].self, forKey: .frames)) as? [FrameEvent] ?? []
+        // Defensive for the same reason `frames` is: a cache written by another build must degrade
+        // to "recompute it", never to an unopenable session.
+        slides = (try? c.decodeIfPresent([SlideSpan].self, forKey: .slides)) as? [SlideSpan]
     }
 
     /// Encoded only when non-empty, so a session with no frames produces `session.json` with no
@@ -450,6 +463,15 @@ public struct SessionDoc: Sendable, Codable {
         try c.encode(meta, forKey: .meta)
         try c.encode(segments, forKey: .segments)
         if !frames.isEmpty { try c.encode(frames, forKey: .frames) }
+        if let slides, !slides.isEmpty { try c.encode(slides, forKey: .slides) }
+    }
+
+    /// The session's slide spans: the cache when it is there, freshly derived when it is not.
+    /// A session with no frames has none, and gains no keys.
+    public var slideSpans: [SlideSpan] {
+        if let slides, !slides.isEmpty { return slides }
+        guard !frames.isEmpty else { return [] }
+        return SlideSegmenter.spans(frames: frames, sessionDuration: meta.durationSeconds)
     }
 
     /// The session's ONE visual timeline (Phase 2, §P3 invariant).
@@ -501,6 +523,12 @@ public enum DocumentBuilder {
         // `visual` is consulted for its side effect: it logs if the video-XOR-frames invariant is
         // violated, so a bad session is noisy at the write path as well as at every display path.
         _ = doc.visual
+        // Refresh the derived slide spans so the cache can never be stale relative to the frames it
+        // is a view of. Deriving costs nothing for the overwhelmingly common case of no frames.
+        var doc = doc
+        doc.slides = doc.frames.isEmpty
+            ? nil
+            : SlideSegmenter.spans(frames: doc.frames, sessionDuration: doc.meta.durationSeconds)
         let md = markdown(meta: doc.meta, segments: doc.segments, frames: doc.frames)
         // Route through SessionIO so encryption-at-rest (Feature C4) is transparent. When encryption
         // is OFF (default) this is a byte-identical plain UTF-8 write — same bytes as before.

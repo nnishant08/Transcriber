@@ -4,6 +4,16 @@ import Foundation
 public struct SearchSnippet: Sendable {
     public let timestamp: String?
     public let text: String
+    /// True when this excerpt came from a SLIDE's OCR text rather than from speech (Phase 3,
+    /// Wave 5). The Library renders those differently, because "this was written on a slide" and
+    /// "someone said this" are different kinds of answer to the same query.
+    public let isSlide: Bool
+
+    public init(timestamp: String?, text: String, isSlide: Bool = false) {
+        self.timestamp = timestamp
+        self.text = text
+        self.isSlide = isSlide
+    }
 }
 
 /// A ranked search result: a session plus why it matched. Self-contained so a later "chat with your
@@ -14,6 +24,10 @@ public struct SessionHit: Sendable, Identifiable {
     let score: Double
     public let matchCount: Int
     public let snippets: [SearchSnippet]
+
+    /// True when at least one matched excerpt came from a slide. Drives the Library's slide badge
+    /// and the `slides:` search filter.
+    public var hasSlideMatch: Bool { snippets.contains(\.isSlide) }
 
     public var id: String { dir.path }
     public var title: String {
@@ -46,8 +60,58 @@ public final class SearchIndex: @unchecked Sendable {
         public var title: String?
         public var tags: [String]
         var mtime: Date
+        /// Every term in the session, speech and slide text alike. UNCHANGED in meaning, so a
+        /// session with no slides ranks exactly as it did before Phase 3.
         var termFreq: [String: Int]
+        /// Slide OCR terms counted ONCE PER SLIDE SPAN. This is the de-duplicated slide signal.
+        var slideTermFreq: [String: Int] = [:]
+        /// Slide OCR terms counted once per captured FRAME — i.e. exactly the contribution slide
+        /// text makes to `termFreq`, since `transcript.md` interleaves the OCR block per frame.
+        ///
+        /// Stored so the speech-only frequency can be recovered by EXACT subtraction rather than by
+        /// re-tokenising a different string. That exactness is the point: a session with no frames
+        /// has both slide tables empty, so speech == `termFreq` and its score is bit-for-bit what it
+        /// was before Phase 3. No existing session's ranking moves.
+        var slideFrameTermFreq: [String: Int] = [:]
+
+        enum CodingKeys: String, CodingKey {
+            case path, date, title, tags, mtime, termFreq, slideTermFreq, slideFrameTermFreq
+        }
+
+        init(path: String, date: Date, title: String?, tags: [String], mtime: Date,
+             termFreq: [String: Int], slideTermFreq: [String: Int] = [:],
+             slideFrameTermFreq: [String: Int] = [:]) {
+            self.path = path; self.date = date; self.title = title; self.tags = tags
+            self.mtime = mtime; self.termFreq = termFreq
+            self.slideTermFreq = slideTermFreq; self.slideFrameTermFreq = slideFrameTermFreq
+        }
+
+        /// The slide tables are `decodeIfPresent` so a cache written before Phase 3 still loads;
+        /// those sessions score as pure speech until their next re-index, which is correct.
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            path = try c.decode(String.self, forKey: .path)
+            date = try c.decode(Date.self, forKey: .date)
+            title = try c.decodeIfPresent(String.self, forKey: .title)
+            tags = try c.decodeIfPresent([String].self, forKey: .tags) ?? []
+            mtime = try c.decode(Date.self, forKey: .mtime)
+            termFreq = try c.decode([String: Int].self, forKey: .termFreq)
+            slideTermFreq = try c.decodeIfPresent([String: Int].self, forKey: .slideTermFreq) ?? [:]
+            slideFrameTermFreq = try c.decodeIfPresent([String: Int].self, forKey: .slideFrameTermFreq) ?? [:]
+        }
     }
+
+    /// How much a slide-text match counts relative to a spoken one.
+    ///
+    /// Below 1 because slide text is much denser and much noisier than speech: a dense slide can
+    /// carry more words than a minute of talking, and OCR contributes misreadings that were never on
+    /// the slide at all. Weighting them equally lets one slide-heavy session outrank a session where
+    /// someone actually discussed the thing being searched for.
+    ///
+    /// Not zero, and not close to it — a phrase that appeared ONLY on a slide and was never spoken
+    /// still has to surface, since that is the differentiating capability this wave exists for.
+    /// Tuned, not derived — see `PHASE3-REPORT.md`.
+    static let slideMatchWeight = 0.35
 
     private let lock = NSLock()
     private var entries: [String: Entry] = [:]      // keyed by session dir path
@@ -93,11 +157,30 @@ public final class SearchIndex: @unchecked Sendable {
 
     private func indexInternal(dir: URL, mtime: Date) {
         let text = SessionStore.transcriptPlainText(dir: dir)
-        let meta = DocumentBuilder.readSession(dir)?.meta ?? SessionStore.synthMeta(dir: dir)
+        let doc = DocumentBuilder.readSession(dir)
+        let meta = doc?.meta ?? SessionStore.synthMeta(dir: dir)
         var freq: [String: Int] = [:]
         for term in Self.tokenize(text) { freq[term, default: 0] += 1 }
+
+        // Slide text, counted once per SPAN. `transcriptPlainText` above already contains the OCR
+        // text once per captured FRAME — which is exactly the flooding problem: a slide left up for
+        // ten minutes contributes its words dozens of times and drowns out the speech. Recording
+        // the per-span counts separately lets `search` subtract the frames' over-counting back out
+        // and weight what remains, without a second index or a change to the transcript format.
+        var slideFreq: [String: Int] = [:]
+        for span in doc?.slideSpans ?? [] {
+            guard let t = span.text else { continue }
+            for term in Self.tokenize(t) { slideFreq[term, default: 0] += 1 }
+        }
+        var slideFrameFreq: [String: Int] = [:]
+        for frame in doc?.frames ?? [] {
+            guard let t = frame.text else { continue }
+            for term in Self.tokenize(t) { slideFrameFreq[term, default: 0] += 1 }
+        }
+
         let entry = Entry(path: dir.path, date: meta.date, title: meta.title,
-                          tags: meta.tags, mtime: mtime, termFreq: freq)
+                          tags: meta.tags, mtime: mtime, termFreq: freq,
+                          slideTermFreq: slideFreq, slideFrameTermFreq: slideFrameFreq)
         lock.lock(); entries[dir.path] = entry; lock.unlock()
     }
 
@@ -114,14 +197,26 @@ public final class SearchIndex: @unchecked Sendable {
         var hits: [SessionHit] = []
         for (_, e) in snapshot {
             var matchCount = 0, matchedTerms = 0
+            var weighted = 0.0
             for t in terms {
-                if let f = e.termFreq[t] { matchCount += f; matchedTerms += 1 }
+                if let f = e.termFreq[t] {
+                    matchCount += f
+                    matchedTerms += 1
+                    // Split the match into speech and slide contributions and weight them
+                    // differently. With no slide tables (every pre-Phase-3 session, and every
+                    // session without frames) `fromFrames` is 0, so `weighted` collapses to
+                    // `Double(matchCount)` and the score is exactly what it always was.
+                    let fromFrames = e.slideFrameTermFreq[t] ?? 0
+                    let speech = max(0, f - fromFrames)
+                    let slideSpans = e.slideTermFreq[t] ?? 0
+                    weighted += Double(speech) + Self.slideMatchWeight * Double(slideSpans)
+                }
             }
             guard matchCount > 0 else { continue }
             let ageDays = max(0, now.timeIntervalSince(e.date)) / 86_400
             let recency = 1.0 / (1.0 + ageDays / 30.0)                          // ~1 now, decays over weeks
             let allBonus = (matchedTerms == terms.count) ? Double(terms.count) : 0
-            let score = Double(matchCount) + allBonus + recency
+            let score = weighted + allBonus + recency
 
             let dir = URL(fileURLWithPath: e.path)
             let meta = DocumentBuilder.readSession(dir)?.meta
@@ -161,18 +256,23 @@ public final class SearchIndex: @unchecked Sendable {
         let termSet = Set(terms)
         var snippets: [SearchSnippet] = []
         var currentTS: String? = nil
+        // `DocumentBuilder` emits a fenced code block for exactly one thing — a frame's on-slide
+        // text — so a line inside a fence came from a slide, and one outside it came from speech.
+        // That is what lets a hit say which it was without a second index.
+        var insideSlideText = false
         for line in lines {
             let t = line.trimmingCharacters(in: .whitespaces)
+            if t.hasPrefix("```") { insideSlideText.toggle(); continue }
             if t.isEmpty { continue }
             if let ts = SessionStore.firstTimestamp(in: t) { currentTS = ts }
-            // Skip structural lines (header, image, details/summary, code fences).
+            // Skip structural lines (header, image, details/summary).
             if t.hasPrefix("#") || t == "---" || t.hasPrefix("- **") || t.hasPrefix("![")
-                || t.hasPrefix("<details") || t.hasPrefix("</details") || t.hasPrefix("<summary")
-                || t.hasPrefix("```") { continue }
+                || t.hasPrefix("<details") || t.hasPrefix("</details") || t.hasPrefix("<summary") { continue }
             if Set(tokenize(t)).isDisjoint(with: termSet) { continue }
             let clean = SessionStore.stripLeadingTimestamp(stripMarkup(t))
             if clean.isEmpty { continue }
-            snippets.append(SearchSnippet(timestamp: currentTS, text: String(clean.prefix(180))))
+            snippets.append(SearchSnippet(timestamp: currentTS, text: String(clean.prefix(180)),
+                                          isSlide: insideSlideText))
             if snippets.count >= limit { break }
         }
         return snippets

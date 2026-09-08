@@ -172,7 +172,7 @@ final class LibraryModel: ObservableObject {
         tokens.append(t)
     }
     func removeToken(_ t: SearchToken) { tokens.removeAll { $0 == t } }
-    func clearFilters() { tokens = []; query = ""; selectedTag = nil; collection = .all }
+    func clearFilters() { tokens = []; query = ""; selectedTag = nil; collection = .all; slidesOnly = false }
 
     // MARK: Derived listings
 
@@ -190,13 +190,23 @@ final class LibraryModel: ObservableObject {
     /// Browse list (no free text): sessions filtered by collection + tag + tokens, newest first.
     var visibleSessions: [SessionInfo] { sessions.filter(passesFilters) }
 
+    /// Restrict search results to hits whose match came from a SLIDE rather than from speech
+    /// (Phase 3, Wave 5). Distinct from the `has:slides` token, which filters sessions that HAVE
+    /// slides: this filters to sessions where the words you searched for were on one.
+    @Published var slidesOnly = false
+
     /// Search results (free text present), respecting the same filters.
     var filteredHits: [SessionHit] {
         hits.filter { h in
             guard let info = info(for: h.dir) else { return false }
+            if slidesOnly && !h.hasSlideMatch { return false }
             return passesFilters(info)
         }
     }
+
+    /// How many of the current results matched on slide text — drives whether the toggle is worth
+    /// showing at all. A corpus with no slides never sees the control.
+    var slideMatchCount: Int { hits.filter(\.hasSlideMatch).count }
 
     func info(for dir: URL) -> SessionInfo? { sessions.first { $0.dir.path == dir.path } }
 
@@ -620,6 +630,14 @@ private struct SessionRow: View {
                             Text(snip.timestamp ?? "—").font(Theme.mono(10.5))
                                 .foregroundStyle(primary ? Theme.onSelection.opacity(0.8) : Theme.accentText)
                                 .frame(width: 38, alignment: .leading)
+                            // A match that came off a slide rather than out of someone's mouth is a
+                            // different kind of answer, and the row says so (Phase 3, Wave 5).
+                            if snip.isSlide {
+                                Image(systemName: "rectangle.on.rectangle")
+                                    .font(.system(size: 9.5, weight: .semibold))
+                                    .foregroundStyle(primary ? Theme.onSelection.opacity(0.8) : Theme.accentText)
+                                    .accessibilityLabel("Found on a slide")
+                            }
                             Text(snip.text).font(Theme.ui(12.5)).lineLimit(2)
                                 .foregroundStyle(primary ? Theme.onSelection.opacity(0.92) : Theme.text2)
                         }
