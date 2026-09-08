@@ -1758,8 +1758,8 @@ Screen Recording grant + on-screen content — use `--selftest-screenrec-live` f
       and recorded in `PHASE3-REPORT.md` §3/§3a/§3b; the ones the self-test suite ran straight past
       landed with the assertion that would have caught them. **Expect more on the first real build**
       — the count rose every time the search widened, never because the code got worse, and the last
-      pass found an entire inert feature in files nobody had been asked to read. §0 of that report lists exactly what was and was not verified; §15 is the order to work
-      in.
+      pass found an entire inert feature in files nobody had been asked to read. §0 of that report
+      lists exactly what was and was not verified; §15 is the order to work in.
       **AWAITING everything:** a build, the self-test sweep, the iOS gate, the baselines,
       `--compare-engines` over real sessions (which is what should actually decide the default
       engine), the vocabulary-biasing proof, measured model sizes and performance, and the full human
