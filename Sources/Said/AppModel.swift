@@ -934,6 +934,13 @@ final class AppModel: ObservableObject {
         // Whisper because the language was unknown (and because Whisper is what detects); if the
         // detected language is one Parakeet covers, swap onto it before any audio is transcribed.
         // Re-preparing here rather than mid-stream is what keeps one session on one engine.
+        //
+        // **Never START that load once the user has pressed Stop.** `stopFlow` cancels this task and
+        // then AWAITS it, while `prepare` is a CoreML load — possibly a first-run model download —
+        // that does not observe cancellation. Entering it after Stop would hang the stop flow for as
+        // long as the load takes, with the UI still reading "recording". Skipping the swap costs one
+        // session on Whisper, which is already loaded and already correct.
+        guard isRecording, !Task.isCancelled else { return }
         if let updated = try? await engine.prepare(preference: enginePreference, language: lang,
                                                    whisperVariant: model.rawValue, progress: { _, _ in }) {
             sessionDecision = updated

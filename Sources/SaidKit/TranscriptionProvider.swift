@@ -220,7 +220,19 @@ public enum EngineRouter {
                 return Decision(engine: .whisper,
                                 reason: "Whisper — Parakeet's models aren't downloaded", isFallback: true)
             }
-            return Decision(engine: .parakeet, reason: "Parakeet")
+            // NEITHER is on disk: a first run. Route to Parakeet and let `prepare` fetch it.
+            //
+            // **This deliberately does download an engine the user did not explicitly name**, and the
+            // alternative was considered and rejected: routing to Whisper here would mean Parakeet is
+            // never installed, therefore never `parakeetInstalled`, therefore never routed to — the
+            // default engine would be permanently unreachable, and nothing else in the app installs
+            // it. Note the asymmetry with an UPGRADE, which is the case §10.2a actually cares about:
+            // an existing user has a Whisper model on disk, so the branch above catches them and
+            // Parakeet is never fetched behind their back.
+            //
+            // The reason says so, because the status bar shows it and a multi-hundred-megabyte
+            // download that announces itself as plain "Parakeet" is a surprise.
+            return Decision(engine: .parakeet, reason: "Parakeet — downloading it for the first time")
         }
 
         // Outside Parakeet's set. This is the case the whole router exists for.

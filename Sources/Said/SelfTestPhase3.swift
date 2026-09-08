@@ -217,6 +217,28 @@ extension SelfTest {
         c.check("missing Whisper falls back to Parakeet", noWhisper.engine == .parakeet)
         c.check("…and says it is a fallback", noWhisper.isFallback)
 
+        // ---- A FIRST RUN, where neither engine is on disk. Every `route(...)` above leaves at
+        // least one installed, so nothing here was covered — and the fall-throughs are exactly where
+        // a router decides to spend someone's bandwidth.
+        let freshAuto = EngineRouter.choose(preference: .automatic, language: "en",
+                                            parakeetInstalled: false, whisperInstalled: false)
+        c.check("first run + automatic + a covered language → Parakeet, the default engine",
+                freshAuto.engine == .parakeet)
+        c.check("…and the reason says a download is about to happen",
+                freshAuto.reason.lowercased().contains("download"))
+        c.check("first run + automatic + an uncovered language → Whisper",
+                route(.automatic, "hi", parakeet: false, whisper: false) == .whisper)
+        c.check("first run + automatic + an unknown language → Whisper",
+                route(.automatic, nil, parakeet: false, whisper: false) == .whisper)
+        c.check("first run honours an explicit Whisper pick",
+                route(.whisper, "en", parakeet: false, whisper: false) == .whisper)
+        c.check("first run honours an explicit Parakeet pick",
+                route(.parakeet, "hi", parakeet: false, whisper: false) == .parakeet)
+        // The upgrade case §10.2a actually cares about: an existing user HAS a Whisper model, so
+        // Parakeet is never fetched behind their back.
+        c.check("an existing Whisper user is not auto-upgraded to Parakeet",
+                route(.automatic, "en", parakeet: false, whisper: true) == .whisper)
+
         // The ordinary case is NOT flagged, so the UI stays quiet when nothing is wrong.
         c.check("a plain Parakeet route is not a fallback",
                 EngineRouter.choose(preference: .automatic, language: "en",

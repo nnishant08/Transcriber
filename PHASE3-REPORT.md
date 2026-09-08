@@ -549,9 +549,17 @@ heard of still shows up and can still be deleted.
 | Diarizer | `FluidInference/speaker-diarization-coreml` | speakers on |
 | Whisper | `argmaxinc/whisperkit-coreml` | long-tail languages, and the Auto detector |
 
-**Parakeet is not auto-downloaded on upgrade**, as §10.2a requires: `EngineRouter` only routes to an
-engine that `isInstalled`, so an existing user who has never fetched Parakeet keeps using Whisper
-until they choose otherwise.
+**Parakeet is not auto-downloaded on upgrade**, as §10.2a requires — but be precise about the
+mechanism, because the obvious phrasing ("`EngineRouter` only routes to an engine that
+`isInstalled`") is FALSE and would be a bad thing to build on. The router prefers an installed
+engine and falls back to the other when its first choice is missing; when NEITHER is on disk it
+routes to whichever the preference wants and lets `prepare` fetch it. What makes the upgrade
+guarantee hold is that an existing user always has a Whisper model on disk, so the covered-language
+branch finds `whisperInstalled` and returns Whisper, flagged as a fallback. Parakeet is fetched only
+on a genuine first run, where routing away from it would make the default engine permanently
+unreachable — nothing else in the app installs it — and the decision's reason says a download is
+about to happen so the status bar explains itself. `--selftest-engine-route` now covers all four
+neither-installed cases; it previously left at least one engine installed in every assertion.
 
 **No HuggingFace token or account is needed** — verified at the pinned tag: `DownloadUtils` attaches a
 `Bearer` header *only* when an `HF_TOKEN`-style environment variable exists. The positioning holds.
