@@ -23,15 +23,26 @@ bar**. **Everything stays on this Mac — no cloud, no account, works offline.**
 > Studio / vertical packs / privacy & compliance) and screen recording. The pause /
 > capture-resilience work is built and partly verified.
 >
-> **Phases 1 and 2 are built and self-tested, awaiting human smoke-tests.**
+> **Phases 1, 2 and 3 are built. Phase 3 has NOT been compiled — see the warning below.**
 > **Phase 1** made the package **`SaidKit` (macOS + iOS) + `Said` (the macOS app)**: every macOS
 > assumption in the shared code is an injectable seam, sessions have a stable `id` and can be handed
 > over as a `.said` bundle, and the app carries the settled violet/amber/ink identity.
 > **Phase 2** restored the frame/OCR timeline to `SaidKit` and taught the Mac to RENDER it — the Mac
 > still has no way to capture a frame; see **Frame timeline** for the four rules that keep it that
-> way. **Phase 3 builds the iPhone app**, which is the only thing that will ever capture frames, and
-> is written against THIS FILE — see **Design system** for the visual contract and the iOS screen
-> inventory. The user iterates with Claude from here.
+> way.
+> **Phase 3** went back to the transcript itself: word-level timings, a two-engine seam with
+> Parakeet as the default, transcript editing as an overlay, cross-session voiceprints, slide spans,
+> and hybrid semantic retrieval. See **Phase 3** below.
+>
+> ⚠️ **PHASE 3 WAS WRITTEN WITHOUT A COMPILER.** It was implemented in a Linux container with no
+> Swift toolchain, so nothing in it has been built, run or tested — not `swift build`, not the
+> self-tests, not the iOS gate, not `codesign`. Every third-party API it calls was verified by
+> reading the pinned dependency source, and an adversarial review pass was run over every file, but
+> **expect compile errors on the first real build.** `PHASE3-REPORT.md` lists exactly what was and
+> was not verified, and §15 there is the order to work in.
+>
+> The iPhone app remains unbuilt. Phase 3's capabilities all live in `SaidKit` and reach iOS through
+> it, but the touch affordances are macOS-only.
 
 ## User guide reference (SOURCE for info sheets / user instructions / quick-starts / FAQs)
 **When asked to produce any USER-FACING material (one-pager, quick-start, how-to, keyboard-shortcut card,
@@ -116,7 +127,50 @@ or use Library ▸ *Import…*. It transcribes into a full session; a video impo
 session plays back in the Viewer exactly like a screen recording.
 
 **Accuracy — custom vocabulary** — add names/acronyms/jargon in Settings; they bias transcription (live and
-final). Empty = no change.
+final). Empty = no change. Terms shorter than three characters are skipped, because very short terms
+cause more false substitutions than corrections.
+
+**Two transcription engines, chosen for you** — Said picks between **Parakeet** (much faster than real
+time, covers 25 European languages, and the only one that produces word-by-word timings) and
+**Whisper** (slower, covers far more languages). *Automatic* is the default and picks by language;
+you can force either in Settings ▸ Transcription engine. Every session records which one ran, and
+Said says so when it had to switch. On a long recording the wait after you press stop is dramatically
+shorter than it used to be.
+
+**Fix a word** — open a session, click **Edit**, click a word, type the right one. **The saved
+transcript is never changed** — your corrections live alongside it as an overlay, and the Viewer's
+Verbatim / Edited switch shows either. Corrections flow into search, export and a `.said` you share.
+⌘Z undoes. On an older recording with no word-level timings you edit a whole line at a time instead.
+Words the engine was unsure of are tinted, so they are worth a look first.
+
+**Said learns your words** — correct the same word twice and Said starts *listening* for it in future
+recordings, and says so. It manages this by biasing what it expects to hear — **it never rewrites a
+transcript you already have**, so a recording that really did say "sequel" keeps saying it. Learned
+terms are listed and deletable in Settings ▸ Learned terms.
+
+**Re-transcribe** — Session Viewer ▸ Export ▸ *Re-transcribe…* runs the audio again, optionally on
+the other engine. Use it if a recording came out in the wrong language, or to add word-level timings
+to an older session. It warns first if you have corrections, because re-transcribing moves the lines
+they are attached to.
+
+**Recognise people across recordings** (Settings ▸ Voices, off by default) — name a speaker once and
+Said can suggest the same name next time. **It always asks; it never assumes**, and if two saved
+voices are too close to call it offers both rather than guessing. Voice profiles stay on this Mac,
+are never included in a shared session unless you tick the box, and can be deleted individually or
+all at once. Needs *Identify speakers*.
+
+**Search by meaning** (Settings ▸ Search, off by default) — find a session from a paraphrase: ask
+about "pricing" and reach a meeting that only ever said "what we're going to charge". Ordinary
+keyword search keeps working exactly as before and the two are combined, so exact names and numbers
+stay precise. Needs a one-time on-device language model from Apple.
+
+**Slides on the timeline** — when a session has slides, ten minutes on one slide is one entry rather
+than dozens, search results say when a match came from a slide rather than from speech, and you can
+narrow results to slide matches only.
+
+**Storage and staying offline** (Settings ▸ Storage) — see exactly what each downloaded model costs
+and delete any you do not need. **"Never download models"** makes Said refuse to fetch one at all;
+everything already downloaded keeps working, so you can prove it is offline.
 
 **Export & share** — from the Session Viewer's **Export** menu: subtitles **SRT/VTT**, **TXT**, **RTF**
 (opens in Word/Pages), **HTML**, **PDF**; **Share…** (system share sheet → Notes, Mail, Messages, AirDrop…);
@@ -350,6 +404,13 @@ were wrong.
   captures them, and it never decides when a frame should be taken.
 - `Theme.swift` — design tokens (see **Design system**). Imports SwiftUI ONLY; resolution goes
   through `PlatformUI`, so Phase 2's iOS UI uses these same tokens.
+- **Phase 3 additions.** `TranscriptionProvider` (the engine seam: `VocabularyBias` with its
+  unrepresentable-empty init, `EngineRouter`, `ParakeetLanguages`) · `WhisperProvider` (+ the moved
+  `StreamingTranscriber`) · `ParakeetProvider` (+ `ParakeetStream`) · `TranscriptAssembly` (pure:
+  token→word folding and word→segment cutting) · `EditOverlay` (`TranscriptEdit`, `EditStore`,
+  `CorrectionMemory`) · `Voiceprints` (`VoiceprintMatcher`, `VoiceprintStore`, `VoiceprintPass`) ·
+  `SlideSegmenter` · `SemanticIndex` (+ `SemanticChunker`, `HybridRetrieval`) · `Embedding`
+  (`EmbeddingProvider`, `AppleContextualEmbedder`) · `ModelGate` (+ `ModelStorage`).
 - Everything else that was portable, unchanged in behaviour: `DocumentBuilder` · `SessionStore` ·
   `SessionIO` · `SearchIndex` · `TitleGenerator` · `Intelligence` · `Summarizer` · `Generation` ·
   `GenerationTemplates` · `Packs` (+ `Packs/*.json`) · `Entitlements` · `Retention` · `Redaction` ·
@@ -363,6 +424,11 @@ were wrong.
 `TranscriptComponents` · `Materials` (NSVisualEffectView) · `SettingsView` · `LibraryWindow` ·
 `SessionViewer` · `AskWindow` · `OnboardingWindow` · `Shortcuts` · `Sharing` (NSSharingServicePicker) ·
 `ScreenRecorder` · `AudioCaptureSystem` · `AudioCaptureProcessTap` · `SysAudioProbe`.
+Phase 3 adds `TranscriptEditing` (the editable-word views, the `FlowLayout` wrap, and the
+`SessionViewerModel` edit extension) · `SettingsPhase3` (five panels as SEPARATE View structs — the
+Form's type-checker already gave up on one inline Section once, and three panels need their own
+`@State`) · `RetranscribeSheet` (+ `Retranscriber` and `VoiceprintProposalBar`) ·
+`SelfTestPhase3` + `SelfTestPhase3Engines`.
 
 ### Classification notes (things that could have gone either way)
 - **`CaptureControl` → SaidKit.** Not named in the Phase 1 prompt, but it is pure (gate / silence /
@@ -785,6 +851,401 @@ corruption**. Bumping the version would make old builds refuse the file, which i
 `--selftest-bundle` asserts frames survive as data (element for element) and as files (every
 `imagePath` resolves).
 
+## Phase 3 — the transcription core (word substrate / engine seam / editing / voices / slides / search)
+
+**The one directive Phase 3 retires: byte-identical transcripts.** Every prior phase demanded that a
+newly recorded `transcript.md` be byte-identical to one recorded before the build. That was correct
+while every build was a refactor. It is no longer correct, because this phase changes the ASR engine,
+which changes the words. **Exactly one thing may now move: `transcript.md`'s CONTENT for a NEW
+session.** Everything else in the old guarantee still stands, and is listed under "What must not
+move" below. Do not read the retirement as licence for anything else.
+
+### The word substrate (Wave 1) — `WordTiming`, `validWords`
+
+`TranscriptSegment.words: [WordTiming]?` — `{text, start, end, confidence?}`, timed on the same
+pause-compressed `SessionClock` timeline as segments, bookmarks and frames. Decoded **defensively**
+(a `words` array of an unexpected shape yields `nil` and a readable session, exactly as `frames`
+does) and encoded **only when non-empty**, which is why `TranscriptSegment`'s coding is hand-written:
+the synthesized `encodeIfPresent` would write `"words":[]` and dirty every session.
+
+**Every consumer reads them through `validWords`, never through `words`.** That accessor returns
+`nil` — never garbage, never a throw — for absent, empty, non-monotonic, inverted or out-of-bounds
+arrays, with a `wordBoundsTolerance` of 0.25 s to absorb engine rounding. Editing anchors to a word
+index, alignment splits at a word boundary, redaction maps spans onto words and chunking cuts on word
+times; every one of those silently corrupts a transcript if handed bad timings. Making the only
+published reader a validating one is what turns that class of bug from unlikely into impossible. It
+is the same discipline `SessionDoc.visual` applies to video-XOR-frames, for the same reason: a write
+path can be bypassed, a display path cannot.
+
+**Absence is the ordinary case, not an error case.** Every session recorded before Phase 3 has none;
+so does the live-save half of every session; so does any Whisper model whose alignment heads cannot
+serve a word-timestamp request.
+
+**Schema version — a deliberate divergence from the Phase 3 prompt.** The prompt asked for a new
+`SessionDoc.schemaVersion` defaulting to 1. `SessionMeta` already carried exactly that marker, at 2.
+Reusing and bumping it to **3** beats shipping a document with two disagreeing version numbers. The
+ladder: **absent (decodes as 0)** = pre-unified-store, **2** = unified store through Phase 2, **3** =
+may carry `words` and `slides`. Only a NEWLY CONSTRUCTED meta takes the current version — a legacy
+session decodes at its own version and is re-encoded at it, so no pass can silently upgrade a session
+it merely touched.
+
+**There is no backfill.** Word timings are never added to an existing session by re-transcribing it
+behind the user's back. The single, explicit way to get them is **Viewer ▸ Re-transcribe…** (below).
+
+### The engine seam (Wave 2) — `TranscriptionProvider`
+
+`TranscriptionEngine` stays the façade every caller talks to; the seam went in **BELOW** it rather
+than in place of it, deliberately: the callers above (`AppModel`, `Importer`, the self-tests) are the
+least-tested part of the tree, and the engine swap is already the phase's largest regression risk.
+
+- **`WhisperProvider`** — today's `TranscriptionEngine` internals, moved not rewritten. One behaviour
+  change: the FINAL pass now also asks for word timings (`DecodingOptions.wordTimestamps`), falling
+  back once per model per app run if the alignment heads cannot serve it. Never on the live path,
+  where DTW latency would land on the critical path. **A save never fails over timings.**
+- **`ParakeetProvider`** — NVIDIA Parakeet TDT via FluidAudio, on the ANE. Word timings come free
+  from `ASRResult.tokenTimings` on both paths; `SlidingWindowAsrManager` buffers internally and its
+  `isConfirmed` maps 1:1 onto Said's existing `LiveTranscript { confirmed, hypothesis }`.
+- **`VocabularyBias`** has a **failable init that cannot represent "empty"**. Said's long-standing
+  "empty vocabulary ⇒ exact no-op" invariant is thereby enforced by the type rather than by each
+  provider remembering to check.
+- A future `AppleSpeechProvider` slots in here. **Deliberately not built** — see below.
+
+**Routing (`EngineRouter`, pure and headlessly tested).** Automatic (default) routes by language;
+"Always Parakeet" / "Always Whisper" are escape hatches that win.
+
+> **The load-bearing rule: an UNKNOWN language routes to Whisper, never to Parakeet.** Parakeet asked
+> for a language it does not cover does not fail — it emits confident, fluent nonsense, and nothing in
+> the output tells the user anything went wrong. Whisper covers the long tail, so guessing *toward*
+> it costs speed and guessing away from it costs the transcript.
+
+**Parakeet's coverage is encoded as data, and it is 25 codes, not 28.** FluidAudio's `Language` enum
+lists 28; the model card claims 25. The three extra — `be`, `bs`, `sr` — are **excluded**, because
+that enum is a SCRIPT FILTER (which alphabets the decoder can constrain itself to), a strict superset
+of what the model was trained to transcribe. Routing Belarusian to Parakeet because the Cyrillic
+filter accepts it is exactly the failure the router exists to prevent.
+
+**The language chicken-and-egg, resolved.** The common case has none: the default setting is an
+explicit `"en"`, so the language is known before recording starts. Only **Auto** needs detection, and
+it falls out of the routing rule rather than needing a special case — `startFlow` resolves the
+language first, a `nil` routes to Whisper, Whisper is also the only engine that can detect, and after
+detect-once-then-pin the router runs again and swaps to Parakeet if the detected language is covered.
+Parakeet has **no language-ID head at all** (verified at the pinned tag: `ASRResult` carries no
+detected language, and `language:` is an input hint), which is why `ParakeetProvider.detectLanguage`
+returns `nil` as a real answer rather than guessing "en".
+
+**`SessionMeta.engine` / `.engineModel`** record what produced a transcript. The status bar names the
+engine only when it is worth saying — a fallback, or an auto-route away from the default. A label on
+every session would train the user to ignore it.
+
+**Streaming: the worst performance defect in the codebase, fixed.** `StreamingTranscriber`
+re-`snapshot()`s the entire growing buffer roughly once a second. Swift arrays are copy-on-write, so
+the copy is paid on the very next `append`, which finds the buffer shared and duplicates all of it —
+a ~460 MB memcpy per second at the two-hour mark, growing linearly, on the audio callback's path.
+`SampleSink.newSamples(after:)` reads only what is new; Parakeet's manager buffers internally and
+trims what it has consumed, bounded to `left+chunk+right` seconds regardless of session length. **The
+Whisper streamer keeps its old behaviour on purpose** — Whisper's decoder has no incremental entry
+point, so there is no half-fix; what changed is which engine is default.
+
+### Why Apple `SpeechAnalyzer` is deferred, and the re-evaluation trigger
+
+Not built, and the seam exists so it can be added later. Four reasons:
+
+1. It requires **macOS 26 / iOS 26**, so it can never serve the macOS 14 / iOS 18 floor — it would be
+   a second engine, not a replacement.
+2. **It exposes no custom-vocabulary API.** Making it the default would silently disable the vertical
+   packs' biasing for users on the newest OS — precisely the clinical and legal segment.
+3. Its streaming input path (`start(inputSequence:)`) has an open defect on macOS 26.3
+   (FB22149971) where it fails with a `nilError` while the file path succeeds. Said's primary need is
+   live streaming.
+4. Its accuracy advantage is real but was measured on read-audiobook English (LibriSpeech), which is
+   not what meetings or lecture halls sound like.
+
+**Re-evaluate when FB22149971 is confirmed fixed AND a custom-vocabulary or phrase-biasing API
+exists.** Not before.
+
+### The dependency pins, and the documentation that lies
+
+- **WhisperKit 1.0.0 → 1.1.0.** Every API Said uses is source-compatible. The one breaking rename
+  (`AudioInputConfig` → `AudioInputOptions`) touches a symbol Said never referenced. What the bump
+  buys is `AudioLoadingMode.incremental` — bounded-memory chunked file reading — which is **opt-in**
+  (`.fullFile` is still the default) and exists on the **`audioPath:` overload only**.
+  `transcribeFile` asks for it explicitly. **`Importer` decodes to `[Float]` first and so does NOT
+  benefit** — the highest-value follow-up for long-lecture imports.
+- **FluidAudio HELD at 0.15.2.** Its README/podspec/CITATION.cff still claim 0.12.4; the tag list runs
+  to v0.15.6. Everything Phase 3 needs is at 0.15.2. `ModelHub` — which the prompt assumed — lands at
+  **v0.15.5**, in the same change that **deletes `DownloadUtils`**, breaking both
+  `AsrModels.download(progressHandler:)` and the diarizer's download plumbing. That migration is
+  separate, deliberate work.
+- **The vendor's own docs call functions that do not exist.** `Documentation/ASR/GettingStarted.md`
+  calls `configure(models:)`; `Documentation/API.md` documents `initialize(models:)` and
+  `transcribe(_:source:)`. **None of the three exists.** The real calls are
+  `loadModels(_ models: AsrModels)` and
+  `transcribe(_ samples: [Float], decoderState: inout TdtDecoderState, language: Language?)`, and the
+  caller must build the decoder state itself with `TdtDecoderState.make(decoderLayers:)`.
+  **Read `Sources/FluidAudio/ASR/` at the tag. Never the docs.**
+- **Use a dedicated `git worktree` per tag when verifying.** A shared checkout was moved out from
+  under this build mid-way and silently invalidated a batch of reads.
+
+### Editing (Wave 3) — an overlay, never a mutation
+
+`edits.json` beside the transcript, routed through `SessionIO` like every other text artifact,
+applied on read. `transcript.md` stays the verbatim record: a user fixing "sequel" to "SQL" is
+stating what they *meant*, not rewriting what was said. Same rule as `cleanedText` and `redactedText`.
+
+**`EditOverlay.apply` is idempotent by construction, not by convention.** An edit fires only when the
+text it names is still at the position it names. That one guard also does the work of three other
+rules: stale edits cannot corrupt a re-transcribed session, applying the file twice is safe, and
+editing the same word twice composes in order. Word edits substitute the right OCCURRENCE in the
+segment's text rather than rebuilding it from the word array — rebuilding would join with single
+spaces and discard the engine's real punctuation.
+
+Anchoring prefers `wordIndex` where `validWords` exists and falls back to a whole-segment edit where
+it does not, so **every session is editable**, just at coarser granularity. An edit that no longer
+anchors is **kept in the file, never deleted** (§6.5), and the Viewer says how many came loose.
+
+**The view switch is Verbatim / Edited / Cleaned / Redacted**, ordered by distance from the recording
+so the leftmost is always what was actually said. Editing is offered in Verbatim and Edited **only** —
+an edit against a derived view has no unambiguous home in the verbatim record.
+
+**Ordering: redaction applies AFTER edits.** A user who corrected a misheard name to its real
+spelling has, in the same stroke, made it findable; redacting the verbatim text would mask the wrong
+string and leave the real name in plain sight in the Edited view.
+
+> ### THE RULE: a learned correction is ONLY promoted into the ASR vocabulary bias list. It is NEVER
+> applied as a string replacement to any transcript, past or future.
+>
+> This is not a stylistic preference. Blind replacement means the user who once corrected "sequel" to
+> "SQL" gets a corrupted transcript the day they record a conversation about film sequels — and
+> because it reads fluently, they will never find out. Biasing the decoder makes the word *more
+> likely to be recognised where it was actually said*; it cannot manufacture it where it was not.
+
+Promotion requires the same correction **twice** (`CorrectionMemory.promotionThreshold`), and is
+announced once ("Said will listen for *anastomosis* from now on") rather than done silently. The
+terms are listed, individually deletable and bulk-clearable in Settings ▸ Learned terms, and they
+union into `effectiveVocabulary` alongside the user's own and the enabled packs'.
+
+Undo goes through the window's `UndoManager`, so ⌘Z composes with the rest of the app. **Undo does
+not clear the stale-summary badge** — the summary really was generated against different text.
+
+**Inline editing is keyboard-navigable and VoiceOver-labelled.** Each word is a real `Button`, so it
+takes focus in the normal tab order, and its accessibility label carries the word AND the engine's
+confidence — which is the whole reason a low-confidence word is tinted, and otherwise information
+only sighted users would have. A transcript editor that works only by clicking is not finished.
+
+### Re-transcribe — ONE command (§4.5)
+
+Three things wanted the same capability — backfilling word timings, recovering from a wrong engine,
+re-running after a language misdetection. They are the same action, so there is **one** command, in
+the Viewer's Export menu, with an engine picker. It warns before running that the transcript will be
+replaced, warns **explicitly** when the session has edits (re-transcription moves segment boundaries
+and orphans them), offers to export the current version first, marks summaries stale rather than
+regenerating them, and never runs automatically or on more than the one session.
+
+It keeps the session's id, bookmarks, title and audio, and **clears `speakerCount`** — speaker labels
+described the OLD segmentation, and carrying them onto new boundaries would attribute words to
+whoever happened to hold the same index.
+
+**If a second re-transcribe entry point ever appears, the design has gone wrong.**
+
+### Word-boundary speaker alignment (Wave 4, §7.7)
+
+`SpeakerAlignment.assign` now dispatches **per segment**: a segment with usable word timings goes
+through `assignByWord`, which can split it where the speaker changes mid-sentence; one without goes
+through `assignWholeSegment`, **which IS the pre-Phase-3 function, unmodified.**
+
+That is what makes the legacy guarantee structural rather than a fixture comparison: it is the same
+code, not a reimplementation that happens to agree. `--selftest-align` asserts the dispatcher and
+that function produce element-for-element identical output on segments with no word timings, and
+also compares against the committed fixture when one is present.
+
+The case this fixes was silently wrong before: on interruptions and fast back-and-forth — where
+diarization is *most* valuable — the whole segment went to whoever held it longest and the other
+person's words were attributed to them with no indication anything was lost.
+
+Runs shorter than **`minimumRunWords` (3)** are absorbed into a neighbour rather than split out:
+diarizer boundaries are not exact, so a one-word "Speaker 2:" inside someone else's sentence is far
+more common than a real one-word turn. Splitting cuts the segment's TEXT at the boundary word's
+position rather than rebuilding it from words, so punctuation and spacing survive; if the words
+cannot be located in the text in order, it falls back to whole-segment assignment rather than guess.
+
+### Cross-session voiceprints (Wave 4)
+
+**OFF by default.** With it off no embedding is ever extracted, nothing is stored, and `session.json`
+gains no keys.
+
+No new model or API was needed: `TimedSpeakerSegment.embedding` is already public at the pinned tag,
+and it is the same WeSpeaker vector the clusterer itself compares — so the match threshold is in the
+same units as the diarizer's own. `DiarizerService.diarizeDetailed` returns per-slot embeddings
+alongside the turns, grouped by the SAME slot mapping `normalize` derives (via
+`normalizeWithSlots`, so the rule lives in one place).
+
+- **Threshold 0.45 cosine distance**, against the diarizer's own 0.7, deliberately far tighter.
+  Cross-session matching holds neither mic nor room fixed, and the costs are wildly asymmetric: a
+  miss costs one click, a false merge silently attributes one person's words to another in a record
+  nobody re-checks. **Accept misses over false merges.**
+- **A match is a PROPOSAL, never an assignment.** The pass writes `meta.voiceprintProposals` and
+  nothing else — it does not set `speakerNames`, does not re-render `transcript.md`, does not
+  re-index. The Viewer asks.
+- **Two candidates within `ambiguityMargin` (0.08) produce `.ambiguous`, which asks rather than
+  picking.** Declining teaches nothing: a "no" is evidence these are different people, so folding the
+  samples in would make the next match worse.
+- **Two stored voiceprints are NEVER merged automatically.**
+- Several embeddings per person, matched on the NEAREST — a voice on AirPods in a car and on a desk
+  mic land in genuinely different places, and averaging produces a centroid that matches neither.
+
+**The store lives in Application Support, never in a session folder — and that is the MECHANISM, not
+a filing preference.** `SessionBundle` stages a session folder's entire contents rather than an
+allow-list, so anything inside one is exported. Keeping the store out is what makes the default safe.
+Export takes an explicit opt-in (`write(sessionDir:to:includingVoiceprints:)`, default false) behind
+a confirmation that says plainly what the recipient gains, and carries only the voices in THAT
+session. **Import explicitly skips `voiceprints.json`** and stages it for the user to accept — writing
+it into the session folder would silently re-export it forever after.
+
+**Post-save pass order is now stated at the call site and is load-bearing:**
+`diarize → align → voiceprint → cleanup` (then the semantic index, last of all). Alignment lives
+inside `DiarizationPass` — it is what consumes the turns — which is why that pass returns the
+embeddings the voiceprint pass matches on. Cleanup runs after because it rewrites segment TEXT.
+Three of these touch speaker labels or text; an accidental reorder would be silent.
+
+### Slides as an indexed layer (Wave 5)
+
+**Be precise about what was missing.** OCR text ALREADY reached the search index — `DocumentBuilder`
+writes it into `transcript.md` and `SearchIndex` tokenises that file. A phrase that only ever
+appeared on a slide already found the session. What was missing is everything that makes the result
+usable: deduplication, a notion of "slide 4 spanned 12:03–18:40", and a hit that can say it came from
+a slide.
+
+`SlideSegmenter` collapses runs of near-identical frames into `SlideSpan`s, judging similarity on OCR
+**text** (Jaccard ≥ 0.75) rather than pixels — cheaper, and a better proxy for the real question,
+since two photographs of one slide from different angles are the same slide. A frame with no legible
+text is **never** merged with anything: two illegible photographs are not evidence of being the same
+slide, and merging them would drop one from the timeline entirely. The representative frame is the
+one Vision read the most words off, which is the best "clearest" proxy available without opening the
+images.
+
+`SessionDoc.slides` is a **materialised view** refreshed on every write, never a second source of
+truth; readers go through `slideSpans`, which derives when the cache is absent.
+
+`SearchIndex` now separates speech from slide text and weights them differently
+(`slideMatchWeight` 0.35): slide text is denser and noisier, and a dense slide can carry more words
+than a minute of talking. Slide terms are counted **once per SPAN**, which is what stops ten minutes
+on one slide from flooding the index. **The non-regression is exact rather than approximate**: the
+index stores the per-FRAME counts as well, so speech frequency is recovered by subtraction rather
+than by re-tokenising a different string — a session with no frames has both tables empty and its
+score is bit-for-bit what it was.
+
+A hit knows its provenance because `DocumentBuilder` emits a fenced code block for exactly one thing:
+a frame's on-slide text. A line inside a fence came from a slide.
+
+**Honest note on demand evidence** (§8.3): this is Said's clearest differentiator — no comparable
+on-device app was found doing it — but the *demand* evidence is weaker than the *differentiation*
+evidence. Roughly fifty apps are built on the same audio stack and none built this, which is
+consistent with an unoccupied niche and equally consistent with thin demand. Hence: build the indexed
+layer, which is bounded work with clear value; **do not** expand into figure extraction, diagram
+understanding or deck reconstruction.
+
+### Hybrid semantic retrieval (Wave 6)
+
+**Retrieval was the ceiling on every AI feature Said already shipped.** Ask "what did we decide about
+pricing" against a transcript that says "the number we're going to charge" and the keyword index
+returns nothing — at which point the model answers confidently from an empty context. **The prompts
+did not change; only what is retrieved did.**
+
+**The embedding model is Apple's `NLContextualEmbedding`, a deliberate divergence** from the Phase 3
+prompt, which called for a pinned third-party CoreML model and dismissed Apple's options in one line.
+Two of its three claims are right: `FoundationModels` exposes no embedding API at all (verified), and
+`NLEmbedding` really is word-level and inadequate. But `NLContextualEmbedding` is a *different* API,
+and its stated drawback — you must pool the token vectors yourself — costs fifteen lines. It is
+macOS 14 / iOS 17 (exactly Said's floor), contextual, multilingual, its assets come from the OS
+rather than HuggingFace, and it adds no disk footprint Said owns in a phase that already doubles the
+model directory. Against that: no CoreML conversion of e5-small could be verified at a pinnable repo
+and revision, and shipping an unverifiable asset is the weaker position. `EmbeddingProvider` is a
+seam so this is reversible on evidence.
+
+- **OFF by default**, opt-in, with an explicit asset download. Turning it off **purges** the vectors
+  rather than ignoring them.
+- Chunks on segment boundaries at ~220 words with overlap, using `validWords` for tighter chunk times
+  where they exist and segment bounds where they do not. Embeds the **edited** view.
+- **Fusion is Reciprocal Rank Fusion (k=60), chosen over a weighted blend deliberately.** The two
+  scores are not comparable — unbounded match counts against cosine similarities in [-1,1] — and
+  normalising them into agreement is exactly the tuning that produces a hybrid ranker WORSE than the
+  keyword search it replaced. Rank fusion needs no calibration.
+- **Keyword is never thrown away.** Exact names, numbers and jargon are where keyword wins and
+  embeddings lose, and a near-miss there is not a near-answer.
+- **Encryption ON ⇒ in-memory only**, mirroring `SearchIndex` exactly. An embedding is a lossy but
+  real reconstruction of its passage; plaintext vectors beside an encrypted transcript would quietly
+  undo the encryption.
+- **The golden-query-set gate (§9.4) is NOT satisfied** — the set does not exist yet — which is why
+  the feature ships off.
+
+### The offline promise, made enforceable (§10.2)
+
+`ModelGate` is the single place any model may be fetched. With **Settings ▸ Storage ▸ "Never download
+models"** on, every acquisition path throws `ModelGateError.downloadsDisabled` **before** a network
+call is constructed, and it also sets FluidAudio's own `DownloadUtils.enforceOffline`.
+
+Both, not either: the library flag covers FluidAudio only and **WhisperKit has no offline flag at any
+version**, so a library-level switch would leave half the promise unenforced — and a library throwing
+from inside a download routine cannot say "pick a model you already have".
+
+**The gate governs FETCHING, never LOADING.** An already-downloaded model loads exactly as before,
+which is what makes "airplane mode with models present" a working configuration rather than a
+degraded one.
+
+**Model downloads still need no HuggingFace token or account** — verified at the pinned tag: a
+`Bearer` header is attached only when an `HF_TOKEN`-style env var exists.
+
+### Storage (§10.2a)
+
+**Settings ▸ Storage** reports per-model disk usage across both cache roots, allows deleting one, and
+warns when the model is needed by current settings. It **discovers rather than predicts**: the roots
+are source-verified, but what is inside them is enumerated, so a variant Said has never heard of
+still shows up and can still be deleted. A storage panel that only reports what it expected is worse
+than none.
+
+- WhisperKit: `~/Documents/huggingface/models/argmaxinc/whisperkit-coreml/<variant>/`
+- FluidAudio (Parakeet, the CTC spotter, the diarizer):
+  `~/Library/Application Support/FluidAudio/Models/<repo folder>/`
+
+**Parakeet is never auto-downloaded on upgrade.** `EngineRouter` only routes to an engine that is
+already installed, so an existing user keeps using Whisper until they choose otherwise.
+
+### What must NOT move (the surviving half of the old directive)
+
+- **`--selftest-doc`'s md5.** Document assembly is untouched: word timings are `session.json`-only,
+  slides are derived, and `markdown(meta:segments:frames:)` was not modified.
+- **`transcript.md`'s FORMAT** for a new session — `[mm:ss] text`, frames interleaved as today,
+  text-before-frame on a tie.
+- **Every existing session on disk**: opens, renders, searches, exports, plays back unchanged.
+- **The capture path and every timing primitive** — `CaptureGate`, `SessionClock`, `SilenceMonitor`,
+  `StallMonitor`, pause/auto-pause, the mic/system/mixer topology.
+- **Hotkeys, the signing identity, the `codesign` designated requirement.**
+- **Search ranking for sessions with no slides** — guaranteed by exact subtraction, not by argument.
+- **Speaker alignment on sessions with no word timings** — guaranteed structurally.
+- Diarization, cleanup, redaction, retention, encryption, packs and the Generation Studio, given
+  identical input segments.
+
+**What may move:** `transcript.md`'s CONTENT for a new session, `--selftest`/`--selftest-stream`
+output text, and `session.json` gaining optional keys (`words`, `slides`, `engine`, `engineModel`,
+`voiceprintProposals`) — all `decodeIfPresent`, all omitted when empty.
+
+### Phase 3 — explicitly NOT done
+
+- **Nothing was compiled, built, run or tested.** See the warning at the top and `PHASE3-REPORT.md`.
+- **Crash recovery does not exist** and never did — the Phase 3 prompt asserted it as an existing
+  feature. Audio is written once, at stop, from the in-memory sink; a `kill -9` loses the session.
+  The streaming rewrite introduced no coupling to the audio write path, which is the only part of
+  §10.2c that could be answered. **Highest-priority follow-up.**
+- **No iOS UI.** Every capability is in `SaidKit` and reaches iOS through it, but the touch
+  affordances for editing and voiceprint confirmation are macOS-only.
+- **Apple `SpeechAnalyzer`** — deferred with a defined trigger (above).
+- **Japanese and Mandarin Parakeet models** — they exist as first-class cases in FluidAudio's
+  `AsrModelVersion` (`tdtJa`, `ctcZhCn`) and are deliberately NOT wired up. Both languages route to
+  Whisper, which already covers them; shipping two more 600 MB models to marginally improve two
+  languages is not a trade worth making before anyone has asked.
+- **Imports do not use WhisperKit 1.1.0's incremental file reader** — `Importer` decodes to `[Float]`
+  first. The highest-value follow-up for long lectures.
+
 ## Session identity & the `.said` bundle (Phase 1 — Sources: DocumentBuilder / SessionStore / SessionBundle / AppModel / SessionViewer)
 **A session is a thing you can hand over.** Until there is an account, moving a session between
 devices is a TRANSFER, not a sync — so the thing being moved is one obvious file.
@@ -1064,6 +1525,47 @@ Run the built binary (`.build/release/Transcriber` or the bundle's MacOS binary)
     crashing.
   - **`Scripts/verify_ios_build.sh`** — not a `--selftest` mode but the same kind of gate, and the
     LAST step of `verify_selftests.sh`. See "Build & run".
+- **Phase 3 (transcription core):** six PURE modes — no models, no audio hardware, no permissions,
+  temp dirs only. That is the design, not a limitation: the parts of Phase 3 that can produce a
+  silently wrong transcript are exactly the parts written as pure functions.
+  `--selftest-words` (validWords accepts valid / rejects absent, empty, non-monotonic, inverted and
+  out-of-bounds; `words` omitted when absent AND when empty; a malformed array decodes to nil with
+  the session still readable; a legacy session is NOT silently version-upgraded by being read; the
+  whole thing round-trips through `SessionIO` with encryption off AND on),
+  `--selftest-engine-route` (every routing branch: covered → Parakeet, uncovered → Whisper, be/bs/sr
+  → Whisper, **unknown language → Whisper**, locale shapes normalise, explicit preferences win,
+  missing-model fallbacks are flagged as fallbacks, the ordinary route is NOT flagged; plus
+  `VocabularyBias`'s unrepresentable-empty),
+  `--selftest-edit` (word and whole-segment edits; idempotence and purity; whole-word replacement so
+  "ran" does not touch "brand"; the right OCCURRENCE of a repeated word; **transcript.md
+  byte-identical after an edit**; out-of-range edits skipped and reported, never deleted; a corrupt
+  `edits.json` degrades; redact-after-edit ordering; twice-before-learning; **a learned correction
+  never rewrites existing text**; a `.said` round trip carries the edits),
+  `--selftest-voiceprint` (matching above/below threshold; **two near-equal candidates produce
+  ambiguous, not a pick**; enrol → match → append improves similarity; delete is complete; the store
+  is absent from a session folder so a default `.said` cannot carry it; feature-off writes nothing),
+  `--selftest-slides` (a run of near-identical frames collapses to ONE span; a real change starts a
+  new one; single-frame and unknown-duration spans stay valid and non-zero; textless frames are never
+  merged; the representative frame is the clearest; the cache is absent when there are no frames; a
+  slide-only phrase is found, marked as a slide, and carries its `[mm:ss]`),
+  `--selftest-semantic` (chunk boundaries and times; **the off path is a complete no-op with no model
+  load and no cache file**; fusion with no semantic hits is EXACTLY the keyword ranking; agreement
+  between both signals promotes a session; keyword-only sessions survive; **encryption-on writes no
+  vectors to disk**).
+  Two model-requiring modes that SKIP cleanly rather than fail when the models are absent — a red bar
+  for "you are offline" would train everyone to ignore the suite: `--selftest-parakeet [audio.wav]`
+  (prepare, transcribe, assert token timings are present, monotonic and in-bounds, and print RTFx)
+  and `--selftest-bias [audio.wav] --terms a,b` (§5.4's before/after assertion; its SKIP message
+  prints the `say`/`afconvert` commands to make a fixture).
+  `--selftest-align` gained the Phase 3 cases: a mid-segment speaker change splits at the right word
+  with no text lost, a short run is absorbed rather than split out, invalid timings degrade to the
+  whole-segment path, and **the legacy guarantee is asserted twice** — structurally (the dispatcher
+  and the preserved pre-Phase-3 function must agree element-for-element) and against the committed
+  fixture when one is present.
+- `--compare-engines [folder] [--terms-file terms.txt] [--out dir]` — a CLI TOOL, not a self-test,
+  and a **deliverable**. Re-transcribes real sessions through every available engine, READ-ONLY on
+  the input, and reports RTFx, divergence, and **per-term recall** — the number that actually decides
+  whether Parakeet ships as the default, and the one LibriSpeech does not measure.
 - **Removed modes.** `--selftest-capture`, `--selftest-ocr` and `--selftest-slidechat` no longer
   exist — they tested the screenshot/OCR/slide-chat feature that was replaced by real screen
   recording. `verify_selftests.sh` was still calling all three (i.e. it was failing); Phase 1 removed
@@ -1203,6 +1705,24 @@ Screen Recording grant + on-screen content — use `--selftest-screenrec-live` f
       working click-to-seek, a slide-only phrase found by search, HTML/PDF export carrying the
       images, the pre-existing library intact (especially any session with a leftover `frames`
       array), and no capture path anywhere on the Mac.
+- [!] **Phase 3 — the transcription core.** Word-level timings behind the `validWords` accessor
+      discipline; a two-engine seam (`TranscriptionProvider`) with Parakeet as the routed default and
+      Whisper for the long tail; transcript editing as an overlay that never touches `transcript.md`,
+      with correction memory that only ever biases and never rewrites; word-boundary speaker
+      alignment that splits a segment where the speaker changes mid-sentence (legacy sessions
+      guaranteed byte-identical *structurally*, by routing to the untouched pre-Phase-3 function);
+      cross-session voiceprints that propose and never assign; slide spans with a search index that
+      knows speech from slide text; hybrid RRF retrieval behind an embedding seam. Plus the offline
+      gate, the storage panel, one re-transcribe command, six pure self-tests and `--compare-engines`.
+      **⚠️ NOT COMPILED, NOT RUN, NOT TESTED** — built in a container with no Swift toolchain. Every
+      third-party API was verified against the pinned dependency source (which is how three real
+      defects and several wrong doc-claims were caught), and an adversarial review pass was run over
+      every file, but expect compile errors on the first real build. `PHASE3-REPORT.md` §0 lists
+      exactly what was and was not verified; §15 is the order to work in.
+      **AWAITING everything:** a build, the self-test sweep, the iOS gate, the baselines,
+      `--compare-engines` over real sessions (which is what should actually decide the default
+      engine), the vocabulary-biasing proof, measured model sizes and performance, and the full human
+      smoke-test checklist below.
 - [~] **Phase 1 — cross-platform core, rebrand, session identity.** The package is split into
       `SaidKit` (cross-platform) + `Said` (macOS executable); every macOS assumption in the shared
       code is an injectable seam (session root, delete-to-Trash, light/dark colour resolution,
@@ -1222,6 +1742,61 @@ Screen Recording grant + on-screen content — use `--selftest-screenrec-live` f
       every window, amber-as-live, speaker 1 violet / speaker 2 amber, a `.said` round trip through
       Finder (including the second double-click saying "already in your library"), the pre-existing
       library intact, and an encrypted round trip.
+
+## Phase 3 — human smoke-test checklist
+
+**Do §0 first: it has never been compiled.** `Scripts/build_app.sh`, fix what the compiler finds,
+then `Scripts/verify_selftests.sh`. The six pure Phase 3 modes should pass with no models at all.
+Capture the baselines on both sides per `PHASE3-REPORT.md` §1. Only then:
+
+1. **The engine change, felt.** Record a 45-minute meeting. Live text keeps up, the tail does not lag,
+   and the wait after Stop before the session opens is dramatically shorter. Re-run the same audio on
+   Whisper via Re-transcribe and judge which you would rather read.
+2. **Vocabulary biasing.** Enable the Medical pack. Say five terms a general model gets wrong.
+   Confirm they come out right, and wrong with the pack off. **If this fails, the packs are inert on
+   the default engine — switch the default to Whisper until it is fixed.**
+3. **Long-session memory.** Record two hours, watch Activity Monitor. Flat, not climbing.
+4. **A language outside Parakeet.** Record Hindi, Arabic or Vietnamese. It must auto-route to Whisper,
+   say so visibly, and be usable. This is the one that proves the router.
+5. **Editing, end to end.** Fix five words. `transcript.md` on disk unchanged; the Edited view shows
+   them; search finds the corrected words; export carries them; the summary is marked stale rather
+   than silently rewritten; a `.said` round trip preserves them.
+6. **Learned terms.** Correct the same word twice. The promotion is announced, appears in Settings, is
+   deletable — and **no existing transcript changed.**
+7. **A legacy session.** Open a pre-Phase-3 session and edit it. Segment-level editing works, nothing
+   breaks, and speaker labels are unchanged from before the build.
+8. **Voiceprints.** Enable, record with a colleague, name them. Record again another day on a
+   different mic. The proposal appears, it ASKS, declining is respected. Then delete the voice.
+9. **The slide demo.** Record a talk with slides. Search a phrase that was only ever ON a slide. Land
+   on the right session and moment, see it marked as a slide, and confirm ten minutes on one slide
+   did not produce ten minutes of duplicate entries.
+10. **Semantic search.** Enable it. Ask a question in wording that appears nowhere but whose meaning
+    does. Then ask for an exact name or number and confirm keyword precision did not regress.
+11. **Airplane mode.** Models present, "Never download models" on, airplane mode. Nothing may fail in
+    a way that suggests it wanted the network.
+12. **Encryption on.** Repeat editing, voiceprints and semantic search. No plaintext transcript, no
+    plaintext `edits.json`, no vectors on disk.
+13. **The full regression sweep.** Every Stage 0/1/2 feature: import, mixer, playback seek, bookmarks,
+    diarization rename, multilingual auto, calendar auto-start, cleaned view, custom modes, every
+    Generation Studio template, audiogram, packs, redaction, retention, `.said` round trip, share.
+14. **Crash recovery. THIS WILL FAIL, and not because of Phase 3.** `kill -9` mid-recording loses the
+    session. No such mechanism has ever existed — see `PHASE3-REPORT.md` §11. Confirm the failure so
+    it is on the record, then decide whether to build it.
+15. **Storage.** Numbers match what is on disk. Delete a Whisper model you do not need; the space is
+    reclaimed and nothing breaks.
+16. **A speaker change mid-segment.** Record a deliberate interruption — talk over each other, then
+    cut in mid-sentence. The transcript must split at the right word and attribute both halves
+    correctly. **This is the case that was silently wrong before.**
+17. **`--compare-engines`.** Write the terms file (50–100 domain terms only you can choose) and run it
+    over ten real sessions. **Per-term recall is what should decide whether Parakeet stays the
+    default** — that decision currently rests on other people's benchmarks.
+
+### Two things only you can do
+- **The terms file** for `--compare-engines`: drug names, case citations, product names, colleagues,
+  jargon. Per-term recall on it is the number that matters, and it is not what LibriSpeech measures.
+- **The golden query set** for semantic search: 20–30 real questions paired with the session that
+  should come back. Without it the hybrid ranker gets tuned on vibes, and a badly tuned one is worse
+  than the keyword search you already have. **Until it exists, semantic search stays off by default.**
 
 ## Stage 2 — Generation Studio / Vertical Packs / Privacy & Compliance
 **All additive, all OFF or neutral by default. With defaults untouched a session's `transcript.md` is
@@ -1442,6 +2017,37 @@ CleanupPass, so session.json read-modify-writes can't race).
 - **A `.said` won't import / "already in your library".** The collision rule is deterministic and
   keyed on `SessionMeta.id`: same id ⇒ never import, never duplicate, reveal the existing session.
   That is correct behaviour, not a failure. A bundle with no id, or an unknown one, always imports.
+- **A transcript reads differently from an older one of the same kind.** Check
+  `session.json`'s `engine` / the Viewer's engine label: Phase 3 routes by language, so a session can
+  legitimately have run on Parakeet while last month's ran on Whisper. That is the deliberate
+  retirement of byte-identity, not a bug.
+- **A non-English recording came out as fluent nonsense.** Almost certainly `enginePreference` is
+  "Always Parakeet" on a language it does not cover — it does not error, it invents. Switch to
+  Automatic, and re-run that session through **Viewer ▸ Re-transcribe…** with Whisper.
+- **A vertical pack seems to have no effect on Parakeet.** Three candidates, in order:
+  (1) the term is shorter than three characters — `CustomVocabularyContext.minTermLength` drops those
+  by design, and Said keeps the library default because a spurious "VR" every time someone says "or"
+  is a worse transcript than a missed boost; (2) the CTC spotter model
+  (`parakeet-ctc-110m-coreml`, a SEPARATE download) could not be fetched — `supportsVocabularyBias`
+  reports false and the log says so; (3) "Never download models" is on and that model is absent.
+- **Corrections stopped taking effect.** The Viewer says how many came loose. Re-transcribing moves
+  segment boundaries, and an edit only applies when the text it names is still where it named it —
+  that guard is what makes the overlay idempotent. The edits are **kept**, never deleted.
+- **A learned term did not fix an old transcript.** By design, and it is the most important rule in
+  Wave 3: a learned correction is only ever promoted into the vocabulary bias list, never applied as
+  a string replacement. It changes what Said *listens for* next time.
+- **"Speaker 1" was not proposed as Alice.** The threshold (0.45 cosine distance) is deliberately far
+  tighter than the diarizer's own 0.7 — misses are expected and false merges are not. Also check the
+  toggle is on, that diarization is on (voiceprints ride its embeddings), and that the earlier
+  session's speaker was actually NAMED.
+- **A `.said` did not carry voice profiles.** Correct: that is a separate menu item behind a
+  confirmation. And a bundle that DID carry them does not merge them silently on the receiving side —
+  they wait in Settings ▸ Voices for the user to keep or discard.
+- **Semantic search found nothing.** It is OFF by default and needs its one-time on-device asset. With
+  at-rest encryption on, the index is in-memory only and rebuilds each launch, so it is empty until
+  "Index all sessions" has run in this session.
+- **A model download failed with "isn't downloaded, and Never download models is on".** Working as
+  intended. That setting refuses FETCHING, not USING; models already present keep working offline.
 - **`swift build` fails with `'v18' is unavailable`.** `Package.swift` uses `.iOS("18.0")` (the string
   form) precisely to avoid this — `.v18` needs swift-tools-version 6.0. Don't "fix" it by bumping the
   tools version: that switches the package into Swift 6 language mode.

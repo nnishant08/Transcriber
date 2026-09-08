@@ -60,7 +60,11 @@ final class SessionViewerModel: ObservableObject {
     @Published var isEditing = false
     /// `segments` with the overlay applied, recomputed only when the edits change — the transcript
     /// re-renders on every scroll tick and applying the overlay per frame would be wasteful.
-    @Published private(set) var editedSegments: [TranscriptSegment] = []
+    ///
+    /// NOT `private(set)`: `private` is FILE scope in Swift, and the only writer
+    /// (`refreshEditedSegments`) lives in `TranscriptEditing.swift`. Marking the setter private here
+    /// would make it unassignable from the very extension that owns it.
+    @Published var editedSegments: [TranscriptSegment] = []
     /// One-shot notice when a correction crosses the learning threshold, e.g.
     /// "Said will listen for *anastomosis* from now on."
     @Published var learnedNotice: String?
