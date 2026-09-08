@@ -41,12 +41,36 @@ extension SelfTest {
         specs.map { WordTiming(text: $0.0, start: $0.1, end: $0.2, confidence: confidence) }
     }
 
+    /// Every feature flag these tests touch is backed by `UserDefaults`, i.e. by the USER'S REAL
+    /// SETTINGS. A self-test that leaves encryption, voiceprints or semantic search flipped is worse
+    /// than no test at all — it would silently turn off at-rest encryption for someone who had it on.
+    /// So the whole set is snapshotted on entry and restored on exit, whatever happens in between.
+    /// NOTE: `defer { flags.restore() }` alone is NOT enough — these modes end in `exit()`, which
+    /// does not unwind, so every one of them also restores EXPLICITLY before finishing.
+    fileprivate struct FlagSnapshot {
+        let encryption = SessionIO.isEncryptionEnabled
+        let voiceprints = VoiceprintStore.isEnabled
+        let semantic = SemanticIndex.isEnabled
+        let key = SessionIO.overrideKey
+
+        func restore() {
+            SessionIO.isEncryptionEnabled = encryption
+            SessionIO.overrideKey = key
+            VoiceprintStore.isEnabled = voiceprints
+            SemanticIndex.isEnabled = semantic
+            VoiceprintStore.overrideStoreURL = nil
+            CorrectionMemory.overrideStoreURL = nil
+        }
+    }
+
     // MARK: - --selftest-words (Wave 1)
 
     static func runWords() {
         setbuf(stdout, nil)
         print("== word-substrate self-test ==")
         let c = Checker()
+        let flags = FlagSnapshot()
+        defer { flags.restore() }
 
         // ---- validWords: the four rejection cases and the accept case.
         let good = TranscriptSegment(start: 0, end: 3, text: "one two three",
@@ -135,8 +159,7 @@ extension SelfTest {
         c.check("session.json is encrypted on disk", SessionIO.isEncryptedBlob(encrypted))
         c.check("encrypted round-trip keeps words",
                 DocumentBuilder.readSession(dir)?.segments.first?.validWords?.count == 3)
-        SessionIO.isEncryptionEnabled = false
-        SessionIO.overrideKey = nil
+        flags.restore()
 
         c.finish()
     }
@@ -221,6 +244,8 @@ extension SelfTest {
         setbuf(stdout, nil)
         print("== transcript-edit self-test ==")
         let c = Checker()
+        let flags = FlagSnapshot()
+        defer { flags.restore() }
         let dir = tempDir("edit")
         defer { try? FileManager.default.removeItem(at: dir) }
 
@@ -350,6 +375,9 @@ extension SelfTest {
             c.check("bundle round-trip preserves edits (\(error))", false)
         }
 
+        // Explicit, not just the `defer`: `c.finish()` calls `exit()`, which does NOT unwind the
+        // stack, so a deferred restore would never run. The defer is the belt; this is the braces.
+        flags.restore()
         c.finish()
     }
 
@@ -359,6 +387,8 @@ extension SelfTest {
         setbuf(stdout, nil)
         print("== voiceprint self-test ==")
         let c = Checker()
+        let flags = FlagSnapshot()
+        defer { flags.restore() }
 
         let store = tempDir("voiceprints").appendingPathComponent("voiceprints.json")
         VoiceprintStore.overrideStoreURL = store
@@ -442,8 +472,7 @@ extension SelfTest {
         }
 
         VoiceprintStore.deleteAll()
-        VoiceprintStore.isEnabled = false
-        VoiceprintStore.overrideStoreURL = nil
+        flags.restore()
         c.finish()
     }
 
@@ -535,6 +564,8 @@ extension SelfTest {
         setbuf(stdout, nil)
         print("== semantic-search self-test ==")
         let c = Checker()
+        let flags = FlagSnapshot()
+        defer { flags.restore() }
 
         // ---- Chunking is pure and can be asserted without a model.
         var segs: [TranscriptSegment] = []
@@ -627,8 +658,7 @@ extension SelfTest {
         encIndex.purgeCache()
         c.check("encryption on → no vector cache on disk",
                 !FileManager.default.fileExists(atPath: encCache.path))
-        SessionIO.isEncryptionEnabled = false
-        SessionIO.overrideKey = nil
+        flags.restore()
 
         c.finish()
     }
