@@ -227,7 +227,7 @@ enum SelfTest {
                 print("input format: \(file.processingFormat)")
 
                 let collector = UpdateCollector()
-                guard let streamer = engine.makeStreamer(language: "en", onUpdate: { live in
+                guard let streamer = await engine.makeStreamer(language: "en", onUpdate: { live in
                     collector.update(live.text)
                 }) else { throw CaptureError.engineNotReady }
 
