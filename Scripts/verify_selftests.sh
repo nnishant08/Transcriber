@@ -25,6 +25,25 @@ run() {                       # run <label> <timeout-seconds> <args...>
   fi
 }
 
+# The two transcription tests read fixture WAVs from /tmp, which macOS periodically cleans — a
+# missing fixture then reads as a FAILING transcription test, which is a genuinely alarming false
+# alarm. Regenerate them when absent (identical `say` + `afconvert` recipe each time, so the
+# transcript text stays comparable across runs).
+ensure_fixture() {                     # ensure_fixture <path> <afconvert-args...> <text>
+  local path="$1"; shift
+  [ -f "$path" ] && return 0
+  local fmt="$1" rate="$2" chans="$3"; shift 3
+  echo "==> regenerating missing fixture $path"
+  local tmp; tmp="$(mktemp -t saidfixture).aiff"
+  say -o "$tmp" "$*" || { echo "!! could not synthesize $path"; return 1; }
+  afconvert -f "$fmt" -d "$rate" -c "$chans" "$tmp" "$path" || echo "!! could not convert $path"
+  rm -f "$tmp"
+}
+ensure_fixture /tmp/transcriber_test.wav WAVE LEI16@16000 1 \
+  "The quick brown fox jumps over the lazy dog. Transcription self test 123."
+ensure_fixture /tmp/tr_long_48k_stereo.wav WAVE LEI16@48000 2 \
+  "This is a longer recording used to exercise the streaming transcription pipeline. It contains several sentences so the rolling window has something to confirm. The quick brown fox jumps over the lazy dog. Transcription self test one two three. We are checking that live text grows without duplication."
+
 echo "=== Core (Prompt 0/1) ==="
 run "file transcription"        300 --selftest /tmp/transcriber_test.wav
 run "streaming + finalPass"     300 --selftest-stream /tmp/tr_long_48k_stereo.wav

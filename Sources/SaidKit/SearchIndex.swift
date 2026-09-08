@@ -147,10 +147,10 @@ public final class SearchIndex: @unchecked Sendable {
         return out
     }
 
-    /// Scan `transcript.md` for lines containing any query term, returning up to `limit` snippets,
+    /// Scan the transcript for lines containing any query term, returning up to `limit` snippets,
     /// each tagged with the nearest preceding `[mm:ss]` timestamp.
     static func extractSnippets(dir: URL, terms: [String], limit: Int) -> [SearchSnippet] {
-        guard let raw = SessionIO.readText(dir.appendingPathComponent("transcript.md")) else { return [] }
+        guard let raw = SessionIO.readText(SessionPaths.transcriptURL(in: dir)) else { return [] }
         // Drop the metadata header up to and including the first `---`, so the `**Date:** …:…:…`
         // line can't leak its wall-clock time as a fake snippet timestamp (legacy transcripts have
         // no in-body [mm:ss] → snippet timestamp is correctly nil).
@@ -185,7 +185,7 @@ public final class SearchIndex: @unchecked Sendable {
     // MARK: - Persistence
 
     private func transcriptMTime(_ dir: URL) -> Date {
-        (try? dir.appendingPathComponent("transcript.md").resourceValues(forKeys: [.contentModificationDateKey]))?
+        (try? SessionPaths.transcriptURL(in: dir).resourceValues(forKeys: [.contentModificationDateKey]))?
             .contentModificationDate ?? Date()
     }
 

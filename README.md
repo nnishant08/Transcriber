@@ -81,8 +81,13 @@ entitlement friction around audio capture for no benefit.
 
 ## Where your recordings live
 
-`~/Desktop/Transcripts/<date-time>/` — one self-contained, movable folder per session:
-`transcript.md` + `session.json`, plus `audio.m4a` and `screen.mp4` when they exist.
+`~/Desktop/Transcripts/<date-time>/` — one self-contained, movable folder per session: the
+transcript + `session.json`, plus `audio.m4a` and `screen.mp4` when they exist.
+
+The transcript is named after its session — `2026-09-01 14-32 Standup with Priya.md` — so the file
+still says what it is once it has been dragged out of its folder. Until the on-device title lands
+it is `<date> <time> Transcript.md`, and it is renamed when the title arrives. Sessions recorded
+before this change keep their `transcript.md`; nothing on disk was migrated.
 
 ---
 

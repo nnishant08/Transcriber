@@ -1,0 +1,117 @@
+# XcodeGen spec for the iOS app.
+#
+# WHY a spec AND a committed .xcodeproj: the prompt requires a fresh clone to build with no setup
+# step, so `Said-iOS.xcodeproj` is committed. But a hand-maintained pbxproj rots and merges badly,
+# so this spec is the source of truth and the project is regenerated from it (`xcodegen generate`).
+# Both are committed; the spec is what you edit.
+#
+# The macOS build is NOT affected — `Scripts/build_app.sh` still drives SPM directly and this
+# project is not involved in it.
+name: Said-iOS
+options:
+  bundleIdPrefix: com.nikhil
+  deploymentTarget:
+    iOS: "18.0"
+  createIntermediateGroups: true
+  generateEmptyDirectories: true
+
+packages:
+  SaidKit:
+    # RELATIVE path to the local package, so a fresh clone resolves with no setup step.
+    path: .
+
+settings:
+  base:
+    SWIFT_VERSION: "5.10"
+    IPHONEOS_DEPLOYMENT_TARGET: "18.0"
+    # No team is pinned: signing is the developer's, and hardcoding one would break a fresh clone.
+    CODE_SIGN_STYLE: Automatic
+    ENABLE_USER_SCRIPT_SANDBOXING: YES
+    SWIFT_EMIT_LOC_STRINGS: YES
+
+targets:
+  SaidiOS:
+    type: application
+    platform: iOS
+    sources:
+      - path: iOS/SaidiOS
+    dependencies:
+      - package: SaidKit
+        product: SaidKit
+    info:
+      path: iOS/SaidiOS/Info.plist
+      properties:
+        CFBundleDisplayName: Said
+        CFBundleShortVersionString: "1.0"
+        CFBundleVersion: "1"
+        UILaunchScreen:
+          UIColorName: LaunchBackground
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        # Recording continues with the screen locked and the app backgrounded.
+        UIBackgroundModes:
+          - audio
+        # Sessions are visible in the Files app. A feature, not an oversight: it is what
+        # "your recordings are yours" means in practice.
+        UIFileSharingEnabled: true
+        LSSupportsOpeningDocumentsInPlace: true
+        UIRequiredDeviceCapabilities:
+          - arm64
+        # Usage strings are REASONS, not requests.
+        NSMicrophoneUsageDescription: "Said needs the microphone to hear what you're recording. Audio is transcribed on this iPhone and never sent anywhere."
+        NSCameraUsageDescription: "Said uses the camera to read slides into your transcript. Photos stay on this iPhone."
+        NSFaceIDUsageDescription: "Face ID unlocks your sessions."
+        CFBundleDocumentTypes:
+          - CFBundleTypeName: Said Session
+            LSHandlerRank: Owner
+            CFBundleTypeRole: Editor
+            LSItemContentTypes: [com.nikhil.said.session]
+          - CFBundleTypeName: Audio or Video
+            LSHandlerRank: Alternate
+            CFBundleTypeRole: Viewer
+            LSItemContentTypes: [public.audio, public.movie]
+        # The .said type is EXPORTED by the Mac app; iOS imports it so AirDrop can hand one over.
+        UTImportedTypeDeclarations:
+          - UTTypeIdentifier: com.nikhil.said.session
+            UTTypeDescription: Said Session
+            UTTypeConformsTo: [public.data, public.archive]
+            UTTypeTagSpecification:
+              public.filename-extension: [said]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.nikhil.said
+        PRODUCT_NAME: Said
+        GENERATE_INFOPLIST_FILE: NO
+        TARGETED_DEVICE_FAMILY: "1"
+
+  SaidiOSTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: iOS/SaidiOSTests
+    dependencies:
+      - target: SaidiOS
+      - package: SaidKit
+        product: SaidKit
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.nikhil.said.tests
+        GENERATE_INFOPLIST_FILE: YES
+        # The app target is named SaidiOS but its PRODUCT_NAME is Said, so the default
+        # TEST_HOST (which uses the target name) points at a bundle that does not exist.
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Said.app/Said"
+        BUNDLE_LOADER: "$(TEST_HOST)"
+
+schemes:
+  SaidiOS:
+    build:
+      targets:
+        SaidiOS: all
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - SaidiOSTests
+    archive:
+      config: Release

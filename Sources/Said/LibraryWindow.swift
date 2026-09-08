@@ -283,7 +283,7 @@ final class LibraryModel: ObservableObject {
 
     /// Copy a session's transcript to the pasteboard as Markdown (v3's row context menu).
     func copyAsMarkdown(_ dirs: [URL]) {
-        let text = dirs.compactMap { SessionIO.readText($0.appendingPathComponent("transcript.md")) }
+        let text = dirs.compactMap { SessionIO.readText(SessionPaths.transcriptURL(in: $0)) }
             .joined(separator: "\n\n---\n\n")
         guard !text.isEmpty else { return }
         NSPasteboard.general.clearContents()

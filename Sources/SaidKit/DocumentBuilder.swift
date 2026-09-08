@@ -320,7 +320,7 @@ public enum DocumentBuilder {
     // MARK: Session folder layout
 
     /// A per-session folder `~/Desktop/Transcripts/<yyyy-MM-dd HH-mm-ss>/`. Self-contained and
-    /// movable: `transcript.md` + `session.json`, plus `audio.m4a` / `screen.mp4` when those exist.
+    /// movable: the transcript `.md` + `session.json`, plus `audio.m4a` / `screen.mp4` when those exist.
     public static func makeSessionFolder(date: Date, root: URL = SessionLocation.root) -> URL {
         let dir = root
             .appendingPathComponent(folderStamp.string(from: date), isDirectory: true)
@@ -328,7 +328,11 @@ public enum DocumentBuilder {
         return dir
     }
 
-    /// Write `transcript.md` + machine-readable `session.json` into the session folder.
+    /// Write the transcript + machine-readable `session.json` into the session folder.
+    ///
+    /// The transcript is named after the session (`2026-09-01 14-32 Standup with Priya.md`) unless
+    /// the folder already holds one, in which case that file is overwritten — so the live save, the
+    /// final save and the diarization re-render never leave two transcripts behind. See `SessionPaths`.
     public static func writeSession(_ doc: SessionDoc, to sessionDir: URL) {
         // `visual` is consulted for its side effect: it logs if the video-XOR-frames invariant is
         // violated, so a bad session is noisy at the write path as well as at every display path.
@@ -336,11 +340,11 @@ public enum DocumentBuilder {
         let md = markdown(meta: doc.meta, segments: doc.segments, frames: doc.frames)
         // Route through SessionIO so encryption-at-rest (Feature C4) is transparent. When encryption
         // is OFF (default) this is a byte-identical plain UTF-8 write — same bytes as before.
-        try? SessionIO.writeText(md, to: sessionDir.appendingPathComponent("transcript.md"))
+        try? SessionIO.writeText(md, to: SessionPaths.transcriptURL(in: sessionDir, for: doc.meta))
         writeSessionJSON(doc, to: sessionDir)
     }
 
-    /// Write ONLY `session.json`, leaving `transcript.md` untouched. Used by (a) migration, which must
+    /// Write ONLY `session.json`, leaving the transcript untouched. Used by (a) migration, which must
     /// preserve the original transcript bytes copied in as transcript.md, and (b) title/tag backfill,
     /// which only updates `meta` and must not re-render (and possibly reformat) the transcript.
     public static func writeSessionJSON(_ doc: SessionDoc, to sessionDir: URL) {

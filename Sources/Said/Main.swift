@@ -56,6 +56,11 @@ enum AppMain {
             SelfTest.runRetag(dir: positional(after: idx, in: args), force: args.contains("--force"))
             return
         }
+        if let idx = args.firstIndex(of: "--rename-transcripts") {
+            SelfTest.runRenameTranscripts(dir: positional(after: idx, in: args),
+                                          dryRun: args.contains("--dry-run"))
+            return
+        }
         if let idx = args.firstIndex(of: "--selftest-chat") {
             SelfTest.runChat(dir: positional(after: idx, in: args)); return
         }
@@ -114,6 +119,9 @@ enum AppMain {
             SelfTest.runBundle(dir: positional(after: idx, in: args)); return
         }
         if args.contains("--selftest-portability") { SelfTest.runPortability(); return }
+        if let idx = args.firstIndex(of: "--selftest-recovery") {
+            SelfTest.runRecovery(dir: positional(after: idx, in: args)); return
+        }
         if let idx = args.firstIndex(of: "--selftest-frames") {
             SelfTest.runFrames(dir: positional(after: idx, in: args)); return
         }
@@ -528,7 +536,84 @@ extension SelfTest {
         print(okOCR ? "OK (OCR block rendered)" : "FAIL (OCR block missing)")
         print(okNoOCR ? "OK (no OCR block when text is nil)" : "FAIL (spurious OCR block)")
 
-        let all = okOrder && okVideo && okMerged && okTie && okOCR && okNoOCR
+        // ---- Case 3: the transcript's FILE NAME (`SessionPaths`).
+        // A transcript is named after its session, so the file means something once it leaves the
+        // folder. Everything here is on disk, in a temp dir — never `~/Desktop/Transcripts`.
+        print("")
+        print("== document-builder self-test (file naming case) ==")
+        var okName = true
+        func nameCheck(_ label: String, _ cond: Bool) {
+            print((cond ? "OK   " : "FAIL ") + label); okName = okName && cond
+        }
+        let fm = FileManager.default
+        let nameRoot = fm.temporaryDirectory.appendingPathComponent("said-naming-\(UUID().uuidString)", isDirectory: true)
+        try? fm.createDirectory(at: nameRoot, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: nameRoot) }
+        func mds(_ dir: URL) -> [String] {
+            ((try? fm.contentsOfDirectory(atPath: dir.path)) ?? []).filter { $0.hasSuffix(".md") }.sorted()
+        }
+        func freshDir(_ name: String) -> URL {
+            let d = nameRoot.appendingPathComponent(name, isDirectory: true)
+            try? fm.createDirectory(at: d, withIntermediateDirectories: true)
+            return d
+        }
+        let t0 = Date(timeIntervalSince1970: 1_788_000_000)      // fixed, so the stamp is deterministic
+        let stamp = SessionPaths.transcriptFileName(for: SessionMeta(date: t0, sourceLabel: "Mic", modelName: "m"))
+            .replacingOccurrences(of: " Transcript.md", with: "")
+
+        // Untitled → "<stamp> Transcript.md", and no `transcript.md` anywhere.
+        let d1 = freshDir("untitled")
+        DocumentBuilder.writeSession(SessionDoc(meta: SessionMeta(date: t0, sourceLabel: "Mic", modelName: "m"),
+                                                segments: segments), to: d1)
+        nameCheck("untitled session → '\(stamp) Transcript.md'", mds(d1) == ["\(stamp) Transcript.md"])
+        nameCheck("…and no transcript.md is written", !fm.fileExists(atPath: d1.appendingPathComponent("transcript.md").path))
+
+        // Titled → the title is in the file name.
+        let d2 = freshDir("titled")
+        let titled = SessionMeta(date: t0, sourceLabel: "Mic", modelName: "m", title: "Standup with Priya")
+        DocumentBuilder.writeSession(SessionDoc(meta: titled, segments: segments), to: d2)
+        nameCheck("titled session → '\(stamp) Standup with Priya.md'", mds(d2) == ["\(stamp) Standup with Priya.md"])
+
+        // A re-save (the final pass, the diarization re-render) overwrites the ONE file.
+        DocumentBuilder.writeSession(SessionDoc(meta: titled, segments: segments), to: d2)
+        nameCheck("a second write leaves exactly one transcript", mds(d2).count == 1)
+
+        // Characters a file name cannot carry are stripped, and a blank title falls back.
+        let d3 = freshDir("unsafe")
+        DocumentBuilder.writeSession(SessionDoc(meta: SessionMeta(date: t0, sourceLabel: "Mic", modelName: "m",
+                                                                  title: "Q3/Q4: plans?"), segments: segments), to: d3)
+        nameCheck("unsafe characters stripped from the title", mds(d3) == ["\(stamp) Q3 Q4 plans.md"])
+        let d4 = freshDir("blank")
+        DocumentBuilder.writeSession(SessionDoc(meta: SessionMeta(date: t0, sourceLabel: "Mic", modelName: "m",
+                                                                  title: "   "), segments: segments), to: d4)
+        nameCheck("a blank title falls back to 'Transcript'", mds(d4) == ["\(stamp) Transcript.md"])
+
+        // The rename that carries the on-device title onto the file, bytes intact.
+        let d5 = freshDir("rename")
+        DocumentBuilder.writeSession(SessionDoc(meta: SessionMeta(date: t0, sourceLabel: "Mic", modelName: "m"),
+                                                segments: segments), to: d5)
+        let beforeRename = (try? Data(contentsOf: SessionPaths.transcriptURL(in: d5))) ?? Data()
+        let renamedTo = SessionPaths.renameTranscript(in: d5, toMatch: titled)
+        nameCheck("rename reports the new URL", renamedTo?.lastPathComponent == "\(stamp) Standup with Priya.md")
+        nameCheck("…leaving exactly one transcript", mds(d5) == ["\(stamp) Standup with Priya.md"])
+        nameCheck("…with byte-identical contents",
+                  (try? Data(contentsOf: SessionPaths.transcriptURL(in: d5))) == beforeRename && !beforeRename.isEmpty)
+        nameCheck("…and renaming again is a no-op", SessionPaths.renameTranscript(in: d5, toMatch: titled) == nil)
+
+        // Legacy: a folder that already uses `transcript.md` keeps using it — resolved, and written
+        // in place rather than beside a second file.
+        let d6 = freshDir("legacy")
+        try? Data("# Transcript\n\n---\n\n[00:00] legacy\n".utf8)
+            .write(to: d6.appendingPathComponent("transcript.md"))
+        nameCheck("a legacy folder is still a session folder", SessionPaths.isSessionFolder(d6))
+        nameCheck("…and resolves to transcript.md", SessionPaths.transcriptURL(in: d6).lastPathComponent == "transcript.md")
+        DocumentBuilder.writeSession(SessionDoc(meta: titled, segments: segments), to: d6)
+        nameCheck("…and a re-render writes transcript.md in place, not a second file", mds(d6) == ["transcript.md"])
+
+        // An empty folder resolves to the legacy name, so a missing transcript reads as it always did.
+        nameCheck("an empty folder is not a session folder", !SessionPaths.isSessionFolder(freshDir("empty")))
+
+        let all = okOrder && okVideo && okMerged && okTie && okOCR && okNoOCR && okName
         exit(all ? 0 : 2)
     }
 
@@ -760,6 +845,38 @@ extension SelfTest {
     /// Maintenance utility: fill missing tags on titled-but-untagged sessions (keeps the existing
     /// title; skips near-empty transcripts). One-time repair for sessions tagged by an older build
     /// whose parser dropped a markdown-wrapped `TAGS:` line. Defaults to ~/Desktop/Transcripts.
+    /// Maintenance utility (NOT a self-test): name every transcript after its session. The same pass
+    /// the app runs at launch — exposed so a library can be fixed up, or previewed, without launching.
+    static func runRenameTranscripts(dir: String?, dryRun: Bool) {
+        setbuf(stdout, nil)
+        print("== rename transcripts after their sessions\(dryRun ? " (--dry-run)" : "") ==")
+        let root = dir.map { URL(fileURLWithPath: $0) } ?? AppModel.transcriptsDirectory
+        print("root: \(root.path)")
+
+        var planned = 0
+        for d in SessionStore.sessionDirectoryURLs(root: root).sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
+            guard let current = SessionPaths.existingTranscript(in: d) else { continue }
+            let meta = DocumentBuilder.readSession(d)?.meta ?? SessionStore.synthMeta(dir: d)
+            let desired = SessionPaths.transcriptFileName(for: meta)
+            if current.lastPathComponent == desired {
+                print("  · \(d.lastPathComponent)/\(current.lastPathComponent) — already named")
+                continue
+            }
+            planned += 1
+            print("  \(dryRun ? "→" : "✓") \(d.lastPathComponent)/\(current.lastPathComponent) → \(desired)")
+        }
+        if dryRun {
+            print("would rename \(planned) transcript\(planned == 1 ? "" : "s") (nothing was changed)")
+            exit(0)
+        }
+        let renamed = SessionStore.migrateTranscriptNames(root: root)
+        print("renamed \(renamed) transcript\(renamed == 1 ? "" : "s")")
+        // Idempotence is the whole safety property of this pass — prove it here, not just in a test.
+        let again = SessionStore.migrateTranscriptNames(root: root)
+        print(again == 0 ? "OK (a second pass is a no-op)" : "FAIL (a second pass renamed \(again) more)")
+        exit(again == 0 ? 0 : 2)
+    }
+
     static func runRetag(dir: String?, force: Bool) {
         setbuf(stdout, nil)
         print("== retag (fill missing tags on titled sessions\(force ? ", --force" : "")) ==")
@@ -814,7 +931,7 @@ extension SelfTest {
         print("== chat self-test ==")
         print("FM available: \(Intelligence.isAvailable) — \(Intelligence.availabilityMessage() ?? "available")")
         let sessionDir = dir.map { URL(fileURLWithPath: $0) } ?? URL(fileURLWithPath: "/tmp/transcriber-chat-test")
-        if dir == nil || !FileManager.default.fileExists(atPath: sessionDir.appendingPathComponent("transcript.md").path) {
+        if dir == nil || !SessionPaths.isSessionFolder(sessionDir) {
             try? FileManager.default.removeItem(at: sessionDir)
             synthSession(sessionDir, segments: [
                 TranscriptSegment(start: 0, end: 5, text: "Welcome to the lecture on photosynthesis."),
@@ -837,7 +954,7 @@ extension SelfTest {
             let emptyDir = URL(fileURLWithPath: "/tmp/transcriber-chat-empty")
             try? FileManager.default.removeItem(at: emptyDir)
             synthSession(emptyDir, segments: [])
-            try? "# Transcript\n\n---\n".write(to: emptyDir.appendingPathComponent("transcript.md"), atomically: true, encoding: .utf8)
+            try? "# Transcript\n\n---\n".write(to: SessionPaths.transcriptURL(in: emptyDir), atomically: true, encoding: .utf8)
             let fb = await Intelligence.answerForSession(dir: emptyDir, question: "anything?", history: [])
             print("fallback (empty session): \(fb)")
 
@@ -935,7 +1052,7 @@ extension SelfTest {
             else { audioURL = URL(fileURLWithPath: "/tmp/transcriber-import-audio.wav"); _ = writeSineWav(to: audioURL, seconds: 2) }
             do {
                 let dir = try await Importer.run(url: audioURL, config: config, root: testRoot) { print("  [audio] \($0)") }
-                let hasFiles = FileManager.default.fileExists(atPath: dir.appendingPathComponent("transcript.md").path)
+                let hasFiles = SessionPaths.isSessionFolder(dir)
                     && FileManager.default.fileExists(atPath: dir.appendingPathComponent("session.json").path)
                 let decodes = DocumentBuilder.readSession(dir) != nil
                 print("audio session \(dir.lastPathComponent): files=\(hasFiles) decodes=\(decodes)")
@@ -1872,12 +1989,12 @@ extension SelfTest {
         let dir = URL(fileURLWithPath: "/tmp/transcriber-redact-session")
         try? FileManager.default.removeItem(at: dir)
         synthSession(dir, segments: segments)
-        let mdBefore = (try? String(contentsOf: dir.appendingPathComponent("transcript.md"), encoding: .utf8)) ?? ""
+        let mdBefore = (try? String(contentsOf: SessionPaths.transcriptURL(in: dir), encoding: .utf8)) ?? ""
         let sema = DispatchSemaphore(value: 0)
         Task.detached { await RedactionPass.run(dir: dir); sema.signal() }
         sema.wait()
-        let mdAfter = (try? String(contentsOf: dir.appendingPathComponent("transcript.md"), encoding: .utf8)) ?? ""
-        check("transcript.md unchanged by the pass", mdBefore == mdAfter && mdAfter.contains("john@example.com"))
+        let mdAfter = (try? String(contentsOf: SessionPaths.transcriptURL(in: dir), encoding: .utf8)) ?? ""
+        check("the verbatim transcript is unchanged by the pass", mdBefore == mdAfter && mdAfter.contains("john@example.com"))
         check("redactedText persisted in session.json", DocumentBuilder.readSession(dir)?.segments.contains { $0.redactedText != nil } ?? false)
         print(ok ? "OK" : "FAIL"); exit(ok ? 0 : 2)
     }
@@ -1954,8 +2071,8 @@ extension SelfTest {
         // index it, search a known term, assert NO cache file is written.
         let sdir = root.appendingPathComponent("session1")
         synthSession(sdir, segments: [TranscriptSegment(start: 0, end: 3, text: "photosynthesis converts sunlight into energy")])
-        let onDiskMD = (try? Data(contentsOf: sdir.appendingPathComponent("transcript.md"))) ?? Data()
-        check("transcript.md encrypted on disk", SessionIO.isEncryptedBlob(onDiskMD))
+        let onDiskMD = (try? Data(contentsOf: SessionPaths.transcriptURL(in: sdir))) ?? Data()
+        check("the transcript is encrypted on disk", SessionIO.isEncryptedBlob(onDiskMD))
         let cacheURL = root.appendingPathComponent("index-cache.json")
         let index = SearchIndex(cacheURL: cacheURL)
         index.rebuildFromDisk(root: root)
@@ -2028,7 +2145,7 @@ extension SelfTest {
         let frameBytes = Data((0..<512).map { UInt8($0 % 251) })
         try? SessionIO.writeData(frameBytes, to: images.appendingPathComponent("frame-0001.png"))
 
-        let originalMD = (try? Data(contentsOf: sessionDir.appendingPathComponent("transcript.md"))) ?? Data()
+        let originalMD = (try? Data(contentsOf: SessionPaths.transcriptURL(in: sessionDir))) ?? Data()
         let originalMeta = DocumentBuilder.readSession(sessionDir)?.meta
 
         // ---- Export.
@@ -2050,8 +2167,8 @@ extension SelfTest {
         } catch { check("import threw: \(error)", false) }
 
         if let dst = imported {
-            let roundMD = (try? SessionIO.readData(dst.appendingPathComponent("transcript.md"))) ?? Data()
-            check("transcript.md byte-identical", roundMD == originalMD)
+            let roundMD = (try? SessionIO.readData(SessionPaths.transcriptURL(in: dst))) ?? Data()
+            check("transcript byte-identical", roundMD == originalMD)
 
             let m = DocumentBuilder.readSession(dst)?.meta
             check("session id survived", m?.id == id)
@@ -2102,8 +2219,8 @@ extension SelfTest {
         synthSession(encDir, segments: segments,
                      meta: SessionMeta(id: encID, date: Date(timeIntervalSince1970: 1_786_003_600),
                                        sourceLabel: "Mic", modelName: "m", title: "Encrypted one"))
-        let encOnDisk = (try? Data(contentsOf: encDir.appendingPathComponent("transcript.md"))) ?? Data()
-        check("source transcript.md really is encrypted at rest", SessionIO.isEncryptedBlob(encOnDisk))
+        let encOnDisk = (try? Data(contentsOf: SessionPaths.transcriptURL(in: encDir))) ?? Data()
+        check("the source transcript really is encrypted at rest", SessionIO.isEncryptedBlob(encOnDisk))
 
         let encBundle = base.appendingPathComponent("encrypted.said")
         do { _ = try SessionBundle.write(sessionDir: encDir, to: encBundle) }
@@ -2115,7 +2232,7 @@ extension SelfTest {
         let encRoot = base.appendingPathComponent("dest-enc", isDirectory: true)
         try? fm.createDirectory(at: encRoot, withIntermediateDirectories: true)
         if let outcome = try? SessionBundle.read(bundle: encBundle, into: encRoot) {
-            let md = (try? Data(contentsOf: outcome.directory.appendingPathComponent("transcript.md"))) ?? Data()
+            let md = (try? Data(contentsOf: SessionPaths.transcriptURL(in: outcome.directory))) ?? Data()
             check("encrypted bundle opens without the origin key", !md.isEmpty && !SessionIO.isEncryptedBlob(md))
             check("…and its text is readable plaintext",
                   String(data: md, encoding: .utf8)?.contains("Quorum intersection") == true)
@@ -2218,6 +2335,129 @@ extension SelfTest {
     }
 
     /// E3 — every Theme token resolves in both appearances and the speaker slots stay distinct.
+    // MARK: - Phase 3 (iOS): incremental audio + crash recovery
+
+    /// The writer that makes "a recording is never lost" true. Headless; temp dirs only.
+    ///
+    /// The important case is the KILLED one: a raw file whose last write never happened must still
+    /// read back as valid samples, because that is what an iOS jetsam leaves behind.
+    /// Synchronously decode an audio file to 16 kHz mono (the self-test runner is not async).
+    static func awaitDecode(_ url: URL) -> [Float] {
+        let sema = DispatchSemaphore(value: 0)
+        var out: [Float] = []
+        Task { out = (try? await AudioFileIO.decodeTo16kMono(url: url)) ?? []; sema.signal() }
+        sema.wait()
+        return out
+    }
+
+    static func runRecovery(dir: String?) {
+        setbuf(stdout, nil)
+        print("== incremental audio + recovery self-test ==")
+        var ok = true
+        func check(_ l: String, _ c: Bool) { print("  \(c ? "✓" : "✗") \(l)"); ok = ok && c }
+
+        let fm = FileManager.default
+        let root = dir.map { URL(fileURLWithPath: $0) }
+            ?? fm.temporaryDirectory.appendingPathComponent("said-recovery-selftest", isDirectory: true)
+        try? fm.removeItem(at: root)
+        try? fm.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: root) }
+
+        // A 3-second 440 Hz tone, delivered in realistic ~0.1 s capture buffers.
+        let total = 48_000
+        let tone = (0..<total).map { sinf(2 * .pi * 440 * Float($0) / 16_000) * 0.25 }
+        let chunk = 1_600
+
+        // ---- Clean run: capture → finish → audio.m4a.
+        let cleanDir = root.appendingPathComponent("clean", isDirectory: true)
+        guard let writer = try? StreamingAudioWriter(sessionDir: cleanDir) else {
+            check("writer opens", false); print("FAIL"); exit(2)
+        }
+        check("writer opens", writer.isOpen)
+        for i in stride(from: 0, to: total, by: chunk) {
+            writer.append(Array(tone[i..<min(total, i + chunk)]))
+        }
+        writer.flush()
+        check("samples reach disk DURING capture (not just at stop)", writer.sampleCount == total)
+        check("…and the raw file exists mid-recording",
+              fm.fileExists(atPath: cleanDir.appendingPathComponent(StreamingAudioWriter.rawFilename).path))
+        check("reported duration is right (\(String(format: "%.2f", writer.seconds))s)",
+              abs(writer.seconds - 3.0) < 0.01)
+
+        let out = writer.finish()
+        check("finish() produced audio.m4a", out?.lastPathComponent == "audio.m4a")
+        check("raw file cleaned up after finish",
+              !fm.fileExists(atPath: cleanDir.appendingPathComponent(StreamingAudioWriter.rawFilename).path))
+        if let out {
+            let back = awaitDecode(out)
+            check("round-trip duration survives (\(back.count) samples)",
+                  abs(Double(back.count) / 16_000 - 3.0) < 0.25)
+        }
+
+        // ---- The KILL case: writer never finished, raw file left behind.
+        let killDir = root.appendingPathComponent("2026-08-20 09-00-00", isDirectory: true)
+        guard let dying = try? StreamingAudioWriter(sessionDir: killDir) else {
+            check("second writer opens", false); print("FAIL"); exit(2)
+        }
+        for i in stride(from: 0, to: total, by: chunk) {
+            dying.append(Array(tone[i..<min(total, i + chunk)]))
+        }
+        dying.flush()
+        RecoveryState(sessionID: UUID(), startedAt: Date(timeIntervalSince1970: 1_800_000_000),
+                      accumulatedPause: 12.5, sourceLabel: "This room",
+                      modelName: "openai_whisper-base.en").write(to: killDir)
+        // Simulate the kill: drop the writer WITHOUT calling finish(). Also lop off a byte, because
+        // a process killed mid-write leaves a trailing partial sample.
+        let rawURL = killDir.appendingPathComponent(StreamingAudioWriter.rawFilename)
+        if let h = try? FileHandle(forUpdating: rawURL) {
+            let size = (try? h.seekToEnd()) ?? 0
+            try? h.truncate(atOffset: max(0, size - 1))   // a torn final sample
+            try? h.close()
+        }
+
+        let unfinished = RecoveryScanner.unfinishedSessions(root: root)
+        check("scanner finds the unfinished session",
+              unfinished.contains { $0.lastPathComponent == killDir.lastPathComponent })
+        check("…and does NOT flag the cleanly-finished one",
+              !unfinished.contains { $0.lastPathComponent == "clean" })
+
+        let state = RecoveryState.read(from: killDir)
+        check("recovery state round-trips", state != nil)
+        check("…preserving accumulated pause (the timeline depends on it)",
+              state?.accumulatedPause == 12.5)
+        check("…and the source label", state?.sourceLabel == "This room")
+
+        let salvaged = StreamingAudioWriter.readRaw(at: rawURL) ?? []
+        check("a TORN raw file still reads back (\(salvaged.count) samples)",
+              salvaged.count >= total - 1 && salvaged.count <= total)
+        let recovered = StreamingAudioWriter.convertRaw(at: rawURL)
+        check("recovery converts it to audio.m4a", recovered?.lastPathComponent == "audio.m4a")
+        if let recovered {
+            let back = awaitDecode(recovered)
+            check("recovered audio is ~3s, not silence", abs(Double(back.count) / 16_000 - 3.0) < 0.25)
+            let peak = back.map { abs($0) }.max() ?? 0
+            check("recovered audio carries real signal (peak \(String(format: "%.2f", peak)))", peak > 0.1)
+        }
+        RecoveryState.clear(in: killDir)
+        check("clearing recovery state un-flags the session",
+              RecoveryScanner.unfinishedSessions(root: root).isEmpty)
+
+        // ---- Reopening an existing raw file APPENDS rather than truncating.
+        let resumeDir = root.appendingPathComponent("resume", isDirectory: true)
+        if let a = try? StreamingAudioWriter(sessionDir: resumeDir) {
+            a.append(Array(tone[0..<chunk])); a.flush()
+            let first = a.sampleCount
+            try? FileHandle(forWritingTo: resumeDir.appendingPathComponent(StreamingAudioWriter.rawFilename)).close()
+            if let b = try? StreamingAudioWriter(sessionDir: resumeDir) {
+                check("reopening picks up the existing length", b.sampleCount == first)
+                b.append(Array(tone[0..<chunk])); b.flush()
+                check("…and appends rather than truncating", b.sampleCount == first * 2)
+            } else { check("reopen", false) }
+        } else { check("resume writer opens", false) }
+
+        print(ok ? "OK" : "FAIL"); exit(ok ? 0 : 2)
+    }
+
     // MARK: - Phase 2 (visual timeline)
 
     /// Render a synthetic "slide": a light card with dark headline + bullet text, drawn with
@@ -2373,7 +2613,7 @@ extension SelfTest {
             check("frames survive with their OCR text", reread?.frames.first?.text == text)
 
             // ---- R1: markdown interleaving + the line-leading-anchor contract.
-            let md = (try? SessionIO.readText(framesDir.appendingPathComponent("transcript.md"))) ?? ""
+            let md = (try? SessionIO.readText(SessionPaths.transcriptURL(in: framesDir))) ?? ""
             let iOpen = md.range(of: "[00:00] Opening")?.lowerBound
             let iFrame1 = md.range(of: "![00:12]")?.lowerBound
             let iClose = md.range(of: "[00:20] Closing")?.lowerBound

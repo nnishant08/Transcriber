@@ -174,7 +174,7 @@ public enum Theme {
         speakerPalette[(max(1, slot) - 1) % speakerPalette.count]
     }
     /// Chip background for a 1-based speaker slot.
-    static func speakerSoft(_ slot: Int) -> Color { speakerColor(slot).opacity(0.15) }
+    public static func speakerSoft(_ slot: Int) -> Color { speakerColor(slot).opacity(0.15) }
 
     // MARK: Radii — up from 12/7 to match the identity's softer geometry.
     public static let windowRadius: CGFloat = 14

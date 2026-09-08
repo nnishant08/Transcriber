@@ -184,12 +184,15 @@ public enum SessionIO {
     private static func contentFiles(in dir: URL) -> [URL] {
         let fm = FileManager.default
         var urls: [URL] = []
-        for name in ["transcript.md", "session.json", "transcript.redacted.md", "audio.m4a", "audio.caf"] {
+        for name in ["session.json", "audio.m4a", "audio.caf"] {
             let u = dir.appendingPathComponent(name); if fm.fileExists(atPath: u.path) { urls.append(u) }
         }
-        // source.* (imported originals) + every image.
+        // Every `.md` (the transcript is named after its session, so it has no fixed name — see
+        // `SessionPaths`) + source.* (imported originals) + every image.
         if let entries = try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil) {
-            urls += entries.filter { $0.lastPathComponent.hasPrefix("source.") }
+            urls += entries.filter {
+                $0.pathExtension.lowercased() == "md" || $0.lastPathComponent.hasPrefix("source.")
+            }
         }
         let images = dir.appendingPathComponent("images")
         if let imgs = try? fm.contentsOfDirectory(at: images, includingPropertiesForKeys: nil) {

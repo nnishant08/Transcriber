@@ -48,7 +48,7 @@ public enum SessionBundleError: Error, LocalizedError {
 
     public var errorDescription: String? {
         switch self {
-        case .notASession(let u):     return "\(u.lastPathComponent) is not a session folder (no transcript.md)."
+        case .notASession(let u):     return "\(u.lastPathComponent) is not a session folder (no transcript)."
         case .archiveFailed(let m):   return "Couldn't write the .said bundle: \(m)"
         case .extractFailed(let m):   return "Couldn't read the .said bundle: \(m)"
         case .badManifest(let m):     return "That .said file is missing or has a damaged manifest: \(m)"
@@ -90,7 +90,7 @@ public enum SessionBundle {
     @discardableResult
     public static func write(sessionDir: URL, to output: URL) throws -> URL {
         let fm = FileManager.default
-        guard fm.fileExists(atPath: sessionDir.appendingPathComponent("transcript.md").path) else {
+        guard SessionPaths.isSessionFolder(sessionDir) else {
             throw SessionBundleError.notASession(sessionDir)
         }
 
@@ -174,8 +174,8 @@ public enum SessionBundle {
         guard manifest.formatVersion <= SessionBundleManifest.currentFormatVersion else {
             throw SessionBundleError.unsupportedVersion(manifest.formatVersion)
         }
-        guard fm.fileExists(atPath: payload.appendingPathComponent("transcript.md").path) else {
-            throw SessionBundleError.extractFailed("the bundle has no transcript.md")
+        guard SessionPaths.isSessionFolder(payload) else {
+            throw SessionBundleError.extractFailed("the bundle has no transcript")
         }
 
         // Collision rule — deterministic: same id ⇒ don't import, don't duplicate.

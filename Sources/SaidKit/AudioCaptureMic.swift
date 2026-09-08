@@ -28,11 +28,6 @@ public final class AudioCaptureMic: @unchecked Sendable {
     #endif
     private var restartScheduled = false
 
-    // PHASE 2 (iOS): `AVAudioSession` configuration attaches here — set the `.record` (or
-    // `.playAndRecord`) category with `.mixWithOthers`, activate it before `startEngine`, and
-    // deactivate on `stop`. Deliberately NOT added now: it is an iOS-runtime concern with no
-    // macOS counterpart, and Phase 1 changes no behaviour.
-
     /// Fired (main thread) after the capture successfully rebuilt around a new input device.
     public var onRestart: ((String) -> Void)?
     /// Fired (main thread) when the capture could not be rebuilt after repeated attempts.
@@ -93,6 +88,17 @@ public final class AudioCaptureMic: @unchecked Sendable {
     // MARK: - Engine (always on `control`)
 
     private func startEngine(sink: any SampleReceiver) throws {
+        // PHASE 3 (iOS): the audio session is configured and activated HERE, not in `start(sink:)`.
+        //
+        // `startEngine` has two callers — `start(sink:)` and `restart(reason:)`. If activation lived
+        // only in `start`, then every device-change rebuild and every `forceRestart` would run
+        // against a possibly-deactivated session, `inputFormat` would come back at 0 Hz, and the
+        // guard below would throw `CaptureError.micDenied` — whose message sends the user to the
+        // microphone privacy settings for what is actually a session-activation bug.
+        #if !os(macOS)
+        try configureAudioSessionForRecording()
+        #endif
+
         let engine = AVAudioEngine()
         let input = engine.inputNode
         // Tap in the hardware's native input format; the resampler handles conversion.
@@ -147,6 +153,29 @@ public final class AudioCaptureMic: @unchecked Sendable {
         }
     }
 
+    #if !os(macOS)
+    /// Category `.record`, mode `.default`, plus Bluetooth when the user has opted in.
+    ///
+    /// Bluetooth is OFF by default and is a deliberate choice, not an oversight: routing the mic
+    /// over HFP drops it to a narrowband mono link that is audibly worse than the built-in mic.
+    /// The UI states that cost where the toggle lives.
+    public static var allowsBluetoothInput = false
+
+    private func configureAudioSessionForRecording() throws {
+        let session = AVAudioSession.sharedInstance()
+        var options: AVAudioSession.CategoryOptions = []
+        if Self.allowsBluetoothInput { options.insert(.allowBluetooth) }
+        try session.setCategory(.record, mode: .default, options: options)
+        try session.setActive(true)
+    }
+
+    /// Hand the session back, letting whatever was playing before resume.
+    public func deactivateAudioSession() {
+        do { try AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation) }
+        catch { NSLog("[Mic] session deactivate failed: \(error)") }
+    }
+    #endif
+
     /// Coalesce the burst of notifications a single device switch produces into one rebuild.
     private func scheduleRestart(reason: String) {
         guard running, !restartScheduled else { return }
@@ -191,8 +220,19 @@ public final class AudioCaptureMic: @unchecked Sendable {
         #else
         routeObserver = NotificationCenter.default.addObserver(
             forName: AVAudioSession.routeChangeNotification, object: nil, queue: nil
-        ) { [weak self] _ in
-            self?.control.async { self?.scheduleRestart(reason: "input device changed") }
+        ) { [weak self] note in
+            // REASON FILTERING IS LOAD-BEARING. `setActive(true)` itself posts a route change with
+            // reason `.categoryChange`; rebuilding on every notification would make activation
+            // trigger a rebuild, which re-activates, which posts again — a loop. Only an actual
+            // change of available hardware justifies rebuilding the engine.
+            let raw = note.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt ?? 0
+            let reason = AVAudioSession.RouteChangeReason(rawValue: raw) ?? .unknown
+            switch reason {
+            case .newDeviceAvailable, .oldDeviceUnavailable:
+                self?.control.async { self?.scheduleRestart(reason: "input device changed") }
+            default:
+                break   // .categoryChange / .override / .wakeFromSleep / .routeConfigurationChange
+            }
         }
         #endif
     }

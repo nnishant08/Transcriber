@@ -75,12 +75,34 @@ fi
 # rebuilds. Run Scripts/setup_signing.sh once to create it; otherwise fall back to ad-hoc
 # (whose signature — and thus TCC identity — changes every build).
 SIGN_IDENTITY="Transcriber Local Signing"
+SIGN_KEYCHAIN="$HOME/Library/Keychains/transcriber-signing.keychain-db"
+
+# A REBOOT LOCKS THE KEYCHAIN, and a locked identity still appears in `find-identity` by name.
+# Grepping for the name alone therefore reports success while codesign quietly falls back to an
+# ad-hoc signature — whose designated requirement is a bare cdhash, which changes every build and
+# silently invalidates the Microphone / Screen Recording grants this identity exists to preserve.
+# Unlock first, then require a VALID identity, and say so loudly when there isn't one.
+if [[ -f "$SIGN_KEYCHAIN" ]]; then
+    security unlock-keychain -p "transcriber-local" "$SIGN_KEYCHAIN" 2>/dev/null || true
+fi
+
 if security find-identity -p codesigning 2>/dev/null | grep -q "$SIGN_IDENTITY"; then
     echo "==> Codesigning with stable identity '$SIGN_IDENTITY'…"
     codesign --force --deep --sign "$SIGN_IDENTITY" "$APP"
 else
     echo "==> Codesigning ad-hoc (tip: run Scripts/setup_signing.sh for TCC-persistent signing)…"
     codesign --force --deep --sign - "$APP"
+fi
+
+# Verify what we actually got, rather than what we intended. A cdhash requirement means the
+# signature is ad-hoc and TCC grants will NOT survive this rebuild.
+REQ="$(codesign -d -r- "$APP" 2>&1 | grep '^designated' || true)"
+if [[ "$REQ" == *"cdhash"* ]]; then
+    echo "!! WARNING: signed AD-HOC — TCC grants (Microphone / Screen Recording) will not persist."
+    echo "!!   $REQ"
+    echo "!!   Fix: security unlock-keychain \"$SIGN_KEYCHAIN\"   (or re-run Scripts/setup_signing.sh)"
+else
+    echo "    $REQ"
 fi
 codesign --verify --verbose=2 "$APP" 2>&1 | sed 's/^/    /' || true
 

@@ -42,7 +42,7 @@ enum Sharing {
     @discardableResult
     static func writeToObsidian(dir: URL, vaultFolder: URL) throws -> URL {
         let meta = DocumentBuilder.readSession(dir)?.meta
-        let base = sanitizeFilename(meta?.title?.isEmpty == false ? meta!.title! : dir.lastPathComponent)
+        let base = exportFilename(meta?.title?.isEmpty == false ? meta!.title! : dir.lastPathComponent)
         var dest = vaultFolder.appendingPathComponent(base + ".md")
         var n = 2
         while FileManager.default.fileExists(atPath: dest.path) {
@@ -66,12 +66,6 @@ enum Sharing {
     }
 
     /// Public filename sanitizer for save panels / exports (strips path-illegal characters).
-    static func exportFilename(_ s: String) -> String { sanitizeFilename(s) }
-
-    private static func sanitizeFilename(_ s: String) -> String {
-        let bad = CharacterSet(charactersIn: "/\\:?%*|\"<>")
-        let cleaned = s.components(separatedBy: bad).joined(separator: " ")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        return cleaned.isEmpty ? "Transcript" : String(cleaned.prefix(120))
-    }
+    /// Same rules the transcript file itself is named by — one sanitizer, in SaidKit.
+    static func exportFilename(_ s: String) -> String { SessionPaths.exportFilename(s) }
 }

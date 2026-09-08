@@ -285,6 +285,11 @@ struct SettingsView: View {
                 Toggle("Record the screen with every session", isOn: $model.screenRecordingEnabled)
                     .disabled(model.isRecording)
 
+                Toggle("Ask which screen to record each time", isOn: $model.askScreenTargetEachTime)
+                    .disabled(model.isRecording)
+                Text("With more than one display connected, Said asks before it starts and records the one you pick — so a recording never silently lands on the laptop screen while you're presenting on the monitor. With a single display, or with a window or app chosen below, it doesn't ask.")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+
                 Picker("Record", selection: $model.screenTarget) {
                     // Ensure the current selection is always representable.
                     if !model.availableTargets.contains(where: { $0.target == model.screenTarget }) {

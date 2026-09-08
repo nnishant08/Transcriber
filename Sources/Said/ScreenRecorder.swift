@@ -44,6 +44,48 @@ struct ScreenTargetOption: Identifiable, Hashable {
     func hash(into h: inout Hasher) { h.combine(id) }
 }
 
+/// Asks which display to record, right before a screen recording starts.
+///
+/// Modal and app-modal on purpose: ⌥⌘S is a global hotkey, so the question can arrive while another
+/// app is frontmost and the Said window may not even be open — a sheet would have nothing to hang
+/// off, and a passive prompt would be missed while the user thinks recording has begun.
+@MainActor
+enum ScreenTargetPrompt {
+
+    /// The chosen display, or nil if the user cancelled (which cancels the recording).
+    static func choose(from options: [ScreenTargetOption], current: ScreenTarget) -> ScreenTarget? {
+        guard !options.isEmpty else { return nil }
+        NSApp.activate(ignoringOtherApps: true)
+
+        let alert = NSAlert()
+        alert.messageText = "Which screen do you want to record?"
+        alert.informativeText = "Said records this display for the whole session, along with the audio."
+        alert.alertStyle = .informational
+
+        let popup = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 360, height: 25))
+        options.forEach { popup.addItem(withTitle: $0.label) }
+        popup.selectItem(at: preselected(in: options, current: current))
+        alert.accessoryView = popup
+
+        alert.addButton(withTitle: "Record")
+        alert.addButton(withTitle: "Cancel")
+        // Focus the popup, so ↑/↓ then Return picks a screen without reaching for the mouse.
+        alert.window.initialFirstResponder = popup
+
+        guard alert.runModal() == .alertFirstButtonReturn else { return nil }
+        let i = popup.indexOfSelectedItem
+        return options.indices.contains(i) ? options[i].target : nil
+    }
+
+    /// Preselect what the session would have recorded anyway: the configured display, else the main
+    /// one — so Return alone reproduces the old behaviour and the dialog costs one keystroke.
+    static func preselected(in options: [ScreenTargetOption], current: ScreenTarget) -> Int {
+        if case .display = current, let i = options.firstIndex(where: { $0.target == current }) { return i }
+        let main = CGMainDisplayID()
+        return options.firstIndex { $0.target == .display(main) } ?? 0
+    }
+}
+
 /// Recording size/rate preset. A screen recording is the biggest file this app writes, so the
 /// default deliberately sits at 1080p/24 — sharp enough to read code and slides, roughly a tenth
 /// the bytes of native Retina at 60 fps.
@@ -333,6 +375,28 @@ final class ScreenRecorder: NSObject, SampleReceiver, SCStreamOutput, SCStreamDe
     }
 
     // MARK: Target listing for the Settings picker
+
+    /// Just the displays, named the way the user's Displays settings names them
+    /// ("Built-in Retina Display", "DELL U2720Q") rather than by index — an index tells you nothing
+    /// about which physical screen it is, which is the entire question being asked.
+    static func availableDisplays() async -> [ScreenTargetOption] {
+        guard let content = try? await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+        else { return [] }
+        let main = CGMainDisplayID()
+        return content.displays.map { d in
+            var label = displayName(d.displayID) ?? "Display \(d.displayID)"
+            label += " — \(Int(d.frame.width))×\(Int(d.frame.height))"
+            if d.displayID == main { label += " (main)" }
+            return ScreenTargetOption(id: "display:\(d.displayID)", label: label, target: .display(d.displayID))
+        }
+    }
+
+    /// The name macOS shows for a display, matched by ID through `NSScreen`.
+    static func displayName(_ id: CGDirectDisplayID) -> String? {
+        NSScreen.screens.first {
+            ($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value == id
+        }?.localizedName
+    }
 
     static func availableTargets() async -> [ScreenTargetOption] {
         guard let content = try? await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true) else {

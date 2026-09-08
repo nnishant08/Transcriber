@@ -65,14 +65,14 @@ public enum SessionStore {
 
     // MARK: - Listing
 
-    /// All session folders under `root` (a directory containing a `transcript.md`), as URLs.
+    /// All session folders under `root` (a directory containing a transcript `.md`), as URLs.
     public static func sessionDirectoryURLs(root: URL = SessionStore.root) -> [URL] {
         let fm = FileManager.default
         guard let entries = try? fm.contentsOfDirectory(at: root, includingPropertiesForKeys: [.isDirectoryKey],
                                                         options: [.skipsHiddenFiles]) else { return [] }
         return entries.filter { url in
             ((try? url.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true) &&
-            fm.fileExists(atPath: url.appendingPathComponent("transcript.md").path)
+            SessionPaths.isSessionFolder(url)
         }
     }
 
@@ -105,11 +105,11 @@ public enum SessionStore {
 
     // MARK: - Plain text / snippets (markdown → readable text)
 
-    /// Read `transcript.md` and strip it to readable plain text (drops the metadata header, `[mm:ss]`
+    /// Read the transcript and strip it to readable plain text (drops the metadata header, `[mm:ss]`
     /// prefixes, image lines, and `<details>`/code fences while keeping OCR text). Used for title
     /// generation and snippets. Returns "" if the file is missing.
     public static func transcriptPlainText(dir: URL) -> String {
-        guard let raw = SessionIO.readText(dir.appendingPathComponent("transcript.md")) else { return "" }
+        guard let raw = SessionIO.readText(SessionPaths.transcriptURL(in: dir)) else { return "" }
         return plainText(fromMarkdown: raw)
     }
 
@@ -145,7 +145,7 @@ public enum SessionStore {
     /// chat / summary / chapters so the model can cite `[mm:ss]`. (Legacy sessions without in-body
     /// timestamps degrade to plain lines.) Clipped to `maxChars` to respect the model's context window.
     public static func timestampedTranscript(dir: URL, maxChars: Int = 12_000) -> String {
-        guard let raw = SessionIO.readText(dir.appendingPathComponent("transcript.md")) else { return "" }
+        guard let raw = SessionIO.readText(SessionPaths.transcriptURL(in: dir)) else { return "" }
         var lines = raw.components(separatedBy: "\n")
         if let sep = lines.firstIndex(where: { $0.trimmingCharacters(in: .whitespaces) == "---" }) {
             lines.removeFirst(sep + 1)
@@ -176,7 +176,7 @@ public enum SessionStore {
             return doc.segments
         }
         // Derive from transcript.md [mm:ss] lines.
-        guard let raw = SessionIO.readText(dir.appendingPathComponent("transcript.md")) else { return [] }
+        guard let raw = SessionIO.readText(SessionPaths.transcriptURL(in: dir)) else { return [] }
         var lines = raw.components(separatedBy: "\n")
         if let sep = lines.firstIndex(where: { $0.trimmingCharacters(in: .whitespaces) == "---" }) {
             lines.removeFirst(sep + 1)
@@ -248,11 +248,40 @@ public enum SessionStore {
         return String(s[s.index(after: close)...]).trimmingCharacters(in: .whitespaces)
     }
 
+    // MARK: - Transcript naming pass
+
+    /// Rename every session's transcript to carry its session's date (and title) — the launch pass
+    /// that brings an existing library up to the naming rule in `SessionPaths`.
+    ///
+    /// Deliberately a RENAME and nothing else: no copy, no delete, no re-render, no `session.json`
+    /// write. A folder whose transcript is already correctly named is untouched, so the second run
+    /// (and every run after it) is a no-op, and a destination that somehow already exists is skipped
+    /// rather than overwritten. The date comes from `session.json`, or from the folder name when a
+    /// folder has no readable one — which is why even a session this app never titled still ends up
+    /// with a name that says when it happened.
+    ///
+    /// Returns the number of files renamed.
+    @discardableResult
+    public static func migrateTranscriptNames(root: URL = SessionStore.root) -> Int {
+        var renamed = 0
+        for dir in sessionDirectoryURLs(root: root) {
+            let meta = DocumentBuilder.readSession(dir)?.meta ?? synthMeta(dir: dir)
+            if SessionPaths.renameTranscript(in: dir, toMatch: meta) != nil { renamed += 1 }
+        }
+        if renamed > 0 { NSLog("[Rename] gave \(renamed) transcript\(renamed == 1 ? "" : "s") a session-derived name") }
+        return renamed
+    }
+
     // MARK: - Title / tag backfill
 
     /// Ensure `session.json` has a non-empty title (generating title+tags on-device if missing).
     /// Idempotent: returns immediately if a title already exists unless `force`. Updates only
-    /// `session.json` (never re-renders transcript.md), then notifies + re-indexes. Never throws.
+    /// `session.json` (never re-renders the transcript) and RENAMES the transcript file to carry the
+    /// new title, then notifies + re-indexes. Never throws.
+    ///
+    /// The rename rides here rather than anywhere else because this is the moment a session stops
+    /// being anonymous — and it inherits this function's laziness for free: a session that is
+    /// already titled returns before the rename, so an existing library is never mass-renamed.
     public static func ensureTitle(dir: URL, force: Bool = false) async {
         guard var doc = DocumentBuilder.readSession(dir) else { return }
         if !force, let raw = doc.meta.title?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty {
@@ -261,6 +290,7 @@ public enum SessionStore {
             let cleaned = TitleGenerator.sanitizeTitle(raw)
             guard !cleaned.isEmpty, cleaned != raw else { return }
             doc.meta.title = cleaned
+            SessionPaths.renameTranscript(in: dir, toMatch: doc.meta)
             DocumentBuilder.writeSessionJSON(doc, to: dir)
             SearchIndex.shared.index(sessionDir: dir)
             postSessionSaved(dir)
@@ -270,6 +300,7 @@ public enum SessionStore {
         let result = await TitleGenerator.generate(transcript: text, date: doc.meta.date)
         doc.meta.title = result.title
         doc.meta.tags = result.tags
+        SessionPaths.renameTranscript(in: dir, toMatch: doc.meta)
         DocumentBuilder.writeSessionJSON(doc, to: dir)
         SearchIndex.shared.index(sessionDir: dir)
         postSessionSaved(dir)
@@ -372,7 +403,10 @@ public enum SessionStore {
         for file in legacy.sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
             let base = file.deletingPathExtension().lastPathComponent
             let folder = root.appendingPathComponent(base, isDirectory: true)
-            let destTranscript = folder.appendingPathComponent("transcript.md")
+            // Legacy migration deliberately keeps the legacy NAME: these are pre-existing sessions
+            // whose bytes are copied verbatim and verified, and renaming them buys nothing a reader
+            // can't already resolve. New sessions get a session-derived name (`SessionPaths`).
+            let destTranscript = folder.appendingPathComponent(SessionPaths.legacyTranscriptName)
 
             // Interrupted prior run: folder already has transcript.md → just remove the stray flat file.
             if fm.fileExists(atPath: destTranscript.path) {

@@ -123,7 +123,12 @@ final). Empty = no change.
 **Send to Obsidian vault** (set the vault folder in Settings). Copy is available on the summary.
 
 **Screen recording** — press **⌥⌘S** (or *Record screen + audio*) and Said records the screen **and** the
-audio in a single session: a `screen.mp4` in the session folder, plus the usual live transcript. Choose
+audio in a single session: a `screen.mp4` in the session folder, plus the usual live transcript.
+**With more than one display connected it asks which screen to record before it starts** — named the
+way your Displays settings names them ("Built-in Retina Display", "MSI MAG342CQ") — and records the
+one you pick, so a recording never silently lands on the laptop screen while you present on the
+monitor. Return accepts the highlighted default; Cancel cancels the recording. With one display, or
+with a window/app chosen in Settings, it doesn't ask (and the asking can be turned off there). Choose
 what to record (main display, another display, a window, or one app's windows) and the quality
 (720p/15 · 1080p/24 · 1440p/30) in Settings; audio defaults to **Mic + System** so you capture both the
 call and yourself. A live preview shows what's being recorded. Pausing (⌥⌘P) cuts that time out of the
@@ -140,8 +145,12 @@ seeks it. Leave *Record the screen with every session* on in Settings if you alw
 when a long transcription / summary / import finishes; degrades silently if denied).
 
 **Where things live** — sessions in `~/Desktop/Transcripts/<date-time>/`. Each folder is self-contained and
-movable (`transcript.md` + `session.json` [+ `audio.m4a` / `source.*` for playback] [+ `screen.mp4` when
-the screen was recorded]).
+movable (the transcript + `session.json` [+ `audio.m4a` / `source.*` for playback] [+ `screen.mp4` when
+the screen was recorded]). **The transcript is named after its session** — `2026-09-01 14-32 Standup
+with Priya.md` — so it still says what it is once you've dragged it out of the folder, emailed it or
+dropped it in a notes app. Before the on-device title exists it is `<date> <time> Transcript.md`, and
+it renames itself the moment the title is generated. Sessions recorded before this change keep the
+old `transcript.md` name and open exactly as they always did.
 
 **Models** — WhisperKit, on-device: *base.en* (fastest, real-time), *small.en* (balanced), *base* /
 *small* (multilingual siblings), *large-v3-turbo* (most accurate, multilingual). Chosen in Settings;
@@ -350,6 +359,8 @@ were wrong.
   captures them, and it never decides when a frame should be taken.
 - `Theme.swift` — design tokens (see **Design system**). Imports SwiftUI ONLY; resolution goes
   through `PlatformUI`, so Phase 2's iOS UI uses these same tokens.
+- `SessionPaths.swift` — the transcript's name and the single resolver for it (see **Transcript file
+  name**). No transcript path is composed anywhere else.
 - Everything else that was portable, unchanged in behaviour: `DocumentBuilder` · `SessionStore` ·
   `SessionIO` · `SearchIndex` · `TitleGenerator` · `Intelligence` · `Summarizer` · `Generation` ·
   `GenerationTemplates` · `Packs` (+ `Packs/*.json`) · `Entitlements` · `Retention` · `Redaction` ·
@@ -454,6 +465,9 @@ were wrong.
   audio input, with NO ScreenCaptureKit, which is what lets `--selftest-screenrec` verify it headlessly.
   `finish(endingAt:)` ends the session at the true session length because SCK sends nothing while the
   screen is static; the first accepted frame is stamped at 0 so playback never opens on black.
+- `SessionPaths.swift` — `legacyTranscriptName` · `existingTranscript(in:)` · `transcriptURL(in:)` /
+  `transcriptURL(in:for:)` · `isSessionFolder(_:)` · `transcriptFileName(for:)` · `renameTranscript(in:toMatch:)`
+  · `safeFileComponent`/`exportFilename`. See **Transcript file name** for the rules and why they are these.
 - `DocumentBuilder.swift` — `TranscriptSegment`/`SessionMeta`/`SessionDoc`; the timestamped transcript →
   Markdown and self-contained HTML; session-folder layout; `writeSession`/`readSession`.
   `SessionMeta.videoFile`/`videoWidth`/`videoHeight` name the session's video (`screen.mp4`, or a copied
@@ -611,12 +625,50 @@ folder's live `transcript.md`, run one VAD-chunked `finalPass()` over the whole 
 the clean version, then (off-main) index it + auto-title/tag (see Unified session store below).
 
 > **Unified session store (Prompt 1):** EVERY session saves as a folder
-> `~/Desktop/Transcripts/<yyyy-MM-dd HH-mm-ss>/` (`transcript.md` + `session.json`, plus the media it
-> produced — `audio.m4a`, and `screen.mp4` when the screen was recorded). This replaces the old
+> `~/Desktop/Transcripts/<yyyy-MM-dd HH-mm-ss>/` (the transcript `.md` + `session.json`, plus the media
+> it produced — `audio.m4a`, and `screen.mp4` when the screen was recorded). **The transcript has no
+> fixed name** — see "Transcript file name" below; `transcript.md` throughout this document means
+> "the session's transcript", and is still the literal name for every session recorded before that
+> change. This replaces the old
 > audio-only flat `transcript-….md`. Legacy flat files are migrated once on launch
 > (`SessionStore.migrateLegacyFlatFiles`): non-destructive (one full backup to
 > `~/Desktop/Transcripts_backup_<stamp>` first), copy-then-verify-then-remove, idempotent (re-run =
 > no-op). Export (HTML/PDF/TXT/RTF) is available for any saved session.
+
+## Transcript file name — Sources: SessionPaths / DocumentBuilder / SessionStore
+**A transcript is named after the session that produced it.** `transcript.md` was unambiguous in
+code and meaningless out of it: the moment a file left its folder — shared, AirDropped, dropped in a
+notes app — it was one of N identical `transcript.md`s. The name is now
+`2026-09-01 14-32 Standup with Priya.md`: **date first** so a pile of them sorts chronologically, the
+title after it so you can read what it is. Before the on-device title exists the body is the word
+`Transcript`; `SessionStore.ensureTitle` renames the file when the title arrives.
+
+- **`SessionPaths` is the ONE resolver.** Nothing composes `dir + "transcript.md"` any more — reads
+  go through `SessionPaths.transcriptURL(in:)`, writes through `transcriptURL(in:for:)`, and "is this
+  a session folder?" through `isSessionFolder(_:)`. That is what makes the name a detail rather than
+  a contract: **the folder is the identity; the file inside it is just named well.**
+- **Resolution is `transcript.md` first**, then the single `*.md` in the folder. Every pre-existing
+  session therefore resolves in one `stat` and behaves EXACTLY as it did — the legacy name is a fast
+  path, not a fallback that costs anything.
+- **Nothing on disk is migrated, deliberately.** A mass rename of an existing library is a
+  destructive-shaped operation that buys nothing a reader can't already resolve. Old sessions keep
+  `transcript.md`, and `writeSession` re-renders IN PLACE when a folder already uses that name, so a
+  diarization pass on a 2025 session doesn't leave two transcripts behind.
+- **The rename rides on `ensureTitle`** — the moment a session stops being anonymous — and inherits
+  that function's laziness for free: an already-titled session returns before the rename, so merely
+  listing the Library never renames anything. A collision at the destination is LEFT ALONE rather
+  than resolved with a `(2)` suffix; the file staying put costs nothing.
+- **Legacy flat-file migration still writes `transcript.md`.** Those are pre-existing sessions whose
+  bytes are copied verbatim and verified; `--selftest-migrate` asserts that name and keeps doing so.
+- **`SessionIO` encrypts every `.md` in the folder** rather than a fixed name — otherwise
+  encryption-at-rest would silently skip the one file that holds the words.
+- **One sanitizer.** `SessionPaths.safeFileComponent` / `exportFilename` is what names both the
+  transcript and every export/share; `Sharing.exportFilename` delegates to it. It strips
+  `/ \ : ? % * | " < >` + newlines, collapses whitespace runs, refuses to author a hidden file, caps
+  at 120 chars, and falls back to `Transcript`.
+- `--selftest-doc`'s third case is the proof (14 assertions): untitled/titled/unsafe/blank naming, a
+  second write leaving exactly one file, the rename preserving bytes and being idempotent, and a
+  legacy `transcript.md` folder still resolving and re-rendering in place.
 
 ## Pause, auto-pause & capture resilience — Sources: CaptureControl / AppModel / AudioCaptureMic / AudioCaptureProcessTap / ScreenRecorder
 **A session must survive everything except the user pressing Stop.** All three features below share
@@ -671,6 +723,19 @@ transcript points at a frame, and every click in the Viewer moves the video.
   flag for this session and applies `screenAudioSource` as a ONE-SHOT `sourceOverride` (default Mic +
   System) — a screen recording never silently inherits a mic-only pick, and never changes the user's
   persisted source. During a session it stops the session, so one key both starts and ends it.
+- **Which screen is ASKED, not assumed.** `.mainDisplay` means "whatever has the menu bar", which on
+  a docked laptop is routinely the wrong screen — and the failure is silent and only discovered after
+  the recording. `AppModel.resolveScreenTarget` therefore prompts (`ScreenTargetPrompt`, an NSAlert
+  with a popup of `ScreenRecorder.availableDisplays()`) and pins the answer as `.display(id)` for that
+  session. Four rules keep it from becoming friction: it asks **only** when there are 2+ displays and
+  no explicit window/app target (a window pick IS the answer); the default is preselected so Return
+  reproduces the old behaviour; the answer is a ONE-SHOT `screenTargetOverride`, so it never rewrites
+  the persisted setting; and an unattended calendar auto-start skips it entirely (`skipScreenTargetPrompt`)
+  — nobody is at the keyboard, and a modal left unanswered would mean the meeting is simply not
+  recorded. It is an NSAlert rather than a sheet because ⌥⌘S is global: the question can arrive while
+  another app is frontmost and the Said window may not be open. Asked BEFORE the model prepares and
+  long before T0, so the session clock never runs while the dialog is open. `sessionScreenTarget`
+  records what was actually captured, so `meta.targetLabel` names the screen the session really used.
 - **One clock.** Video PTS = `SessionClock` time (wall clock − paused time), the same clock the audio
   gate, bookmarks and segment timestamps use. Paused stretches are absent from the video, the audio AND
   the transcript, so all three stay aligned no matter how many times the session is paused.
@@ -981,10 +1046,14 @@ Run the built binary (`.build/release/Transcriber` or the bundle's MacOS binary)
 - `--selftest-screenrec-live [seconds]` — LIVE probe: records the real main display for N seconds while
   feeding synthetic audio through the same `SampleReceiver` path. Needs the Screen Recording grant, so
   run the BUNDLE binary: `./Said.app/Contents/MacOS/Said --selftest-screenrec-live 8`.
-- `--selftest-doc` — TWO cases. Case 1 (segments only) is byte-for-byte the pre-Phase-2 output, so
+- `--selftest-doc` — THREE cases. Case 1 (segments only) is byte-for-byte the pre-Phase-2 output, so
   its md5 stays exactly comparable; case 2 adds frames and asserts they merge by time, that a tie
-  puts text before the frame, and that the OCR block appears only when there is OCR text. The
-  description used to claim "frame events" while none existed — it is accurate again as of Phase 2.
+  puts text before the frame, and that the OCR block appears only when there is OCR text; case 3 is
+  the transcript FILE NAME on disk (see **Transcript file name**) — untitled / titled / unsafe-title /
+  blank-title naming, a second write leaving exactly one transcript, the rename preserving bytes and
+  being idempotent, and a legacy `transcript.md` folder still resolving and re-rendering in place.
+  Temp dirs only. The description used to claim "frame events" while none existed — it is accurate
+  again as of Phase 2.
 - `--selftest-export [session-folder]` — builds HTML + PDF (synthesises a session if none). Runs a main
   run loop so WKWebView can render the PDF.
 - `--selftest-migrate [dir]` — synthesises legacy flat `.md` files, migrates, and asserts each became
@@ -1115,6 +1184,24 @@ Screen Recording grant + on-screen content — use `--selftest-screenrec-live` f
       window / app), video+transcript sync after a ⌥⌘P pause, click-to-seek in the Viewer, closing a
       recorded window mid-session (audio continued), file size at each quality, and a video import
       playing back.
+- [~] **The screen recording asks which screen** — with two or more displays, ⌥⌘S (and an
+      every-session screen recording) prompts with the real display names and records the one picked,
+      as a one-shot override that leaves the persisted target alone. Silent when there is one display,
+      when a window/app is the configured target, when the Settings toggle is off, or for an
+      unattended calendar auto-start. **Build green; the display naming was verified against the live
+      `NSScreen` list** (built-in + external, main correctly marked). **AWAITING human smoke-test:**
+      the prompt on ⌥⌘S with the monitor attached, recording the external monitor and confirming the
+      video is that screen, Cancel cancelling cleanly, Return-only reproducing the old behaviour, and
+      a single-display Mac never seeing the dialog.
+- [x] **Meaningful transcript file names** — the transcript is named after its session
+      (`2026-09-01 14-32 Standup with Priya.md`) instead of a fixed `transcript.md`, renaming itself
+      when the on-device title lands. `SessionPaths` is the one resolver; no path is composed by hand
+      anywhere (Mac app, SaidKit, self-tests, the in-progress iOS app). Nothing on disk is migrated —
+      an old session keeps `transcript.md`, resolves in one `stat`, and re-renders in place. **Build
+      green on both platforms; the full 47-mode sweep + the iOS gate + the 16 iOS unit tests pass**,
+      with `--selftest-doc` gaining a 14-assertion naming case and its case-1 md5 untouched.
+      **AWAITING human smoke-test:** a real session's file name before and after the title lands, a
+      pre-existing session still opening / searching / exporting, and a `.said` round trip.
 - [x] **Unified session store + Library + full-text search** (Prompt 1) — all sessions save as folders;
       legacy flat `.md` migrate non-destructively (backup + idempotent); auto title/tags on-device with
       fallback; Library lists/sorts/filters with Open/Reveal/Delete-to-Trash + live refresh; keyword search
@@ -1439,6 +1526,11 @@ CleanupPass, so session.json read-modify-writes can't race).
   a user-facing promise and a silent `removeItem` is exactly what that promise exists to prevent.
   The real implementation is injected in `AppModel.onLaunch`. If deletes fail, that injection didn't
   run (a self-test binary, or a code path that bypassed launch). Self-tests inject their own.
+- **"My transcript isn't called `transcript.md` any more."** Correct — it is named after the session
+  (`2026-09-01 14-32 Standup with Priya.md`), and it RENAMES itself once the on-device title lands, so
+  a file whose name you noted seconds after saving can have a better one a moment later. The folder is
+  the stable identity; anything holding a path to the file should re-resolve through `SessionPaths`.
+  Sessions recorded before the change keep `transcript.md` and are never touched.
 - **A `.said` won't import / "already in your library".** The collision rule is deterministic and
   keyed on `SessionMeta.id`: same id ⇒ never import, never duplicate, reveal the existing session.
   That is correct behaviour, not a failure. A bundle with no id, or an unknown one, always imports.

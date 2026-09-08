@@ -310,6 +310,11 @@ final class AppModel: ObservableObject {
         didSet { UserDefaults.standard.set(screenRecordingEnabled, forKey: "screenRecordingEnabled") }
     }
     /// What gets recorded: a display, a window, or one app's windows.
+    /// Ask which display to record each time a screen recording starts (default ON). Only ever asks
+    /// when there is a real choice — two or more displays, and no explicit window/app target set.
+    @Published var askScreenTargetEachTime: Bool {
+        didSet { UserDefaults.standard.set(askScreenTargetEachTime, forKey: "askScreenTargetEachTime") }
+    }
     @Published var screenTarget: ScreenTarget {
         didSet { UserDefaults.standard.set(screenTarget.persisted, forKey: "screenTarget") }
     }
@@ -375,6 +380,14 @@ final class AppModel: ObservableObject {
     /// One-shot "record the screen this session" (⌥⌘S / the Record Screen button), independent of the
     /// persisted Settings default.
     private var screenOverride: Bool?
+    /// The display chosen for THIS session by the start-time prompt. One-shot, like `sourceOverride`:
+    /// answering "the external monitor" once must not silently rewrite the persisted setting.
+    private var screenTargetOverride: ScreenTarget?
+    /// Suppress the "which screen?" prompt for THIS start (an unattended calendar auto-start).
+    private var skipScreenTargetPrompt = false
+    /// What the running session is actually recording — the prompt's answer, else the setting. Read
+    /// by `screenTargetLabel`, so a session's stored `targetLabel` names the screen it really used.
+    private var sessionScreenTarget: ScreenTarget?
     private var sessionDir: URL?
     private var sessionT0: TimeInterval = 0
     private var sessionStartDate = Date()
@@ -419,6 +432,7 @@ final class AppModel: ObservableObject {
         model = WhisperModel(rawValue: d.string(forKey: "model") ?? "") ?? .baseEn
         screenRecordingEnabled = d.bool(forKey: "screenRecordingEnabled")
         screenTarget = ScreenTarget(persisted: d.string(forKey: "screenTarget") ?? "main")
+        askScreenTargetEachTime = (d.object(forKey: "askScreenTargetEachTime") as? Bool) ?? true
         screenQuality = ScreenQuality(rawValue: d.string(forKey: "screenQuality") ?? "") ?? .balanced
         screenAudioSource = AudioSource(rawValue: d.string(forKey: "screenAudioSource") ?? "") ?? .micPlusSystem
         saveAudioEnabled = (d.object(forKey: "saveAudioEnabled") as? Bool) ?? true
@@ -514,6 +528,9 @@ final class AppModel: ObservableObject {
         Task.detached(priority: .utility) {
             let result = SessionStore.migrateLegacyFlatFiles()
             if result.legacyFound > 0 { NSLog("[Migrate] \(result.summary)") }
+            // Name every transcript after its session (idempotent; a pure rename — see SessionPaths).
+            // Runs BEFORE the index rebuild so the index never caches a path that is about to move.
+            SessionStore.migrateTranscriptNames()
             // Feature C1: retention sweep (idempotent; a no-op unless auto-delete is enabled). Runs
             // BEFORE the index rebuild so trashed sessions never enter the index.
             Retention.sweep()
@@ -612,6 +629,19 @@ final class AppModel: ObservableObject {
         // (recording then runs with busy == false so Stop is accepted).
         defer { busy = false }
 
+        // Which screen? Asked FIRST — before the model prepares and long before T0 — so the session
+        // clock never runs while a dialog sits open, and cancelling costs nothing. Cleared here
+        // rather than inside the resolve, so an unattended start that wanted no screen at all can't
+        // leave the suppression armed for the next manual one.
+        let skipPrompt = skipScreenTargetPrompt
+        skipScreenTargetPrompt = false
+        if screenOverride ?? screenRecordingEnabled, !skipPrompt, !(await resolveScreenTarget()) {
+            screenOverride = nil
+            sourceOverride = nil
+            status = .idle
+            return
+        }
+
         do {
             status = .preparingModel("Preparing \(model.shortName)…")
             downloadFraction = nil
@@ -674,11 +704,14 @@ final class AppModel: ObservableObject {
             // silently-dead video. Its audio is the session's own stream (the tee below).
             let wantScreen = screenOverride ?? screenRecordingEnabled
             screenOverride = nil
+            defer { screenTargetOverride = nil }
             screenFinishTask = nil
 
             var recorder: ScreenRecorder?
             if wantScreen {
-                let r = ScreenRecorder(target: screenTarget, quality: screenQuality,
+                let target = screenTargetOverride ?? screenTarget
+                sessionScreenTarget = target
+                let r = ScreenRecorder(target: target, quality: screenQuality,
                                        outputURL: dir.appendingPathComponent("screen.mp4"))
                 r.onPreview = { [weak self] image in
                     Task { @MainActor in self?.screenPreview = image }
@@ -693,6 +726,7 @@ final class AppModel: ObservableObject {
             } else {
                 screenRecorder = nil
                 isRecordingScreen = false
+                sessionScreenTarget = nil
             }
 
             // Where the transcription-ready samples land. With a screen recording live, a tee also
@@ -888,7 +922,7 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// Finalize a session into its folder: transcript.md + session.json (+ audio.m4a, + screen.mp4
+    /// Finalize a session into its folder: the transcript `.md` + session.json (+ audio.m4a, + screen.mp4
     /// when the screen was recorded). Same two-pass shape as before — immediate live save, then the
     /// full-quality re-transcription.
     private func finalizeDocumentSession(dir: URL, liveSegments: [TranscriptSegment]) async {
@@ -901,7 +935,7 @@ final class AppModel: ObservableObject {
         DocumentBuilder.writeSession(SessionDoc(meta: meta, segments: liveSegments), to: dir)
         lastSessionDir = dir
         lastSessionHasVideo = screenResult != nil
-        lastSavedURL = dir.appendingPathComponent("transcript.md")
+        lastSavedURL = SessionPaths.transcriptURL(in: dir)
         notifySessionSaved(dir)
 
         // 2) Full-quality transcript segments (+ custom-vocab bias), re-saved over the live pass.
@@ -1148,7 +1182,10 @@ final class AppModel: ObservableObject {
         meetingPrompt = nil
         pendingTitleSeed = candidate.title
         sourceOverride = calendarCaptureSource
-        if auto { autoStartedMeeting = candidate.title }
+        // An auto-started meeting is hands-off by definition — nobody is at the keyboard to answer
+        // "which screen?", and a modal sitting unanswered would mean the meeting simply isn't
+        // recorded. It uses the configured target, silently.
+        if auto { autoStartedMeeting = candidate.title; skipScreenTargetPrompt = true }
         startRecording()
     }
 
@@ -1329,6 +1366,26 @@ final class AppModel: ObservableObject {
         startRecording()
     }
 
+    /// Ask which display to record, when there is a real question to ask.
+    ///
+    /// Silent — and unchanged from the old behaviour — when: the setting is off, the user has
+    /// explicitly picked a window or an app (that IS the answer, and "which screen?" would be the
+    /// wrong question), or there is only one display. Returns false only when the user cancels,
+    /// which cancels the whole recording.
+    private func resolveScreenTarget() async -> Bool {
+        screenTargetOverride = nil
+        guard askScreenTargetEachTime else { return true }
+        switch screenTarget {
+        case .window, .app: return true
+        case .mainDisplay, .display: break
+        }
+        let displays = await ScreenRecorder.availableDisplays()
+        guard displays.count > 1 else { return true }
+        guard let chosen = ScreenTargetPrompt.choose(from: displays, current: screenTarget) else { return false }
+        screenTargetOverride = chosen
+        return true
+    }
+
     /// Refresh the live list of screen-recording targets (call when the Settings picker opens).
     func refreshTargets() {
         Task {
@@ -1339,14 +1396,18 @@ final class AppModel: ObservableObject {
 
     /// The recorded label for the current target ("Main Display", a window title, …).
     var screenTargetLabel: String {
-        availableTargets.first { $0.target == screenTarget }?.label ?? {
-            switch screenTarget {
-            case .mainDisplay: return "Main Display"
-            case .display(let id): return "Display \(id)"
-            case .window: return "Window"
-            case .app(let bundle): return bundle
-            }
-        }()
+        // The running session's own target when there is one — a session that recorded the external
+        // monitor must not be labelled with whatever the setting happens to say afterwards.
+        let t = sessionScreenTarget ?? screenTargetOverride ?? screenTarget
+        if let named = availableTargets.first(where: { $0.target == t })?.label { return named }
+        switch t {
+        case .mainDisplay: return "Main Display"
+        case .display(let id):
+            let name = ScreenRecorder.displayName(id) ?? "Display \(id)"
+            return id == CGMainDisplayID() ? "\(name) (main)" : name
+        case .window: return "Window"
+        case .app(let bundle): return bundle
+        }
     }
 
     /// The capture stopped on its own (recorded window closed, display unplugged). Audio — and the
