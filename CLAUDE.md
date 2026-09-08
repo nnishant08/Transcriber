@@ -944,7 +944,9 @@ a ~460 MB memcpy per second at the two-hour mark, growing linearly, on the audio
 `SampleSink.newSamples(after:)` reads only what is new; Parakeet's manager buffers internally and
 trims what it has consumed, bounded to `left+chunk+right` seconds regardless of session length. **The
 Whisper streamer keeps its old behaviour on purpose** — Whisper's decoder has no incremental entry
-point, so there is no half-fix; what changed is which engine is default.
+point, so there is no half-fix; what changed is which engine is default. The reader is asserted in
+**`--selftest-pause`** (with the rest of the pure capture plumbing), NOT in `--selftest-stream`,
+which drives the Whisper path and therefore could never exercise it.
 
 ### Why Apple `SpeechAnalyzer` is deferred, and the re-evaluation trigger
 
@@ -1064,9 +1066,15 @@ person's words were attributed to them with no indication anything was lost.
 
 Runs shorter than **`minimumRunWords` (3)** are absorbed into a neighbour rather than split out:
 diarizer boundaries are not exact, so a one-word "Speaker 2:" inside someone else's sentence is far
-more common than a real one-word turn. Splitting cuts the segment's TEXT at the boundary word's
-position rather than rebuilding it from words, so punctuation and spacing survive; if the words
-cannot be located in the text in order, it falls back to whole-segment assignment rather than guess.
+more common than a real one-word turn. **Absorbing a run then COALESCES the same-speaker runs it
+leaves adjacent**, and that second half is not optional: without it `A A A A A B A A A A A` absorbs
+the B and comes back as two runs of A, so the caller splits one sentence into two consecutive lines
+under the same label — the exact artefact absorption exists to remove. Splitting cuts the segment's
+TEXT at the boundary word's position rather than rebuilding it from words, so punctuation and spacing
+survive; the first part is anchored at the START OF THE STRING (not at its first word) so a leading
+dash or quote the engine never emitted as a token is moved between parts rather than dropped; and if
+the words cannot be located in the text in order, it falls back to whole-segment assignment rather
+than guess.
 
 ### Cross-session voiceprints (Wave 4)
 
@@ -1116,10 +1124,17 @@ usable: deduplication, a notion of "slide 4 spanned 12:03–18:40", and a hit th
 a slide.
 
 `SlideSegmenter` collapses runs of near-identical frames into `SlideSpan`s, judging similarity on OCR
-**text** (Jaccard ≥ 0.75) rather than pixels — cheaper, and a better proxy for the real question,
-since two photographs of one slide from different angles are the same slide. A frame with no legible
-text is **never** merged with anything: two illegible photographs are not evidence of being the same
-slide, and merging them would drop one from the timeline entirely. The representative frame is the
+**text** rather than pixels — cheaper, and a better proxy for the real question, since two
+photographs of one slide from different angles are the same slide. The metric is the **overlap
+coefficient** (intersection over the SMALLER word set) at ≥ 0.75, guarded by `minimumSizeRatio` 0.5.
+**Not Jaccard, and the difference is the correctness of the type:** Jaccard divides by the union, so
+it charges a reading for every word the other reading happened to pick up, and the penalty is worst
+where slides are SHORTEST — titles and section dividers, the ones most likely to stay up longest. One
+plural misread on a five-word title scores 0.67 and starts a new slide. The overlap coefficient asks
+the question that matters — is one reading essentially contained in the other? — and the size-ratio
+guard closes the failure that opens, a short reading swallowed by a long unrelated one. A frame with
+no legible text is **never** merged with anything: two illegible photographs are not evidence of
+being the same slide, and merging them would drop one from the timeline entirely. The representative frame is the
 one Vision read the most words off, which is the best "clearest" proxy available without opening the
 images.
 
@@ -1469,8 +1484,10 @@ Run the built binary (`.build/release/Transcriber` or the bundle's MacOS binary)
   pre-roll caps at 1 s, flushes on an auto-resume and replays NOTHING on a manual one; auto-pause
   fires only at the threshold (and never on the gaps between sentences), auto-resume only for an
   automatic pause, disabled ⇒ inert; `StallMonitor` respects the cooldown; `SessionClock` excludes
-  paused time so a bookmark after a pause matches the recorded audio length. `--retag [dir] [--force]`
-  remains a maintenance utility.
+  paused time so a bookmark after a pause matches the recorded audio length. Phase 3 added the
+  `SampleSink` incremental reader here: only the delta comes back, the cursor advances by exactly
+  that much, no read ever hands back the whole session again, and a stale or negative index after a
+  `reset()` clamps instead of trapping. `--retag [dir] [--force]` remains a maintenance utility.
 - **Stage 1:** `--selftest-diarize [audio.wav]` (synthesizes a two-voice `say` conversation when no
   file given; downloads the FluidAudio models on first run; asserts ≥2 distinct 1-based slots on the
   synthetic clip), `--selftest-align` (pure: max-overlap assignment, first-appearance slot order,
@@ -1677,7 +1694,8 @@ Screen Recording grant + on-screen content — use `--selftest-screenrec-live` f
       the session (mic engine rebuilt on config/input-device change; process-tap aggregate rebuilt on
       output-device change, device-list change, or a 3 s callback stall; AppModel re-runs the whole
       capture start on failure, finalizing only after 4 consecutive failures — with the reason shown).
-      **Build green; `--selftest-pause` (25 assertions) passes and the whole prior sweep is unchanged.**
+      **Build green; `--selftest-pause` (25 assertions at the time) passes and the whole prior sweep
+      is unchanged.** (Phase 3 added assertions to this mode; that count is the pause work's own.)
       **USER-VERIFIED via GUI:** manual pause/resume; auto-pause with a custom (5 s) timeout; and
       recovery from a mid-session default-OUTPUT-device switch (USB Audio → MacBook Pro Speakers →
       back), which is what prompted the work. Two bugs found and fixed during that verification:
@@ -1715,10 +1733,15 @@ Screen Recording grant + on-screen content — use `--selftest-screenrec-live` f
       knows speech from slide text; hybrid RRF retrieval behind an embedding seam. Plus the offline
       gate, the storage panel, one re-transcribe command, six pure self-tests and `--compare-engines`.
       **⚠️ NOT COMPILED, NOT RUN, NOT TESTED** — built in a container with no Swift toolchain. Every
-      third-party API was verified against the pinned dependency source (which is how three real
-      defects and several wrong doc-claims were caught), and an adversarial review pass was run over
-      every file, but expect compile errors on the first real build. `PHASE3-REPORT.md` §0 lists
-      exactly what was and was not verified; §15 is the order to work in.
+      third-party API was verified against the pinned dependency source, and an adversarial compile
+      review was run over every new and changed file. Between them they found **fourteen** real
+      defects — five compile errors that would have stopped the build dead, five logic bugs a green
+      build would still have shipped, and the rest data races and wrong doc-claims. All are fixed and
+      recorded in `PHASE3-REPORT.md` §3/§3a; the ones the self-test suite ran straight past landed
+      with the assertion that would have caught them. **Expect more on the first real build** — that
+      a careful review found fourteen is the argument that a compiler will find more, not that it
+      won't. §0 of that report lists exactly what was and was not verified; §15 is the order to work
+      in.
       **AWAITING everything:** a build, the self-test sweep, the iOS gate, the baselines,
       `--compare-engines` over real sessions (which is what should actually decide the default
       engine), the vocabulary-biasing proof, measured model sizes and performance, and the full human
