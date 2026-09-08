@@ -270,6 +270,7 @@ final class AppModel: ObservableObject {
         didSet {
             UserDefaults.standard.set(neverDownloadModels, forKey: "neverDownloadModels")
             ModelGate.neverDownloadModels = neverDownloadModels
+        ModelGate.syncToDependencies()
         }
     }
 

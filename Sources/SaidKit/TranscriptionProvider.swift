@@ -93,11 +93,19 @@ public enum EnginePreference: String, Sendable, CaseIterable, Codable {
 /// routing logic taking a dependency on a vendor type that has moved between releases.
 public enum ParakeetLanguages {
 
-    /// Parakeet v3 (`FluidInference/parakeet-tdt-0.6b-v3-coreml`), multilingual.
+    /// Parakeet v3 (`FluidInference/parakeet-tdt-0.6b-v3-coreml`), multilingual — 25 languages.
+    ///
+    /// FluidAudio's `Language` enum lists **28** codes, three more than the model card's 25: `be`
+    /// (Belarusian), `bs` (Bosnian) and `sr` (Serbian). Those three are excluded here, and the
+    /// direction of that choice is the point. The enum is a SCRIPT FILTER — it says which alphabets
+    /// the decoder knows how to constrain itself to, which is a strict superset of which languages
+    /// it was trained to transcribe. Routing a Belarusian recording to Parakeet on the strength of
+    /// "the Cyrillic filter accepts it" is exactly the failure this router exists to prevent: the
+    /// output would be fluent and wrong. They go to Whisper, which costs speed and nothing else.
     public static let v3: Set<String> = [
         "en", "es", "fr", "de", "it", "pt", "ro", "nl", "da", "sv", "fi", "hu",
-        "et", "lv", "lt", "mt", "pl", "cs", "sk", "sl", "hr", "bs",
-        "ru", "uk", "be", "bg", "sr", "el",
+        "et", "lv", "lt", "mt", "pl", "cs", "sk", "sl", "hr",
+        "ru", "uk", "bg", "el",
     ]
 
     /// Parakeet v2 (`FluidInference/parakeet-tdt-0.6b-v2-coreml`), English only.

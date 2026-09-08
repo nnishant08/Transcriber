@@ -162,10 +162,105 @@ public final class ParakeetProvider: TranscriptionProvider, @unchecked Sendable 
         var state = TdtDecoderState.make(decoderLayers: await mgr.decoderLayerCount)
         let result = try await mgr.transcribe(samples, decoderState: &state,
                                               language: fluidLanguage(language))
-        if let applied = result.ctcAppliedTerms, !applied.isEmpty {
-            NSLog("[Parakeet] vocabulary applied: \(applied.joined(separator: ", "))")
+
+        var words = Self.words(from: result)
+        if let bias, !words.isEmpty {
+            words = await applyVocabularyBias(bias, to: words, transcript: result.text,
+                                              tokenTimings: result.tokenTimings ?? [], samples: samples)
         }
-        return Self.segments(from: result, fallbackDuration: Double(samples.count) / 16_000.0)
+        guard !words.isEmpty else {
+            return TranscriptAssembly.singleSegment(text: result.text,
+                                                    duration: Double(samples.count) / 16_000.0)
+        }
+        let segs = TranscriptAssembly.segments(words: words)
+        return segs.isEmpty
+            ? TranscriptAssembly.singleSegment(text: result.text, duration: Double(samples.count) / 16_000.0)
+            : segs
+    }
+
+    // MARK: Vocabulary biasing on the BATCH path
+
+    /// Bias the FINAL pass toward the custom vocabulary.
+    ///
+    /// **This has to be assembled by hand, and that is a finding rather than an oversight.**
+    /// `AsrManager` has no vocabulary API at all at the pinned tag: the only wired-up biasing is on
+    /// `SlidingWindowAsrManager`, i.e. the LIVE path. The live text is transient; the batch pass is
+    /// what produces the transcript that gets saved, searched, exported and summarised. Shipping
+    /// biasing on the streaming path alone would mean the vertical packs appeared to work while
+    /// every saved transcript came out unbiased — precisely the "packs silently inert" outcome §5.4
+    /// says to stop the build over. So the three public pieces the streaming manager composes
+    /// internally — `CtcKeywordSpotter`, `VocabularyRescorer`, `ctcTokenRescore` — are composed here
+    /// too, in the same order and with the same vocabulary-size-aware configuration.
+    ///
+    /// **The mechanism is post-hoc CTC rescoring, not decode-time biasing.** Parakeet TDT decodes
+    /// normally, then a CTC keyword spotter's log-probability matrix is used to ask, for each word,
+    /// whether a vocabulary term scores better acoustically than what TDT actually emitted. That
+    /// costs a second encoder pass over the audio, which is why it only runs when there is a
+    /// vocabulary to apply.
+    ///
+    /// Replacements are applied to the WORD ARRAY rather than to the joined text, so the corrected
+    /// spelling keeps the timing of the sound it replaced and `words`/`text` cannot drift apart.
+    /// Every failure here degrades to the unbiased transcript; none of it can fail a save.
+    private func applyVocabularyBias(_ bias: VocabularyBias, to words: [WordTiming],
+                                     transcript: String, tokenTimings: [TokenTiming],
+                                     samples: [Float]) async -> [WordTiming] {
+        guard !tokenTimings.isEmpty, let ctc = await loadCtcModelsIfNeeded() else { return words }
+        let vocab = vocabularyContext(bias)
+        do {
+            let spotter = CtcKeywordSpotter(models: ctc, blankId: ctc.vocabulary.count)
+            let spotted = try await spotter.spotKeywordsWithLogProbs(audioSamples: samples,
+                                                                     customVocabulary: vocab,
+                                                                     minScore: nil)
+            guard !spotted.logProbs.isEmpty else { return words }
+
+            let ctcDir = CtcModels.defaultCacheDirectory(for: ctc.variant)
+            let rescorer = try await VocabularyRescorer.create(spotter: spotter, vocabulary: vocab,
+                                                               ctcModelDirectory: ctcDir)
+            let sizing = ContextBiasingConstants.rescorerConfig(forVocabSize: vocab.terms.count)
+            let output = rescorer.ctcTokenRescore(
+                transcript: transcript,
+                tokenTimings: tokenTimings,
+                logProbs: spotted.logProbs,
+                frameDuration: spotted.frameDuration,
+                cbw: sizing.cbw,
+                marginSeconds: 0.5,
+                minSimilarity: max(sizing.minSimilarity, vocab.minSimilarity)
+            )
+            guard output.wasModified else { return words }
+            let pairs = output.replacements
+                .filter { $0.shouldReplace }
+                .compactMap { r -> (String, String)? in r.replacementWord.map { (r.originalWord, $0) } }
+            NSLog("[Parakeet] vocabulary applied to \(pairs.count) word(s) in the final pass")
+            return Self.applying(replacements: pairs, to: words)
+        } catch {
+            NSLog("[Parakeet] vocabulary rescoring failed (\(error)); keeping the unbiased transcript")
+            return words
+        }
+    }
+
+    /// Substitute rescored spellings into the word array, preserving each word's timing.
+    ///
+    /// Consumes one replacement per matching occurrence, in order, mirroring how the rescorer
+    /// reports them. Matching ignores case and surrounding punctuation, because the rescorer works
+    /// on bare words while the word array carries the punctuation the decoder emitted.
+    static func applying(replacements: [(String, String)], to words: [WordTiming]) -> [WordTiming] {
+        guard !replacements.isEmpty else { return words }
+        var pending = replacements
+        var out = words
+        for i in out.indices {
+            let bare = out[i].text.trimmingCharacters(in: .punctuationCharacters).lowercased()
+            guard let j = pending.firstIndex(where: {
+                $0.0.trimmingCharacters(in: .punctuationCharacters).lowercased() == bare
+            }) else { continue }
+            let (_, replacement) = pending.remove(at: j)
+            // Keep whatever punctuation the decoder attached to the END of the original word, so a
+            // sentence-final "anastomosis." does not lose its full stop to the correction.
+            let trailing = String(out[i].text.reversed().prefix(while: \.isPunctuation).reversed())
+            out[i] = WordTiming(text: replacement + trailing,
+                                start: out[i].start, end: out[i].end, confidence: out[i].confidence)
+            if pending.isEmpty { break }
+        }
+        return out
     }
 
     public func transcribeFile(path: String, language: String?, bias: VocabularyBias?) async throws -> [TranscriptSegment] {
@@ -179,15 +274,21 @@ public final class ParakeetProvider: TranscriptionProvider, @unchecked Sendable 
         return Self.segments(from: result, fallbackDuration: result.duration)
     }
 
-    /// `ASRResult` → Said's segments, via the pure assembler.
-    static func segments(from result: ASRResult, fallbackDuration: TimeInterval) -> [TranscriptSegment] {
-        guard let timings = result.tokenTimings, !timings.isEmpty else {
-            // §5.5: timings absent or malformed must never fail a save. One honest coarse segment.
-            return TranscriptAssembly.singleSegment(text: result.text, duration: fallbackDuration)
-        }
-        let words = TranscriptAssembly.words(fromTokens: timings.map {
+    /// `ASRResult`'s token timings folded into whole words. Empty when the engine reported none.
+    static func words(from result: ASRResult) -> [WordTiming] {
+        guard let timings = result.tokenTimings, !timings.isEmpty else { return [] }
+        return TranscriptAssembly.words(fromTokens: timings.map {
             (text: $0.token, start: $0.startTime, end: $0.endTime, confidence: $0.confidence)
         })
+    }
+
+    /// `ASRResult` → Said's segments, via the pure assembler.
+    static func segments(from result: ASRResult, fallbackDuration: TimeInterval) -> [TranscriptSegment] {
+        let words = Self.words(from: result)
+        // §5.5: timings absent or malformed must never fail a save. One honest coarse segment.
+        guard !words.isEmpty else {
+            return TranscriptAssembly.singleSegment(text: result.text, duration: fallbackDuration)
+        }
         let segs = TranscriptAssembly.segments(words: words)
         // A pathological timing array (all zero-length, all at t=0) would assemble to nothing while
         // the text is perfectly good. Prefer the text.

@@ -1,4 +1,5 @@
 import Foundation
+import FluidAudio
 
 // MARK: - The offline promise, made enforceable
 
@@ -23,12 +24,17 @@ public enum ModelGateError: LocalizedError {
 /// throws `ModelGateError.downloadsDisabled` **before** any network call is constructed, and the UI
 /// says which model is missing rather than failing obscurely.
 ///
-/// **Why this is not `ModelHub.offlineMode`.** FluidAudio grew exactly that flag — at v0.15.5, three
-/// tags past the pin, in the same change that deleted `DownloadUtils` (see `Package.swift` for why
-/// the pin is held). But even taking the bump, that flag would only cover FluidAudio. Said ships two
-/// ASR engines, and **WhisperKit has no offline flag at any version**, so a library-level switch
-/// leaves half the promise unenforced. A gate one level up covers Whisper, Parakeet, the CTC
-/// vocabulary spotter and the diarizer with one rule and one test.
+/// **Why this exists as well as the dependency's own flag.** The Phase 3 prompt asked for
+/// `ModelHub.offlineMode`. That symbol does not exist at the pinned tag — `ModelHub` lands at
+/// v0.15.5, in the same change that deletes `DownloadUtils` (see `Package.swift`). What DOES exist
+/// at 0.15.2 is the same capability under a different name, `DownloadUtils.enforceOffline`, and
+/// `neverDownloadModels` sets it.
+///
+/// But that flag alone would leave half the promise unenforced, whichever name it goes by: it covers
+/// FluidAudio only, and **WhisperKit has no offline flag at any version**. Said ships two ASR
+/// engines. A gate one level up covers Whisper, Parakeet, the CTC vocabulary spotter and the
+/// diarizer with one rule and one test — and it is where the good error message comes from, since a
+/// library throwing from inside a download routine cannot say "pick a model you already have".
 ///
 /// The gate governs *fetching*, never *loading*: an already-downloaded model loads from disk exactly
 /// as before, which is what makes "airplane mode with models present" a working configuration
@@ -37,9 +43,27 @@ public enum ModelGate {
 
     /// Persisted in `UserDefaults`, off by default — turning it on must be the user's decision, and
     /// defaulting it on would brick a fresh install that has no models yet.
+    ///
+    /// Setting it ALSO flips FluidAudio's own `DownloadUtils.enforceOffline`, so the refusal is
+    /// enforced a second time, deep inside the library, on any path Said's own gate does not front.
+    /// That flag exists at the pinned tag under a name the Phase 3 prompt did not have —
+    /// `enforceOffline`, not `ModelHub.offlineMode`, which only lands at 0.15.5 — and it throws
+    /// `DownloadUtils.OfflineError.networkDisabled(operation:)`. Belt AND braces is the right posture
+    /// for the product's central claim: the gate below is what makes the error message good, and
+    /// this is what makes the guarantee hold even if a future call site forgets the gate.
     public static var neverDownloadModels: Bool {
         get { UserDefaults.standard.bool(forKey: "neverDownloadModels") }
-        set { UserDefaults.standard.set(newValue, forKey: "neverDownloadModels") }
+        set {
+            UserDefaults.standard.set(newValue, forKey: "neverDownloadModels")
+            DownloadUtils.enforceOffline = newValue
+        }
+    }
+
+    /// Push the persisted setting into the dependency. Called once at launch, before anything can
+    /// reach for a model — a `UserDefaults` value that nothing has assigned this run would otherwise
+    /// leave `enforceOffline` at its `false` default.
+    public static func syncToDependencies() {
+        DownloadUtils.enforceOffline = neverDownloadModels
     }
 
     /// Call immediately before any code path that could reach the network for a model.
