@@ -1162,6 +1162,37 @@ extension SelfTest {
         gate.append(quiet)
         check("digital silence reads as no level", gate.level == 0)
 
+        // --- SampleSink incremental read (Phase 3, §5.3) ---------------------------------
+        // The reader that makes live memory flat in session length instead of linear. Asserted here
+        // rather than in `--selftest-stream`, because that mode drives the WHISPER path, which by
+        // design still snapshots the whole buffer — it could never exercise this.
+        let inc = SampleSink()
+        let block: [Float] = (0..<1_600).map { sin(Float($0) * 0.03) * 0.2 }
+        var cursor = 0
+        for _ in 0..<10 { inc.append(block) }
+        let (first, next1) = inc.newSamples(after: cursor)
+        check("the first read returns everything buffered so far", first.count == 16_000)
+        cursor = next1
+        let (none, next2) = inc.newSamples(after: cursor)
+        check("a second read with nothing new returns nothing", none.isEmpty && next2 == cursor)
+        inc.append(block)
+        let (delta, next3) = inc.newSamples(after: cursor)
+        check("only what arrived since the last read comes back", delta.count == 1_600)
+        check("…and it is the samples that actually arrived", delta == block)
+        check("the cursor advances by exactly that much", next3 == cursor + 1_600)
+        // The whole point: the cost per pass tracks the audio ARRIVING, not the session so far.
+        check("no read ever hands back the whole session again",
+              inc.largestIncrementalRead == 16_000 && inc.count == 17_600)
+        // A `reset()` between two reads leaves a stale index past the end. That must resynchronise
+        // silently — a new session starting must never trap the recording that starts it.
+        inc.reset()
+        let (afterReset, next4) = inc.newSamples(after: 99_999)
+        check("a stale index after reset clamps instead of trapping",
+              afterReset.isEmpty && next4 == 0)
+        check("reset clears the instrumentation too", inc.largestIncrementalRead == 0)
+        let (negative, _) = inc.newSamples(after: -5)
+        check("a negative index clamps to the start", negative.isEmpty)
+
         // --- SilenceMonitor ------------------------------------------------------------
         var monitor = SilenceMonitor(enabled: true, pauseAfter: 30)
         let speech: Float = 0.08

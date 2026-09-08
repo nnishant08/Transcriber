@@ -244,7 +244,12 @@ public final class SearchIndex: @unchecked Sendable {
     // MARK: - Tokenizing / snippets
 
     /// Lowercase alphanumeric tokens of length ≥ 2.
-    static func tokenize(_ s: String) -> [String] {
+    ///
+    /// **Public because it is the DEFINITION of "a searchable word" in Said**, not merely a helper.
+    /// `SlideSegmenter` compares slide readings with it, and `--selftest-compare-engines` measures
+    /// term recall with it — and a second implementation of this rule would be a place for the two
+    /// to drift apart silently, which is strictly worse than one exposed function.
+    public static func tokenize(_ s: String) -> [String] {
         var out: [String] = []
         var cur = ""
         for ch in s.lowercased() {

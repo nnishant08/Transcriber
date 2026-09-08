@@ -111,21 +111,31 @@ public final class SampleSink: SampleReceiver, @unchecked Sendable {
         let from = min(max(0, index), buffer.count)
         guard from < buffer.count else { return ([], buffer.count) }
         let slice = Array(buffer[from..<buffer.count])
-        largestIncrementalRead = max(largestIncrementalRead, slice.count)
+        maxIncrementalRead = max(maxIncrementalRead, slice.count)
         return (slice, buffer.count)
     }
 
+    private var maxIncrementalRead: Int = 0
+
     /// The largest single `newSamples(after:)` result this sink has ever returned.
     ///
-    /// Instrumentation, not behaviour: `--selftest-stream` asserts the incremental reader never
-    /// hands back more than one window's worth, which is what proves the full-buffer copy is
-    /// actually gone rather than merely moved. Reset by `reset()` along with the buffer.
-    public private(set) var largestIncrementalRead: Int = 0
+    /// Instrumentation, not behaviour: `--selftest-pause` asserts that no read ever hands back the
+    /// whole session again, which is what proves the full-buffer copy is actually gone rather than
+    /// merely moved. (Not `--selftest-stream`: that mode drives the WHISPER path, which by design
+    /// still snapshots, so it could never exercise this reader.) Reset by `reset()` with the buffer.
+    ///
+    /// Read under the lock like everything else here. A `public private(set) var` would have been a
+    /// plain unsynchronised read racing the writer above — which is exactly the exception an
+    /// `@unchecked Sendable` promise must not carry, however harmless a torn `Int` looks.
+    public var largestIncrementalRead: Int {
+        lock.lock(); defer { lock.unlock() }
+        return maxIncrementalRead
+    }
 
     public func reset() {
         lock.lock()
         buffer.removeAll(keepingCapacity: false)
-        largestIncrementalRead = 0
+        maxIncrementalRead = 0
         lock.unlock()
     }
 

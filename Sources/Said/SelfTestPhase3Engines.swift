@@ -372,8 +372,14 @@ extension SelfTest {
                         case .parakeet:
                             try await engine.prepareParakeet { _, _ in }
                         case .whisper:
-                            try await engine.prepare(model: doc.meta.modelName.isEmpty
-                                                     ? "openai_whisper-base.en" : doc.meta.modelName) { _, _ in }
+                            // `meta.engineModel` (public) rather than `meta.modelName` (internal to
+                            // SaidKit) — and more correct besides: a session recorded on Parakeet
+                            // names a Parakeet variant there, which is not something Whisper can
+                            // load, so anything that is not a Whisper variant falls back to base.en.
+                            let recorded = doc.meta.engineModel ?? ""
+                            let variant = recorded.hasPrefix("openai_whisper-")
+                                ? recorded : "openai_whisper-base.en"
+                            try await engine.prepare(model: variant) { _, _ in }
                         }
                     } catch {
                         print("   \(engineID.displayName): unavailable (\(error))")

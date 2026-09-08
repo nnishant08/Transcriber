@@ -522,8 +522,15 @@ therefore flat in session length **on the Parakeet path**.
 
 **The Whisper streamer keeps its old behaviour, deliberately.** Whisper's decoder has no incremental
 entry point — `transcribe(audioArray:)` takes a whole array — so there is no half-fix available.
-What changed is which engine is *default*. `SampleSink.largestIncrementalRead` is instrumented so
-`--selftest-stream` can assert the incremental reader never hands back more than one window.
+What changed is which engine is *default*.
+
+`SampleSink.newSamples(after:)` is asserted in **`--selftest-pause`** — the pure capture-plumbing
+mode — not in `--selftest-stream`, which drives the Whisper path and by construction could never
+exercise it. Eight assertions: the first read returns what is buffered, a second read with nothing
+new returns nothing, only the delta comes back and it is the right samples, the cursor advances by
+exactly that much, `largestIncrementalRead` never reaches the session length, and a stale or
+negative index after a `reset()` clamps instead of trapping. That last one is the one that matters
+in the field: a new session starting must never trap the recording that starts it.
 
 ---
 
