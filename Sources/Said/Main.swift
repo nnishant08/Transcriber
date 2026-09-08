@@ -79,6 +79,30 @@ enum AppMain {
             SelfTest.runDiarize(path: positional(after: idx, in: args)); return
         }
         if args.contains("--selftest-align") { SelfTest.runAlign(); return }
+        // Phase 3 (word substrate / engine seam / editing / voiceprints / slides / semantic search).
+        if args.contains("--selftest-words") { SelfTest.runWords(); return }
+        if args.contains("--selftest-engine-route") { SelfTest.runEngineRoute(); return }
+        if args.contains("--selftest-edit") { SelfTest.runEdit(); return }
+        if args.contains("--selftest-voiceprint") { SelfTest.runVoiceprint(); return }
+        if args.contains("--selftest-slides") { SelfTest.runSlides(); return }
+        if args.contains("--selftest-semantic") { SelfTest.runSemantic(); return }
+        if let idx = args.firstIndex(of: "--selftest-parakeet") {
+            SelfTest.runParakeet(path: positional(after: idx, in: args))
+            RunLoop.main.run(); return
+        }
+        if let idx = args.firstIndex(of: "--selftest-bias") {
+            let terms = (value(of: "--terms", in: args) ?? "")
+                .split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+                .filter { !$0.isEmpty }
+            SelfTest.runBias(path: positional(after: idx, in: args), terms: terms)
+            RunLoop.main.run(); return
+        }
+        if let idx = args.firstIndex(of: "--compare-engines") {
+            SelfTest.runCompareEngines(folder: positional(after: idx, in: args),
+                                       termsPath: value(of: "--terms-file", in: args),
+                                       out: value(of: "--out", in: args))
+            RunLoop.main.run(); return
+        }
         if let idx = args.firstIndex(of: "--selftest-detect") {
             SelfTest.runDetect(path: positional(after: idx, in: args)); return
         }
@@ -1465,6 +1489,12 @@ extension SelfTest {
         check("no speakers → no labels", !mdPlain.contains("**Speaker") && mdPlain.contains("[00:00] one"))
         check("snippet path strips label", SessionStore.stripLeadingSpeakerLabel("**Alice:** hello there") == "hello there"
               && SessionStore.stripLeadingSpeakerLabel("plain line") == "plain line")
+
+        // Phase 3 (§7.7): word-boundary splitting, plus the legacy guarantee that a session with no
+        // word timings still produces byte-identical output to the pre-Phase-3 algorithm.
+        print("")
+        print("-- word-boundary alignment (Phase 3) --")
+        SelfTest.alignPhase3(check: check)
 
         print(ok ? "OK" : "FAIL"); exit(ok ? 0 : 2)
     }

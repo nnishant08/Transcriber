@@ -157,7 +157,10 @@ public final class ParakeetProvider: TranscriptionProvider, @unchecked Sendable 
     public func transcribe(samples: [Float], language: String?, bias: VocabularyBias?) async throws -> [TranscriptSegment] {
         lock.lock(); let mgr = manager; lock.unlock()
         guard let mgr else { throw CaptureError.engineNotReady }
-        guard samples.count > 1_600 else { return [] }   // < ~0.1 s of audio → nothing to do
+        // FluidAudio throws `ASRError.invalidAudioData` below `minimumRequiredSamples` — 4 800
+        // samples (0.3 s) at 16 kHz, verified at the pinned tag. Returning empty is the right
+        // answer for a fragment that short anyway; letting it throw would fail a save over it.
+        guard samples.count >= 4_800 else { return [] }
 
         var state = TdtDecoderState.make(decoderLayers: await mgr.decoderLayerCount)
         let result = try await mgr.transcribe(samples, decoderState: &state,

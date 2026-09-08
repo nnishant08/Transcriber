@@ -72,6 +72,22 @@ run "screen-recording encoder"   120 --selftest-screenrec
 echo "=== Phase 2 (visual timeline) ==="
 run "frames / SlideOCR"          300 --selftest-frames
 
+echo "=== Phase 3 (word substrate / engine seam / editing / voices / slides / search) ==="
+# All six of these are PURE — no models, no audio hardware, no permissions, temp dirs only. That is
+# deliberate: the parts of Phase 3 that can produce a silently wrong transcript are exactly the parts
+# written as pure functions, so they can be asserted this thoroughly in a second each.
+run "word substrate"              60 --selftest-words
+run "engine routing"              60 --selftest-engine-route
+run "transcript editing"          60 --selftest-edit
+run "voiceprint matching"         60 --selftest-voiceprint
+run "slide spans + search"        60 --selftest-slides
+run "semantic chunk + fusion"     60 --selftest-semantic
+# Needs the Parakeet models. SKIPS cleanly (exit 0) when they are absent or downloads are off — a red
+# bar for "you are offline" would train everyone to ignore this suite.
+run "parakeet transcription"     900 --selftest-parakeet
+# --selftest-bias needs a purpose-made clip with a term a general model mishears; see §5.4 and the
+# mode's own SKIP message for how to make one. Not run unattended because it has no fixture.
+
 echo "=== Phase 1 (cross-platform core) ==="
 run ".said bundle round-trip"    180 --selftest-bundle
 run "portability seams"           60 --selftest-portability

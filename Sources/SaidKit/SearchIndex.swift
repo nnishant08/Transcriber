@@ -29,6 +29,17 @@ public struct SessionHit: Sendable, Identifiable {
     /// and the `slides:` search filter.
     public var hasSlideMatch: Bool { snippets.contains(\.isSlide) }
 
+    /// Public because the `Said` module builds hits directly in two places: the semantic-only
+    /// results in `Intelligence.retrieve`, and `--selftest-semantic`. The synthesized memberwise
+    /// init is internal (`score` is), which would otherwise make both impossible from outside.
+    public init(dir: URL, meta: SessionMeta, score: Double, matchCount: Int, snippets: [SearchSnippet]) {
+        self.dir = dir
+        self.meta = meta
+        self.score = score
+        self.matchCount = matchCount
+        self.snippets = snippets
+    }
+
     public var id: String { dir.path }
     public var title: String {
         if let raw = meta.title?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty {

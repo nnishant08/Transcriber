@@ -118,6 +118,13 @@ public final class TranscriptionEngine: @unchecked Sendable {
     /// Whether custom vocabulary actually reaches the decoder on the ACTIVE engine right now.
     public var vocabularyBiasIsEffective: Bool { provider(activeEngine).supportsVocabularyBias }
 
+    /// Release every loaded model. Used by `--compare-engines`, which loads each engine in turn over
+    /// many sessions and would otherwise accumulate two resident models per iteration.
+    public func unloadAll() async {
+        await whisper.unload()
+        await parakeet.unload()
+    }
+
     // MARK: Vocabulary
 
     /// Whisper's `promptTokens` construction, retained on the façade because `--selftest-vocab`

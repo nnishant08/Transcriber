@@ -8,6 +8,15 @@ public struct SemanticChunk: Codable, Sendable, Equatable {
     public var text: String
     public var vector: [Float]
 
+    public init(sessionPath: String, start: TimeInterval, end: TimeInterval,
+                text: String, vector: [Float]) {
+        self.sessionPath = sessionPath
+        self.start = start
+        self.end = end
+        self.text = text
+        self.vector = vector
+    }
+
     public var timestamp: String { DocumentBuilder.timestamp(start) }
 }
 
@@ -15,6 +24,11 @@ public struct SemanticChunk: Codable, Sendable, Equatable {
 public struct SemanticHit: Sendable, Equatable {
     public let chunk: SemanticChunk
     public let similarity: Float
+
+    public init(chunk: SemanticChunk, similarity: Float) {
+        self.chunk = chunk
+        self.similarity = similarity
+    }
 }
 
 // MARK: - Chunking
