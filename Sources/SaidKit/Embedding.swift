@@ -94,7 +94,9 @@ public actor AppleContextualEmbedder: EmbeddingProvider {
             // other model acquisition does. "Never download models" means never, not "except this".
             try ModelGate.requireDownloadAllowed("The on-device language model for semantic search")
             let result = try await e.requestAssets()
-            guard result == .available else {
+            // Pattern-matched rather than compared with `==`: `AssetsResult` is a bridged
+            // Objective-C enum and its Equatable conformance is not something to bet a build on.
+            guard case .available = result else {
                 throw EmbeddingError.assetsUnavailable("\(result)")
             }
         }

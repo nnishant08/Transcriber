@@ -241,7 +241,12 @@ public final class SemanticIndex: @unchecked Sendable {
     /// never an error, because every caller has a keyword ranking to fall back on.
     public func search(_ query: String, limit: Int = 12) async -> [SemanticHit] {
         guard Self.isEnabled else { return [] }
-        guard await embedder.isReady || ((try? await embedder.prepare()) != nil) else { return [] }
+        if await !embedder.isReady {
+            // A failure here is not an error condition for the caller: every consumer of semantic
+            // search has a keyword ranking to fall back on, and returning nothing degrades to
+            // exactly the pre-Phase-3 behaviour.
+            do { try await embedder.prepare() } catch { return [] }
+        }
         guard let q = await embedder.embed(query) else { return [] }
 
         lock.lock(); let snapshot = entries; lock.unlock()
