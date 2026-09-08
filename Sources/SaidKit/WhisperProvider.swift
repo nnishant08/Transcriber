@@ -9,9 +9,15 @@ import WhisperKit
 /// respect — the final pass now also asks for word timings. Everything else is byte-for-byte the
 /// prior behaviour, which is what makes `stream-baseline-whisper.txt` a meaningful fixture.
 ///
-/// **Naming hazard.** WhisperKit exports its own `WordTiming`, and SaidKit defines one. Swift
-/// resolves an unqualified `WordTiming` inside SaidKit to SaidKit's, shadowing the import — but
-/// silently, and this file legitimately handles both. Every mention below is therefore qualified.
+/// **Naming hazard, and it has a sharp edge.** WhisperKit exports its own `WordTiming`, and SaidKit
+/// defines one. Swift resolves an unqualified `WordTiming` inside SaidKit to SaidKit's, shadowing
+/// the import — silently — and this file legitimately handles both.
+///
+/// The obvious fix does not work: `WhisperKit.WordTiming` is NOT "the module's WordTiming". The
+/// module exports an `open class WhisperKit`, and a type shadows a module name, so that spelling is
+/// read as a nested type inside the class and fails to resolve. Theirs is therefore reached by
+/// INFERENCE (from the element type of `TranscriptionSegment.words`) and only Said's is spelled out,
+/// as `SaidKit.WordTiming` — which is safe, because nothing shadows `SaidKit`.
 public final class WhisperProvider: TranscriptionProvider, @unchecked Sendable {
 
     public static let engineID: TranscriptionEngineID = .whisper
@@ -112,7 +118,14 @@ public final class WhisperProvider: TranscriptionProvider, @unchecked Sendable {
     // MARK: Transcription
 
     public func transcribe(samples: [Float], language: String?, bias: VocabularyBias?) async throws -> [TranscriptSegment] {
-        lock.lock(); let kit = whisperKit; let variant = loadedVariant; lock.unlock()
+        // One critical section for everything this call reads. `wordTimestampsUnsupported` was
+        // previously read outside the lock while being mutated inside it — every other stored
+        // property here is lock-guarded, so that was an oversight, not a deliberate relaxation.
+        lock.lock()
+        let kit = whisperKit
+        let variant = loadedVariant
+        let wantWords = variant.map { !wordTimestampsUnsupported.contains($0) } ?? false
+        lock.unlock()
         guard let kit else { throw CaptureError.engineNotReady }
         guard samples.count > 1_600 else { return [] }   // < ~0.1 s of audio → nothing to do
 
@@ -132,12 +145,16 @@ public final class WhisperProvider: TranscriptionProvider, @unchecked Sendable {
         // and word-boundary speaker splits work on a Whisper session. But not every variant's
         // alignment heads can serve the request, and a save must NEVER fail over timings (§5.5), so
         // a throw falls back to a plain pass and the variant is remembered as unable.
-        let wantWords = variant.map { !wordTimestampsUnsupported.contains($0) } ?? false
         let results: [TranscriptionResult]
         if wantWords {
             do {
                 results = try await run(wordTimestamps: true)
             } catch {
+                // **Cancellation is not evidence of anything.** Stopping a recording or dismissing a
+                // re-transcription cancels this task; treating that as "this model cannot do word
+                // timings" would permanently poison the variant for the rest of the app run AND pay
+                // for a second full transcription pass on the way out. Rethrow instead.
+                if error is CancellationError || Task.isCancelled { throw error }
                 if let variant {
                     lock.lock(); wordTimestampsUnsupported.insert(variant); lock.unlock()
                 }
@@ -167,11 +184,17 @@ public final class WhisperProvider: TranscriptionProvider, @unchecked Sendable {
     }
 
     /// Map WhisperKit's segment onto Said's, carrying word timings across when present.
+    ///
+    /// **The name collision is handled by INFERENCE, not by qualification.** WhisperKit exports both
+    /// a module named `WhisperKit` and an `open class WhisperKit` inside it, and the class shadows
+    /// the module — so `WhisperKit.WordTiming` does not mean "the module's WordTiming", it means "a
+    /// nested type inside the class", which does not exist. The element type of `s.words` is already
+    /// theirs, so the closure parameter is left unannotated and only SaidKit's is spelled out.
     private static func segment(from s: TranscriptionSegment) -> TranscriptSegment {
         let start = TimeInterval(s.start)
         let end = TimeInterval(s.end)
         let words: [SaidKit.WordTiming]? = s.words.map { list in
-            list.map { (w: WhisperKit.WordTiming) in
+            list.map { w in
                 SaidKit.WordTiming(text: w.word,
                                    start: TimeInterval(w.start),
                                    end: TimeInterval(w.end),
