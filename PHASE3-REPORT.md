@@ -67,9 +67,16 @@ diff -ru /tmp/baseline-before /tmp/baseline-after
 ```
 
 It captures: the `--selftest-doc` output and md5 (case 1 separately, so it stays comparable as case 2
-grows), the Whisper transcription output for `--selftest` and `--selftest-stream`, the
-`SpeakerAlignment` fixture, the `codesign` designated requirement, model disk usage, and `finalPass`
-wall clock + peak RSS.
+grows), the Whisper transcription output for `--selftest` and `--selftest-stream`, the `codesign`
+designated requirement, model disk usage, and `finalPass` wall clock + peak RSS.
+
+**One nuance about the `SpeakerAlignment` fixture.** It can only be emitted by a Phase 3 binary
+(`--selftest-align --emit-fixture <path>`), so it does NOT prove equivalence with the pre-Phase-3
+build. It does not need to: `--selftest-align` asserts that equivalence *structurally*, by comparing
+the dispatcher's output against `assignWholeSegment` — which IS the pre-Phase-3 function, preserved
+unmodified. That check cannot drift, because it compares the code against itself. The fixture's job
+is different and still worth having: it locks today's behaviour so a future change to
+`assignWholeSegment` itself has something to fail against.
 
 **One correction to the prompt's premise:** `--selftest-doc` does not print an md5 — it prints the
 rendered markdown. The "case-1 md5" is the digest *of that output*, which the script now takes.

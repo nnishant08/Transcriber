@@ -8,12 +8,19 @@ extension SelfTest {
     /// The Phase 3 additions to `--selftest-align`, called from the existing mode so the old
     /// assertions and the new ones live in one place and run together.
     ///
-    /// The legacy guarantee is asserted TWICE, on purpose. Once structurally — the dispatcher and
-    /// the preserved `assignWholeSegment` must agree element-for-element on segments with no word
-    /// timings — and once against a committed fixture, when one is present. The structural check is
-    /// the stronger of the two (it cannot drift, because it compares the code against itself), but
-    /// the fixture is what catches a change to `assignWholeSegment` itself.
-    static func alignPhase3(check: (String, Bool) -> Void) {
+    /// The legacy guarantee is asserted TWICE, and the two do different jobs.
+    ///
+    /// **Structurally**, the dispatcher and the preserved `assignWholeSegment` must agree
+    /// element-for-element on segments with no word timings. That is the stronger check and it
+    /// cannot drift, because it compares the code against itself — `assignWholeSegment` IS the
+    /// pre-Phase-3 function.
+    ///
+    /// **Against a fixture**, when one is committed. Note what this can and cannot be: the fixture
+    /// necessarily comes from the CURRENT build (`--selftest-align --emit-fixture <path>`), because
+    /// a pre-Phase-3 binary has no such flag. So it does not prove equivalence with the old build —
+    /// the structural check already does that — it LOCKS today's behaviour against future drift in
+    /// `assignWholeSegment` itself, which the structural check cannot catch.
+    static func alignPhase3(check: (String, Bool) -> Void, emitFixture: String? = nil) {
         let turns = SpeakerAlignment.normalize([
             (id: "A", start: 0.0, end: 5.0),
             (id: "B", start: 5.0, end: 10.0),
@@ -33,15 +40,24 @@ extension SelfTest {
               viaDispatcher.map(\.text) == legacy.map(\.text)
                   && viaDispatcher.map(\.start) == legacy.map(\.start))
 
-        // A committed fixture, when one exists (captured by Scripts/capture_baselines.sh from the
-        // pre-Phase-3 build). Absent is not a failure — the structural check above already holds.
+        // Emit the fixture on request, so a future change to `assignWholeSegment` has something to
+        // fail against.
+        if let emitFixture {
+            let enc = JSONEncoder()
+            enc.outputFormatting = [.prettyPrinted]
+            if let data = try? enc.encode(viaDispatcher.map(\.speaker)) {
+                try? data.write(to: URL(fileURLWithPath: emitFixture))
+                print("  · wrote align fixture to \(emitFixture)")
+            }
+        }
         let fixture = URL(fileURLWithPath: "Fixtures/baselines/align-legacy-fixture.json")
         if let data = try? Data(contentsOf: fixture),
            let expected = try? JSONDecoder().decode([Int?].self, from: data) {
-            check("legacy alignment matches the committed pre-build fixture",
+            check("legacy alignment matches the committed fixture",
                   viaDispatcher.map(\.speaker) == expected)
         } else {
-            print("  · (no align-legacy-fixture.json — structural equivalence stands on its own)")
+            print("  · (no align-legacy-fixture.json yet — structural equivalence stands on its own;")
+            print("     capture one with: --selftest-align --emit-fixture Fixtures/baselines/align-legacy-fixture.json)")
         }
 
         // ---- A speaker change INSIDE a segment: the case that was silently wrong before.
@@ -304,7 +320,7 @@ extension SelfTest {
                 let language = doc.meta.language ?? "en"
 
                 var byEngine: [String: String] = [:]
-                var timing: [String: (rtfx: Double, peakMB: Double)] = [:]
+                var timing: [String: Double] = [:]      // engine → RTFx
 
                 for engineID in TranscriptionEngineID.allCases {
                     let engine = TranscriptionEngine()
@@ -321,7 +337,6 @@ extension SelfTest {
                         continue
                     }
                     let t0 = Date()
-                    let before = Self.residentMB()
                     guard let segs = try? await engine.transcribeSamples(samples, language: language) else {
                         print("   \(engineID.displayName): failed")
                         continue
@@ -329,8 +344,7 @@ extension SelfTest {
                     let elapsed = Date().timeIntervalSince(t0)
                     let text = segs.map(\.text).joined(separator: " ")
                     byEngine[engineID.rawValue] = text
-                    timing[engineID.rawValue] = (audioSeconds / max(elapsed, 0.001),
-                                                 max(0, Self.residentMB() - before))
+                    timing[engineID.rawValue] = audioSeconds / max(elapsed, 0.001)
                     print(String(format: "   %@: %.1f× real time, %d chars",
                                  engineID.displayName, audioSeconds / max(elapsed, 0.001), text.count))
                     await engine.unloadAll()
@@ -360,7 +374,7 @@ extension SelfTest {
         let session: String
         let audioSeconds: Double
         let texts: [String: String]
-        let timing: [String: (rtfx: Double, peakMB: Double)]
+        let timing: [String: Double]      // engine → RTFx
         let terms: [String]
 
         /// Per-term recall: did this engine's transcript contain the term at all?
@@ -379,7 +393,7 @@ extension SelfTest {
             out += String(format: "audio: %.1fs\n\n", audioSeconds)
             for (engine, text) in texts.sorted(by: { $0.key < $1.key }) {
                 out += "--- \(engine)"
-                if let t = timing[engine] { out += String(format: "  (%.1f× real time)", t.rtfx) }
+                if let rtfx = timing[engine] { out += String(format: "  (%.1f× real time)", rtfx) }
                 if !terms.isEmpty {
                     let r = recall(engine)
                     out += "  [terms \(r.found)/\(r.total)]"
@@ -415,7 +429,7 @@ extension SelfTest {
                 totalRecall[e, default: (0, 0)].1 += r.total
                 out += String(format: "%-32@ %5.0fs   %-9@ %5.1f  %6d  %6.1f%%  %3d/%-3d\n",
                               String(row.session.prefix(32)) as NSString, row.audioSeconds,
-                              e as NSString, row.timing[e]?.rtfx ?? 0, text.count,
+                              e as NSString, row.timing[e] ?? 0, text.count,
                               diverge * 100, r.found, r.total)
             }
         }
@@ -442,15 +456,4 @@ extension SelfTest {
         return union > 0 ? 1.0 - Double(shared) / Double(union) : 0
     }
 
-    /// Resident memory in MB, for the peak-memory column.
-    static func residentMB() -> Double {
-        var info = mach_task_basic_info()
-        var count = mach_msg_type_number_t(MemoryLayout<mach_task_basic_info>.size) / 4
-        let result = withUnsafeMutablePointer(to: &info) {
-            $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
-                task_info(mach_task_self_, task_flavor_t(MACH_TASK_BASIC_INFO), $0, &count)
-            }
-        }
-        return result == KERN_SUCCESS ? Double(info.resident_size) / 1_048_576.0 : 0
-    }
 }

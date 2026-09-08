@@ -176,6 +176,9 @@ enum AppMain {
         SaidApp.main()
     }
 
+    /// `--emit-fixture <path>`, for the modes that can lock their own output against future drift.
+    static func fixturePath(in args: [String]) -> String? { value(of: "--emit-fixture", in: args) }
+
     private static func value(of flag: String, in args: [String]) -> String? {
         guard let i = args.firstIndex(of: flag), i + 1 < args.count else { return nil }
         return args[i + 1]
@@ -1494,7 +1497,8 @@ extension SelfTest {
         // word timings still produces byte-identical output to the pre-Phase-3 algorithm.
         print("")
         print("-- word-boundary alignment (Phase 3) --")
-        SelfTest.alignPhase3(check: check)
+        SelfTest.alignPhase3(check: check,
+                             emitFixture: AppMain.fixturePath(in: CommandLine.arguments))
 
         print(ok ? "OK" : "FAIL"); exit(ok ? 0 : 2)
     }

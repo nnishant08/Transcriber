@@ -66,8 +66,12 @@ echo "--> --selftest-stream (streaming + finalPass)"
 #         byte-identical output to this on any session with no word timings.
 echo "--> --selftest-align"
 "$BIN" --selftest-align > "$OUT/selftest-align.txt" 2>&1
-"$BIN" --selftest-align --emit-fixture "$OUT/align-legacy-fixture.json" > /dev/null 2>&1 \
-    || echo "   (note: --emit-fixture is a Phase 3 addition; absent on a pre-Phase-3 binary)"
+# The fixture can only come from a Phase 3 binary (`--emit-fixture` did not exist before), so it
+# does NOT prove equivalence with the pre-Phase-3 build — `--selftest-align`'s structural check
+# already does that, by comparing the dispatcher against the preserved pre-Phase-3 function itself.
+# What it does is LOCK today's behaviour so a future change to that function has something to fail
+# against. Harmless (and skipped) when run against an older binary.
+"$BIN" --selftest-align --emit-fixture "$OUT/align-legacy-fixture.json" > /dev/null 2>&1 || true
 
 # ---- 4. The designated requirement. TCC binds permission grants to the code signature, so this
 #         string must be identical before and after or every grant breaks (§5.6, §11).
