@@ -47,15 +47,33 @@ public enum SlideSegmenter {
 
     /// How much of two frames' OCR text must overlap for them to be the same slide.
     ///
-    /// Jaccard similarity over normalised word sets. The same static slide read twice by Vision
-    /// typically agrees on well over 90% of its words — the variation is a stray character or a
-    /// misread bullet — while a genuine slide change usually shares only stock words ("the", the
-    /// deck's running title) and lands far below half. 0.75 sits in the empty middle of that gap,
-    /// biased toward NOT collapsing: wrongly splitting one slide into two costs a duplicate card,
-    /// wrongly merging two costs a slide that has vanished from the timeline entirely.
+    /// Measured as the **overlap coefficient** — the intersection over the SMALLER word set — not
+    /// Jaccard. That choice is the whole correctness of this type, so it is worth the paragraph:
+    ///
+    /// Jaccard divides by the UNION, so it charges a reading for every word the OTHER reading
+    /// happened to pick up. Two photographs of one five-word title where Vision reads "segments"
+    /// once and "segment" the next time score 4/6 = 0.67 and are declared different slides. The
+    /// penalty scales with how little text is on the slide, so it is worst exactly where slides are
+    /// shortest — titles and section dividers, the ones most likely to stay up the longest. The
+    /// overlap coefficient asks the question that actually matters — "is one reading essentially
+    /// contained in the other?" — and scores that pair 4/5 = 0.8.
+    ///
+    /// The failure mode this OPENS is a small set swallowed by a large one: a slide reading
+    /// {agenda} is fully contained in {agenda, methodology, results, timeline} and would merge at
+    /// 1.0. `minimumSizeRatio` closes it. Two photographs of one slide read roughly the same AMOUNT
+    /// of text; a reading a quarter the length of its neighbour is a different slide, not a blurrier
+    /// picture of the same one.
+    ///
+    /// The bias stays where the doc comment always claimed it was — toward NOT collapsing, because
+    /// wrongly splitting one slide costs a duplicate card while wrongly merging two costs a slide
+    /// that has vanished from the timeline entirely.
     ///
     /// Tuned, not derived — see `PHASE3-REPORT.md`.
     public static let similarityThreshold = 0.75
+
+    /// The smaller word set must be at least this fraction of the larger for the overlap coefficient
+    /// to be trusted at all. See `similarityThreshold` for why.
+    public static let minimumSizeRatio = 0.5
 
     /// Frames → spans, in time order.
     ///
@@ -107,7 +125,9 @@ public enum SlideSegmenter {
     static func isSameSlide(_ a: FrameEvent, _ b: FrameEvent) -> Bool {
         guard let ta = normalizedWords(a.text), !ta.isEmpty,
               let tb = normalizedWords(b.text), !tb.isEmpty else { return false }
-        return jaccard(ta, tb) >= similarityThreshold
+        let ratio = Double(min(ta.count, tb.count)) / Double(max(ta.count, tb.count))
+        guard ratio >= minimumSizeRatio else { return false }
+        return overlap(ta, tb) >= similarityThreshold
     }
 
     /// The frame that best represents a group.
@@ -127,10 +147,13 @@ public enum SlideSegmenter {
         return words.isEmpty ? nil : Set(words)
     }
 
-    static func jaccard(_ a: Set<String>, _ b: Set<String>) -> Double {
-        let union = a.union(b).count
-        guard union > 0 else { return 0 }
-        return Double(a.intersection(b).count) / Double(union)
+    /// Overlap coefficient: intersection over the SMALLER set. Divides by the smaller side on
+    /// purpose — see `similarityThreshold`. Guarded by `minimumSizeRatio` at the call site, which is
+    /// what stops a short reading from being swallowed by a long unrelated one.
+    static func overlap(_ a: Set<String>, _ b: Set<String>) -> Double {
+        let smaller = min(a.count, b.count)
+        guard smaller > 0 else { return 0 }
+        return Double(a.intersection(b).count) / Double(smaller)
     }
 
     /// A sensible length for the final span when the session duration is unknown: the median gap

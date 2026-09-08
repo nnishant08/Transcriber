@@ -170,7 +170,13 @@ public enum SpeakerAlignment {
         for (i, run) in runs.enumerated() {
             let slice = Array(words[run.range])
             guard let first = slice.first, let last = slice.last else { continue }
-            let lower = ranges[run.range.lowerBound].lowerBound
+            // The FIRST part starts at the start of the string, not at its first word: an opening
+            // quote, dash, bracket or ellipsis is a character the engine never emitted as a word
+            // token, and anchoring on the word would delete it from the saved transcript. This is
+            // the mirror of the `endIndex` rule below, and it exists for the same reason — a split
+            // must move characters between parts, never drop them.
+            let lower = (i == 0) ? segment.text.startIndex
+                                 : ranges[run.range.lowerBound].lowerBound
             // Each part runs up to where the NEXT part's first word begins — not to where its own
             // last word ends — so the punctuation and spacing between them stays with the earlier
             // part instead of falling into the gap and being lost. The final part runs to the end of
@@ -230,8 +236,29 @@ public enum SpeakerAlignment {
             let merged = Run(speaker: runs[target].speaker, range: lower..<upper)
             let (lo, hi) = (min(i, target), max(i, target))
             runs.replaceSubrange(lo...hi, with: [merged])
+            // Absorbing a stray run leaves its two neighbours side by side, and they are very often
+            // THE SAME SPEAKER — which is the whole point: "A A A A A B A A A A A" absorbs the B and
+            // must come back as one run of A, not two. Without this the caller sees `runs.count > 1`,
+            // splits the segment at word 6, and renders one sentence as two consecutive lines under
+            // the same speaker label — precisely the artefact absorption exists to remove.
+            runs = coalesce(runs)
         }
         return runs
+    }
+
+    /// Merge adjacent runs carrying the same speaker. Runs always partition `0..<words.count` in
+    /// order, so joining `last.lowerBound..<next.upperBound` is exact rather than approximate.
+    static func coalesce(_ runs: [Run]) -> [Run] {
+        var out: [Run] = []
+        for r in runs {
+            if let last = out.last, last.speaker == r.speaker {
+                out[out.count - 1] = Run(speaker: last.speaker,
+                                         range: last.range.lowerBound..<r.range.upperBound)
+            } else {
+                out.append(r)
+            }
+        }
+        return out
     }
 
     /// Locate each word in the segment's text, in order. `nil` if any word cannot be found — which

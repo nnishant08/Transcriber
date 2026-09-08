@@ -64,7 +64,7 @@ public enum VoiceprintMatcher {
 
     /// Maximum cosine DISTANCE at which a stored voice may be proposed. Lower is stricter.
     ///
-    /// Measured in exactly the units FluidAudio clusters in (`SpeakerOperations.cosineDistance`), so
+    /// Measured in exactly the units FluidAudio clusters in (`SpeakerUtilities.cosineDistance`), so
     /// this number is directly comparable to the diarizer's own `clusteringThreshold` of 0.7 — and
     /// it is deliberately far tighter than that, for two reasons:
     ///
@@ -91,7 +91,10 @@ public enum VoiceprintMatcher {
     public static func distance(from embedding: [Float], to print: Voiceprint) -> Float {
         var best = Float.greatestFiniteMagnitude
         for candidate in print.embeddings where candidate.count == embedding.count {
-            best = min(best, SpeakerOperations.cosineDistance(embedding, candidate))
+            // `SpeakerUtilities`, NOT `SpeakerOperations` — the FILE is SpeakerOperations.swift but
+            // the type inside it is `public enum SpeakerUtilities` (FluidAudio 0.15.2). The
+            // identifier `SpeakerOperations` does not exist anywhere in the dependency's sources.
+            best = min(best, SpeakerUtilities.cosineDistance(embedding, candidate))
         }
         return best
     }

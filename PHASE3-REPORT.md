@@ -41,12 +41,13 @@ position:
    first-party API this phase newly depends on is not recalled from memory.
 3. **A parallel verification pass** re-read the dependency at the pinned tag independently and found
    three real defects in the first draft, all fixed — see §3.
-4. **An adversarial compile review** over every new and changed file found five more, all fixed —
-   see §3a. Two of them would have shipped as *silent wrongness*: vocabulary biasing that did
-   nothing while reporting success, and live transcription windows dropped on the floor. Neither
-   would have produced an error, a log line, or a visibly broken transcript.
+4. **An adversarial compile review** over every new and changed file found eleven more, all fixed —
+   see §3a. Four of them would have shipped as *silent wrongness*: vocabulary biasing that did
+   nothing while reporting success, live transcription windows dropped on the floor, a duplicate
+   chunk written into the semantic index on every word-timed session, and one sentence split into
+   two lines under the same speaker label. None would have produced an error or a log line.
 
-**That the review found what it did is the strongest available argument that more remains.** Five
+**That the review found what it did is the strongest available argument that more remains.** Eleven
 defects in code this carefully written, from one pass, means the compiler will find more. Treat the
 first real build as part of the work, not a formality.
 
@@ -235,8 +236,9 @@ A second, independent read of the pinned tag found three real defects in the fir
 ## 3a. Defects found by the adversarial compile review
 
 A second fleet re-read every new and changed file against the pinned dependency sources, hunting
-compile errors and logic bugs — the job a compiler would have done. It found five real defects. Two
-of them would have shipped as silent wrongness, which is the category that matters.
+compile errors and logic bugs — the job a compiler would have done. It found **eleven** real defects.
+Four of them would have shipped as silent wrongness, which is the category that matters, and three
+were hard compile errors that would have stopped the build dead.
 
 1. **`WhisperKit.WordTiming` does not resolve** — a compile error. The module exports an
    `open class WhisperKit`, and **a type shadows a module name**, so the qualified spelling reads as
@@ -258,9 +260,56 @@ of them would have shipped as silent wrongness, which is the category that matte
    produce word timings for the rest of the app run *and* pay for a second full transcription pass on
    the way out. Cancellation now rethrows.
 
+6. **`SpeakerOperations.cosineDistance` does not exist** — a compile error that would have taken
+   the whole of SaidKit with it. In FluidAudio 0.15.2 the FILE is `SpeakerOperations.swift` but the
+   TYPE inside it is `public enum SpeakerUtilities`; the identifier `SpeakerOperations` appears
+   nowhere in the dependency's sources. **This is the third variant of one root cause — a name read
+   off the wrong axis.** Findings 1 and 2 read a type name off a MODULE name; this one read it off a
+   FILE name. All three are invisible without a compiler and all three were found by reading the
+   dependency's actual declarations.
+7. **`snippets.contains(\.isSlide)`** — a compile error. The unlabelled `contains(_:)` is the
+   `Element: Equatable` overload; `SearchSnippet` is deliberately not Equatable, and a key path is
+   not an element. Needed `contains(where:)`.
+8. **The semantic chunker emitted a duplicate tail chunk on every word-timed session.** The
+   "already covered" guard compared raw SEGMENT bounds against a chunk end derived from the last
+   WORD — which is strictly earlier whenever word timings exist — so it reported "not covered" for
+   precisely the segments it had just written. Invisible on legacy sessions, universal on Parakeet
+   ones: the index stored duplicate vectors for the same passage and search spent its budget
+   returning it twice. Fixed by tracking whether a segment actually arrived since the last flush,
+   which is what the guard was trying to ask.
+9. **Absorbing a stray word left a scar.** `absorbShortRuns` merged a one-word excursion into a
+   neighbour but never coalesced the two same-speaker runs it left adjacent, so `A A A A A B A A A A A`
+   came back as *two* runs of A — and the caller, seeing `runs.count > 1`, split one sentence into two
+   consecutive lines under the same speaker label. That is the exact artefact absorption exists to
+   remove. The pre-existing self-test could not catch it: its only short run sat at the END, where the
+   merge collapses to a single run either way.
+10. **Slide grouping did not group.** Jaccard at 0.75 divides by the UNION, so it charges a reading
+    for every word the other reading happened to pick up — and the penalty is worst on SHORT slides,
+    which are exactly the titles and section dividers most likely to stay up longest. One plural
+    misread on a five-word title scores 0.67 and starts a new slide. The committed
+    `--selftest-slides` fixture (six frames, three real slides) would have produced **five** spans and
+    failed every assertion in it. Switched to the **overlap coefficient** (intersection over the
+    SMALLER set) with a `minimumSizeRatio` guard: the coefficient asks "is one reading essentially
+    contained in the other?", and the guard closes the failure it opens — a short reading being
+    swallowed by a long unrelated one. Both directions are now asserted.
+11. **A split dropped any character before the first word.** `assignByWord` anchored the FIRST part on
+    its first word rather than on the start of the string, so a leading dash, quote or bracket — a
+    character the engine never emitted as a token — vanished from the saved transcript. The tail was
+    already anchored at `endIndex` for exactly this reason; the head simply was not treated
+    symmetrically.
+
 Plus a data race (`wordTimestampsUnsupported` read outside the lock that guards its mutation) and a
 misplaced `ModelGate.syncToDependencies()` call that had landed inside a `didSet` instead of the
 launch path — where it actually matters, because a `didSet` does not fire on initialisation.
+
+**What the review changed about the self-tests.** Five of these eleven are logic bugs that a green
+build would still have shipped, and in three cases the suite ran straight past them. So each fix
+landed with the assertion that would have caught it: the chunker now asserts every chunk reaches
+further than the one before it and that none is contained in its predecessor; alignment asserts a
+stray word MID-sentence (not at the end) does not split the line, and that a leading character
+survives a split; slide grouping asserts both the case the new metric closes (a plural misread) and
+the one it opens (a short reading inside a long one). **A fix without the test that would have caught
+it is half a fix**, and on this build — where nothing can be compiled — it is less than half.
 
 ## 4. §5.2a — the language-detection chicken-and-egg, resolved
 

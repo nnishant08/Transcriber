@@ -511,6 +511,23 @@ extension SelfTest {
         c.check("unknown duration still closes the last span",
                 (noDuration.last?.duration ?? 0) > 0)
 
+        // The hazard the overlap coefficient OPENS: a short reading fully contained in a long one.
+        // `minimumSizeRatio` is what must reject it, so assert the rejection directly rather than
+        // trusting the threshold.
+        let swallow = [
+            FrameEvent(time: 0, imagePath: "x1.png", text: "Agenda"),
+            FrameEvent(time: 60, imagePath: "x2.png", text: "Agenda methodology results timeline"),
+        ]
+        c.check("a short reading is not swallowed by a long one that contains it",
+                SlideSegmenter.spans(frames: swallow, sessionDuration: 120).count == 2)
+        // …and the case it CLOSES: one plural misread must not split a slide that never changed.
+        let plural = [
+            FrameEvent(time: 0, imagePath: "y1.png", text: "Quarterly revenue growth by segment"),
+            FrameEvent(time: 60, imagePath: "y2.png", text: "Quarterly revenue growth by segments"),
+        ]
+        c.check("one misread word does not split a slide that never changed",
+                SlideSegmenter.spans(frames: plural, sessionDuration: 120).count == 1)
+
         // Textless frames are never merged — two illegible photos are not evidence of one slide.
         let blank = [
             FrameEvent(time: 1, imagePath: "a.png", text: nil),
@@ -585,6 +602,14 @@ extension SelfTest {
         c.check("chunks carry text", chunks.allSatisfy { !$0.text.isEmpty })
         c.check("chunk end uses the last word's time where available",
                 chunks.first.map { $0.end > $0.start } ?? false)
+        // The tail must not re-emit the overlap the previous flush already wrote. This is asserted
+        // on WORD-TIMED segments deliberately: the original guard compared segment bounds against a
+        // chunk end derived from the last WORD, so it read "not covered" for exactly the segments it
+        // had just written — invisible on legacy sessions, universal on word-timed ones.
+        c.check("every chunk reaches further than the one before it",
+                zip(chunks, chunks.dropFirst()).allSatisfy { $1.end > $0.end })
+        c.check("no chunk is contained in its predecessor",
+                zip(chunks, chunks.dropFirst()).allSatisfy { !$0.text.contains($1.text) })
         c.check("empty input → no chunks",
                 SemanticChunker.chunks(segments: [], sessionPath: "/tmp/s").isEmpty)
         c.check("a segment with no words still chunks",

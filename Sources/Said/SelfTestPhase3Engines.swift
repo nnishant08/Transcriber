@@ -125,6 +125,49 @@ extension SelfTest {
         check("a run shorter than the minimum is absorbed, not split out",
               SpeakerAlignment.assign(segments: [shortRun], turns: turns).count == 1)
 
+        // ---- A stray word in the MIDDLE, which is where absorption used to leave a scar.
+        // Absorbing the excursion leaves speaker-1 runs on both sides of it; unless they are
+        // coalesced the caller sees two runs and splits one sentence into two consecutive lines
+        // under the SAME label. The pre-existing short-run case above cannot catch this, because its
+        // stray sits at the END and collapses to a single run either way.
+        let interiorTurns = SpeakerAlignment.normalize([
+            (id: "A", start: 0.0, end: 2.0),
+            (id: "B", start: 2.0, end: 2.4),
+            (id: "A", start: 2.4, end: 10.0),
+        ])
+        let interior = TranscriptSegment(
+            start: 0.0, end: 4.5, text: "one two three four five six seven eight nine ten eleven",
+            words: [
+                WordTiming(text: "one", start: 0.0, end: 0.3),
+                WordTiming(text: "two", start: 0.4, end: 0.7),
+                WordTiming(text: "three", start: 0.8, end: 1.1),
+                WordTiming(text: "four", start: 1.2, end: 1.5),
+                WordTiming(text: "five", start: 1.6, end: 1.9),
+                WordTiming(text: "six", start: 2.1, end: 2.3),      // the lone excursion
+                WordTiming(text: "seven", start: 2.5, end: 2.8),
+                WordTiming(text: "eight", start: 2.9, end: 3.2),
+                WordTiming(text: "nine", start: 3.3, end: 3.6),
+                WordTiming(text: "ten", start: 3.7, end: 4.0),
+                WordTiming(text: "eleven", start: 4.1, end: 4.4),
+            ])
+        let interiorResult = SpeakerAlignment.assign(segments: [interior], turns: interiorTurns)
+        check("a stray word mid-sentence is absorbed without splitting the line",
+              interiorResult.count == 1)
+        check("…and the whole line keeps one speaker", interiorResult.first?.speaker == 1)
+        check("…with its text intact", interiorResult.first?.text == interior.text)
+
+        // ---- A split must MOVE characters between parts, never drop them — including any that sit
+        // before the first word the engine emitted.
+        let leading = TranscriptSegment(
+            start: 3.0, end: 8.0,
+            text: "— I think we should ship it no we absolutely should not ship it",
+            words: straddling.validWords ?? [])
+        let leadingSplit = SpeakerAlignment.assign(segments: [leading], turns: turns)
+        check("a leading character survives a split", leadingSplit.count == 2
+              && leadingSplit.first?.text.hasPrefix("—") == true)
+        check("…and nothing else is lost",
+              leadingSplit.map(\.text).joined(separator: " ") == leading.text)
+
         // ---- Empty turns still change nothing.
         check("no diarizer turns → segments unchanged",
               SpeakerAlignment.assign(segments: [straddling], turns: []).count == 1)

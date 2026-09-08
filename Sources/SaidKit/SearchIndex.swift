@@ -27,7 +27,9 @@ public struct SessionHit: Sendable, Identifiable {
 
     /// True when at least one matched excerpt came from a slide. Drives the Library's slide badge
     /// and the `slides:` search filter.
-    public var hasSlideMatch: Bool { snippets.contains(\.isSlide) }
+    /// `contains(where:)`, not `contains(_:)`: the unlabelled form is the Equatable-element
+    /// overload, and `SearchSnippet` is deliberately not Equatable.
+    public var hasSlideMatch: Bool { snippets.contains(where: \.isSlide) }
 
     /// Public because the `Said` module builds hits directly in two places: the semantic-only
     /// results in `Intelligence.retrieve`, and `--selftest-semantic`. The synthesized memberwise

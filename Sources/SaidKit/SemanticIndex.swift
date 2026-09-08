@@ -62,9 +62,20 @@ public enum SemanticChunker {
         var out: [SemanticChunk] = []
         var current: [TranscriptSegment] = []
         var wordCount = 0
+        // Whether a real segment has arrived since the last flush.
+        //
+        // The tail must not re-emit a chunk when `current` holds nothing but the carry-over suffix
+        // the previous flush already wrote — and TIMES CANNOT ANSWER THAT QUESTION. A chunk's end is
+        // the last WORD's end, which is strictly earlier than the segment's own end whenever word
+        // timings are present, so a bounds comparison reports "not covered" for precisely the
+        // segments it just wrote, and the tail emits a duplicate that is a strict subset of the
+        // chunk before it. Word timings are what Phase 3 added, so that failure would have been
+        // invisible on legacy sessions and universal on Parakeet ones.
+        var appendedSinceFlush = false
 
         func flush(carryOver: Bool) {
             guard let first = current.first, let last = current.last else { return }
+            appendedSinceFlush = false
             let text = current.map { $0.text.trimmingCharacters(in: .whitespaces) }
                 .joined(separator: " ")
             guard !text.isEmpty else { current = []; wordCount = 0; return }
@@ -94,16 +105,12 @@ public enum SemanticChunker {
 
         for seg in usable {
             current.append(seg)
+            appendedSinceFlush = true
             wordCount += words(in: seg.text)
             if wordCount >= targetWords { flush(carryOver: true) }
         }
         // The tail. `carryOver: false` so the overlap logic cannot re-emit what it just wrote.
-        if !current.isEmpty {
-            let alreadyCovered = out.last.map { last in
-                current.allSatisfy { $0.start >= last.start && $0.end <= last.end }
-            } ?? false
-            if !alreadyCovered { flush(carryOver: false) }
-        }
+        if !current.isEmpty, appendedSinceFlush { flush(carryOver: false) }
         return out
     }
 
