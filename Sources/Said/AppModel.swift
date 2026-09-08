@@ -252,6 +252,17 @@ final class AppModel: ObservableObject {
             VoiceprintStore.isEnabled = voiceprintsEnabled
         }
     }
+    /// Hybrid semantic search (Wave 6). OFF by default and opt-in: it takes on a model asset and an
+    /// index lifecycle Said then owns forever. Turning it OFF purges the vectors rather than merely
+    /// ignoring them — an embedding is a lossy but real reconstruction of the text it came from, so
+    /// "disabled" has to mean "gone".
+    @Published var semanticSearchEnabled: Bool {
+        didSet {
+            UserDefaults.standard.set(semanticSearchEnabled, forKey: "semanticSearchEnabled")
+            SemanticIndex.isEnabled = semanticSearchEnabled
+            if !semanticSearchEnabled { SemanticIndex.shared.purgeCache() }
+        }
+    }
     /// Refuse every model download (§10.2). OFF by default — on a fresh install with no models yet,
     /// defaulting it on would brick the app. With it on, an already-downloaded model still LOADS;
     /// only fetching is refused, which is what makes airplane mode a working configuration.
@@ -472,6 +483,7 @@ final class AppModel: ObservableObject {
             ?? .automatic
         neverDownloadModels = d.bool(forKey: "neverDownloadModels")
         voiceprintsEnabled = d.bool(forKey: "voiceprintsEnabled")
+        semanticSearchEnabled = d.bool(forKey: "semanticSearchEnabled")
         useProcessTap = (d.object(forKey: "useProcessTap") as? Bool) ?? true
         customVocabulary = (d.object(forKey: "customVocabulary") as? [String]) ?? []
         autoPauseEnabled = (d.object(forKey: "autoPauseEnabled") as? Bool) ?? true
@@ -1028,6 +1040,7 @@ final class AppModel: ObservableObject {
         let wantCleanup = cleanupEnabled
         // Voiceprints need diarization's embeddings, so the toggle only means anything alongside it.
         let wantVoiceprints = diarizationEnabled && voiceprintsEnabled
+        let wantSemantic = semanticSearchEnabled
         let diarSamples: [Float] = wantDiarize ? engine.sink.snapshot() : []   // capture BEFORE a new session resets the sink
         //
         //    **The pass ORDER is load-bearing and is stated here on purpose** (§7.4): three of these
@@ -1046,6 +1059,10 @@ final class AppModel: ObservableObject {
             if wantDiarize { embeddings = await DiarizationPass.run(dir: dir, samples: diarSamples) }
             if wantVoiceprints { await VoiceprintPass.run(dir: dir, embeddings: embeddings) }
             if wantCleanup { await CleanupPass.run(dir: dir) }
+            // LAST, deliberately: the semantic index embeds the finished text, so it must run after
+            // every pass that can still change it. Re-embedding after cleanup rewrote the segments
+            // would otherwise leave the vectors describing a transcript that no longer exists.
+            if wantSemantic { await SemanticIndex.shared.index(sessionDir: dir) }
         }
     }
 
