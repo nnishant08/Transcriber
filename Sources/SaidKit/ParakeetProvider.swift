@@ -135,7 +135,20 @@ public final class ParakeetProvider: TranscriptionProvider, @unchecked Sendable 
         }
     }
 
-    /// Said's engine-neutral bias → FluidAudio's context.
+    /// Said's engine-neutral bias → FluidAudio's context, **with the terms tokenized**.
+    ///
+    /// **The tokenization is not optional and its absence is silent.** Both rescoring paths do
+    /// `let vocabTokens = term.ctcTokenIds ?? term.tokenIds` and then
+    /// `guard let vocabTokens, !vocabTokens.isEmpty else { continue }` — so a term built as
+    /// `CustomVocabularyTerm(text:)` alone, with both id arrays nil, is skipped outright. Every term
+    /// would be skipped, the rescorer would find nothing to do, and custom vocabulary and the
+    /// vertical packs would be a complete no-op that reported success. That is exactly the "packs
+    /// silently inert" outcome §5.4 says to stop the build over, and it is invisible from the
+    /// outside: the transcript is fine, it is just unbiased.
+    ///
+    /// This mirrors the vendor's own `CustomVocabularyContext.loadWithCtcTokens`, which is the only
+    /// place in their tree that builds a usable context — a strong hint that the plain initializer
+    /// is a data holder, not an entry point.
     ///
     /// **A caveat worth surfacing rather than burying:** `CustomVocabularyContext.minTermLength`
     /// defaults to 3 and terms shorter than that are dropped by the library, following the NeMo
@@ -143,8 +156,28 @@ public final class ParakeetProvider: TranscriptionProvider, @unchecked Sendable 
     /// corrections. So a two-letter acronym in a vertical pack will not bias Parakeet. Said keeps
     /// the library default rather than forcing it lower — a spurious "VR" every time someone says
     /// "or" is a worse transcript than a missed boost.
-    private func vocabularyContext(_ bias: VocabularyBias) -> CustomVocabularyContext {
-        CustomVocabularyContext(terms: bias.terms.map { CustomVocabularyTerm(text: $0) })
+    ///
+    /// Returns `nil` when nothing survived tokenization, so the caller skips biasing entirely rather
+    /// than standing up a spotter and a rescorer that have no terms to act on.
+    private func vocabularyContext(_ bias: VocabularyBias,
+                                   variant: CtcModelVariant) async -> CustomVocabularyContext? {
+        guard let tokenizer = try? await CtcTokenizer.load(
+            from: CtcModels.defaultCacheDirectory(for: variant)
+        ) else {
+            NSLog("[Parakeet] CTC tokenizer unavailable; custom vocabulary cannot be applied")
+            return nil
+        }
+        let terms = bias.terms.compactMap { text -> CustomVocabularyTerm? in
+            let ids = tokenizer.encode(text)
+            guard !ids.isEmpty else {
+                NSLog("[Parakeet] vocabulary term \"\(text)\" did not tokenize; skipping it")
+                return nil
+            }
+            return CustomVocabularyTerm(text: text, weight: nil, aliases: nil,
+                                        tokenIds: nil, ctcTokenIds: ids)
+        }
+        guard !terms.isEmpty else { return nil }
+        return CustomVocabularyContext(terms: terms)
     }
 
     /// Said's ISO code → FluidAudio's script-filter hint.
@@ -215,7 +248,7 @@ public final class ParakeetProvider: TranscriptionProvider, @unchecked Sendable 
                                      transcript: String, tokenTimings: [TokenTiming],
                                      samples: [Float]) async -> [WordTiming] {
         guard !tokenTimings.isEmpty, let ctc = await loadCtcModelsIfNeeded() else { return words }
-        let vocab = vocabularyContext(bias)
+        guard let vocab = await vocabularyContext(bias, variant: ctc.variant) else { return words }
         do {
             let spotter = CtcKeywordSpotter(models: ctc, blankId: ctc.vocabulary.count)
             let spotted = try await spotter.spotKeywordsWithLogProbs(audioSamples: samples,
@@ -334,12 +367,12 @@ public final class ParakeetProvider: TranscriptionProvider, @unchecked Sendable 
         let sw = SlidingWindowAsrManager(config: .streaming)
         do {
             try await sw.loadModels(loaded)
-            if let bias {
-                if let ctc = await loadCtcModelsIfNeeded() {
-                    try await sw.configureVocabularyBoosting(vocabulary: vocabularyContext(bias), ctcModels: ctc)
-                }
-                // No CTC models → no boosting, but the session still records. Logged in the loader.
+            if let bias, let ctc = await loadCtcModelsIfNeeded(),
+               let vocab = await vocabularyContext(bias, variant: ctc.variant) {
+                try await sw.configureVocabularyBoosting(vocabulary: vocab, ctcModels: ctc)
             }
+            // No CTC models, or nothing tokenized → no boosting, but the session still records.
+            // Both cases log; neither is worth failing a recording over.
             try await sw.startStreaming(source: .microphone)
         } catch {
             NSLog("[Parakeet] could not start the streaming engine: \(error)")
@@ -367,9 +400,20 @@ public actor ParakeetStream: TranscriptionStream {
     private var readIndex = 0
     private var pumpTask: Task<Void, Never>?
 
-    /// Every word confirmed so far, in order. Segments are re-assembled from these on each update so
-    /// the live transcript is cut the same way the final one will be.
+    /// Every word promoted to confirmed, in order. Segments are re-assembled from these on each
+    /// update so the live transcript is cut the same way the final one will be.
     private var confirmedWords: [WordTiming] = []
+    /// The MOST RECENT window's words, not yet superseded.
+    ///
+    /// **The manager never re-emits or revises a window.** `processWindow` emits each exactly once
+    /// and moves on, and `isConfirmed` describes whether THAT window cleared the confidence and
+    /// context bar — it is not a promise that the text will be re-sent later. So discarding the
+    /// words of an unconfirmed update loses that speech permanently.
+    ///
+    /// The vendor's own `updateTranscriptionState` does not discard it either: on a confirmed
+    /// window it promotes the PREVIOUS volatile text into confirmed and makes the new window
+    /// volatile. This mirrors that exactly, in words rather than strings.
+    private var pendingWords: [WordTiming] = []
     private var hypothesis = ""
 
     init(manager: SlidingWindowAsrManager, sink: SampleSink,
@@ -415,19 +459,21 @@ public actor ParakeetStream: TranscriptionStream {
     }
 
     private func apply(_ update: SlidingWindowTranscriptionUpdate) {
+        // Timings arrive already offset to session-absolute time (the manager applies its window's
+        // global frame offset before emitting), and the sink starts at session T0 with paused audio
+        // dropped by `CaptureGate` — so a word's time is on the same pause-compressed clock as every
+        // bookmark, frame and `[mm:ss]`.
         let words = TranscriptAssembly.words(fromTokens: update.tokenTimings.map {
             (text: $0.token, start: $0.startTime, end: $0.endTime, confidence: $0.confidence)
         })
+        // A confirmed window promotes what was pending; the new window becomes pending in its place.
+        // Nothing is ever dropped — see `pendingWords`.
         if update.isConfirmed {
-            // Timings arrive already offset to session-absolute time (the manager applies its
-            // window's global frame offset before emitting), and the sink starts at session T0 with
-            // paused audio dropped by `CaptureGate` — so a word's time is on the same
-            // pause-compressed clock as every bookmark, frame and `[mm:ss]`.
-            confirmedWords.append(contentsOf: words)
-            hypothesis = ""
-        } else {
-            hypothesis = update.text
+            confirmedWords.append(contentsOf: pendingWords)
         }
+        pendingWords = words
+        hypothesis = update.text
+
         let confirmed = TranscriptAssembly.segments(words: confirmedWords)
         onUpdate(LiveTranscript(confirmed: confirmed, hypothesis: hypothesis))
     }
@@ -440,8 +486,14 @@ public actor ParakeetStream: TranscriptionStream {
         Task { await mgr.cancel() }
     }
 
+    /// Everything transcribed so far — confirmed AND the trailing pending window.
+    ///
+    /// Includes the pending window deliberately, mirroring the manager's own `finish()`, which
+    /// joins confirmed and volatile. This is the live save on stop, and the last window is real
+    /// transcribed speech that simply never had a later window to supersede it. Dropping it would
+    /// silently truncate every session by up to one window.
     public func snapshotSegments() -> [TranscriptSegment] {
-        TranscriptAssembly.segments(words: confirmedWords)
+        TranscriptAssembly.segments(words: confirmedWords + pendingWords)
     }
 
     /// 16 kHz mono Float32 → `AVAudioPCMBuffer`, the currency the manager takes.
