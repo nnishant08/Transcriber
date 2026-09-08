@@ -49,6 +49,62 @@ final class SessionViewerModel: ObservableObject {
     // Cleanup view (Feature D1) — default Verbatim (trust first); Cleaned is opt-in per window.
     @Published var showCleaned = false
 
+    // MARK: Editing (Phase 3, Wave 3)
+
+    /// The user's corrections. An OVERLAY — `transcript.md` on disk is never touched.
+    @Published var edits: [TranscriptEdit] = []
+    /// Showing the Edited view. Distinct from `isEditing`: you can read the edited transcript
+    /// without being in edit mode.
+    @Published var showEdited = false
+    /// Edit mode: words become individually selectable and correctable.
+    @Published var isEditing = false
+    /// `segments` with the overlay applied, recomputed only when the edits change — the transcript
+    /// re-renders on every scroll tick and applying the overlay per frame would be wasteful.
+    @Published private(set) var editedSegments: [TranscriptSegment] = []
+    /// One-shot notice when a correction crosses the learning threshold, e.g.
+    /// "Said will listen for *anastomosis* from now on."
+    @Published var learnedNotice: String?
+    /// Set when an edit invalidates cached summaries. Shown as an affordance rather than silently
+    /// re-running expensive generation (§6.3).
+    @Published var summariesAreStale = false
+    /// Edits that no longer anchor — after a re-transcription reshaped the segments. Kept in the
+    /// file, never deleted (§6.5); this is what tells the user.
+    @Published var unanchoredEditCount = 0
+
+    /// The window's `UndoManager`, handed in by the view.
+    ///
+    /// Deliberately the window's rather than a private stack, so ⌘Z / ⇧⌘Z behave exactly as they do
+    /// everywhere else on the Mac and edits sit in the same undo history as the rest of the session
+    /// (§6.3). `weak` because the window owns it, not the model.
+    weak var undoManager: UndoManager?
+
+    var hasEdits: Bool { !edits.isEmpty }
+    /// Editing is offered in Verbatim and Edited only. Cleaned and Redacted are DERIVED views, and
+    /// an edit made against a derived text has no unambiguous home in the verbatim record (§6.3).
+    var canEdit: Bool { !showCleaned && !showRedacted }
+
+    /// Re-read the session from disk, discarding nothing the user is holding.
+    ///
+    /// Used after a re-transcription replaces the transcript. Deliberately re-reads rather than
+    /// mutating in place: the pass on disk is authoritative, and half-updating an in-memory model
+    /// to match it is how the two drift apart.
+    func reload() {
+        guard let doc = DocumentBuilder.readSession(dir) else { return }
+        meta = doc.meta
+        segments = doc.segments
+        frames = doc.frames
+        refreshEditedSegments()
+        objectWillChange.send()
+    }
+
+    /// The segment as currently displayed, honouring the Edited view.
+    func visibleSegment(at index: Int) -> TranscriptSegment {
+        guard showEdited, editedSegments.indices.contains(index) else {
+            return segments.indices.contains(index) ? segments[index] : TranscriptSegment(start: 0, end: 0, text: "")
+        }
+        return editedSegments[index]
+    }
+
     // Chat
     @Published var chat: [ChatTurn] = []
     @Published var chatInput: String = ""
@@ -70,6 +126,10 @@ final class SessionViewerModel: ObservableObject {
         if showRedacted { return seg.redactedText ?? seg.text }
         return showCleaned ? (seg.cleanedText ?? seg.text) : seg.text
     }
+
+    /// Display text for the row at `index`. Goes through `visibleSegment` so the Edited view shows
+    /// the overlay; every other view is exactly as before.
+    func displayText(at index: Int) -> String { displayText(visibleSegment(at: index)) }
 
     func speakerName(_ slot: Int) -> String { meta.speakerLabel(slot) }
 
@@ -519,10 +579,22 @@ final class SessionViewerModel: ObservableObject {
     /// images. Unlike the other exports (which are views OF the session), this is the session
     /// itself, and it keeps `SessionMeta.id` so the receiving device can tell a re-import from a new
     /// one. Encrypted sessions are decrypted into the bundle so it opens on the other device.
-    func exportBundle() {
+    /// - Parameter includingVoiceprints: opt-in, DEFAULT OFF. See `SessionBundle.write` for why the
+    ///   default is safe by construction; the confirmation the user sees before this is set to true
+    ///   is in `SessionViewer`'s Export menu.
+    func exportBundle(includingVoiceprints: Bool = false) {
         savePanel(ext: SessionBundle.fileExtension) { [dir] url in
-            _ = try SessionBundle.write(sessionDir: dir, to: url)
+            _ = try SessionBundle.write(sessionDir: dir, to: url,
+                                        includingVoiceprints: includingVoiceprints)
         }
+    }
+
+    /// True when this session has named speakers whose voice profiles COULD be shared — i.e. when
+    /// offering the opt-in is meaningful at all.
+    var canShareVoiceprints: Bool {
+        guard VoiceprintStore.isEnabled, let names = meta.speakerNames, !names.isEmpty else { return false }
+        let stored = Set(VoiceprintStore.all().map { $0.name.lowercased() })
+        return names.values.contains { stored.contains($0.lowercased()) }
     }
 
     // Redacted export (Feature C2) — built from the redacted segments, never from transcript.md.
@@ -579,6 +651,11 @@ struct SessionViewer: View {
     /// observed rather than created here.
     @ObservedObject var lib: SessionViewerModel
     @State private var panel = 0   // 0 = Summary, 1 = Studio, 2 = Chat
+    /// The window's undo manager, handed to the model so ⌘Z on a correction behaves like ⌘Z
+    /// anywhere else rather than driving a private stack (Phase 3, §6.3).
+    @Environment(\.undoManager) private var undoManager
+    @State private var showRetranscribe = false
+    @State private var confirmVoiceprintExport = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -596,6 +673,22 @@ struct SessionViewer: View {
             }
         }
         .frame(minWidth: 860, minHeight: 540)
+        .onAppear {
+            lib.undoManager = undoManager
+            lib.reloadEdits()
+        }
+        .onChange(of: undoManager) { _, new in lib.undoManager = new }
+        .sheet(isPresented: $showRetranscribe) { RetranscribeSheet(lib: lib) }
+        .confirmationDialog("Include voice profiles?", isPresented: $confirmVoiceprintExport) {
+            Button("Include voice profiles", role: .destructive) {
+                lib.exportBundle(includingVoiceprints: true)
+            }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("Whoever opens this file will be able to recognise these speakers in their own "
+                 + "recordings. Voice profiles are biometric data — only share them with someone the "
+                 + "speakers would be comfortable identifying them.")
+        }
         .background(Theme.windowBG)
         .foregroundStyle(Theme.text)
         .tint(Theme.accent)
@@ -678,6 +771,11 @@ struct SessionViewer: View {
             }
             Divider()
             Button("Send session… (.said)") { lib.exportBundle() }
+            if lib.canShareVoiceprints {
+                Button("Send session with voice profiles… (.said)") { confirmVoiceprintExport = true }
+            }
+            Divider()
+            Button("Re-transcribe…") { showRetranscribe = true }
             Divider()
             Button("Share…") { lib.share() }
             Button("Send to Obsidian vault") { lib.sendToObsidian() }
@@ -689,24 +787,35 @@ struct SessionViewer: View {
 
     // MARK: Transcript column
 
-    /// View-mode selection (0 = Verbatim, 1 = Cleaned, 2 = Redacted) ↔ the model's two bool toggles.
+    /// View-mode selection ↔ the model's bool toggles.
+    /// 0 = Verbatim, 1 = Edited, 2 = Cleaned, 3 = Redacted — ordered by how far each is from the
+    /// recording, so the leftmost is always the thing that was actually said.
     private var viewMode: Binding<Int> {
-        Binding(get: { lib.showRedacted ? 2 : (lib.showCleaned ? 1 : 0) },
-                set: { lib.showRedacted = ($0 == 2); lib.showCleaned = ($0 == 1) })
+        Binding(get: { lib.showRedacted ? 3 : (lib.showCleaned ? 2 : (lib.showEdited ? 1 : 0)) },
+                set: {
+                    lib.showRedacted = ($0 == 3)
+                    lib.showCleaned = ($0 == 2)
+                    lib.showEdited = ($0 == 1)
+                    // Editing a derived view has no unambiguous home in the verbatim record, so
+                    // leaving Verbatim/Edited leaves edit mode too.
+                    if !lib.canEdit { lib.isEditing = false }
+                })
     }
 
     /// The transcript toolbar: Verbatim/Cleaned/Redacted switch (when those views exist), plus the
     /// privacy controls — Redact (run the on-device pass) and a per-session retention Keep toggle.
     private var transcriptToolbar: some View {
         HStack(spacing: 10) {
-            if lib.hasCleaned || lib.hasRedacted {
+            if lib.hasCleaned || lib.hasRedacted || lib.hasEdits {
                 Picker("", selection: viewMode) {
                     Text("Verbatim").tag(0)
-                    if lib.hasCleaned { Text("Cleaned").tag(1) }
-                    if lib.hasRedacted { Text("Redacted").tag(2) }
+                    if lib.hasEdits { Text("Edited").tag(1) }
+                    if lib.hasCleaned { Text("Cleaned").tag(2) }
+                    if lib.hasRedacted { Text("Redacted").tag(3) }
                 }
                 .pickerStyle(.segmented).labelsHidden().fixedSize()
             }
+            TranscriptEditControls(lib: lib)
             if lib.showRedacted {
                 Text("PII/PHI masked — best-effort, review before sharing. Saved transcript stays verbatim.")
                     .font(Theme.ui(10.5)).foregroundStyle(Theme.text3).lineLimit(1)
@@ -752,16 +861,25 @@ struct SessionViewer: View {
         VStack(spacing: 0) {
             videoPane
             transcriptToolbar
-            if lib.hasCleaned || lib.hasRedacted { Divider().overlay(Theme.hairline) }
+            if lib.hasCleaned || lib.hasRedacted || lib.hasEdits { Divider().overlay(Theme.hairline) }
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 0) {
+                        // "This might be Alice — confirm?" A match is a PROPOSAL, never an
+                        // assignment (§7.4); this bar is the whole user-facing surface of that rule.
+                        VoiceprintProposalBar(lib: lib)
                         if !lib.chapters.isEmpty { chaptersStrip }
                         ForEach(lib.timelineRows) { row in
                             switch row {
-                            case .segment(let i, let seg):
+                            case .segment(let i, _):
+                                let seg = lib.visibleSegment(at: i)
                                 TranscriptLine(index: i, seg: seg,
-                                               text: lib.displayText(seg),
+                                               text: lib.displayText(at: i),
+                                               editing: lib.isEditing && lib.canEdit,
+                                               onEditWord: { wordIndex, original, corrected in
+                                                   lib.commitEdit(segmentIndex: i, wordIndex: wordIndex,
+                                                                  original: original, corrected: corrected)
+                                               },
                                                speaker: seg.speaker.map { (lib.speakerName($0), Theme.speakerColor($0)) },
                                                active: lib.activeIndex == i,
                                                bookmarked: isBookmarked(seg),
@@ -1088,7 +1206,11 @@ private struct FrameCard: View {
 private struct TranscriptLine: View {
     let index: Int
     let seg: TranscriptSegment
-    let text: String                        // verbatim or cleaned, per the Viewer toggle
+    let text: String                        // verbatim / edited / cleaned / redacted, per the toggle
+    /// Edit mode is on AND this view is editable (Verbatim or Edited only — Phase 3, §6.3).
+    var editing: Bool = false
+    /// `(wordIndex, original, corrected)`. `wordIndex` is nil for a whole-line edit.
+    var onEditWord: ((Int?, String, String) -> Void)? = nil
     let speaker: (name: String, color: Color)?
     let active: Bool
     let bookmarked: Bool
@@ -1097,7 +1219,27 @@ private struct TranscriptLine: View {
     @State private var hover = false
 
     var body: some View {
-        Button(action: onTap) {
+        // While editing, the WORDS are the controls; wrapping them in the seek Button would swallow
+        // their clicks and their keyboard focus. `allowsHitTesting` on the outer button is not
+        // enough — the button is what the focus engine sees — so the wrapper is dropped entirely.
+        if editing {
+            content.padding(.vertical, 6).padding(.horizontal, 8)
+                .background(RoundedRectangle(cornerRadius: 7).fill(active ? Theme.accentSoft : .clear))
+        } else {
+            Button(action: onTap) { seekableContent }
+                .buttonStyle(.plain).onHover { hover = $0 }
+        }
+    }
+
+    private var seekableContent: some View {
+        content
+            .padding(.vertical, 6).padding(.horizontal, 8)
+            .background(RoundedRectangle(cornerRadius: 7).fill(active ? Theme.accentSoft : (hover ? Color.primary.opacity(0.04) : .clear)))
+            .contentShape(Rectangle())
+    }
+
+    private var content: some View {
+        Group {
             HStack(alignment: .top, spacing: 12) {
                 HStack(spacing: 3) {
                     if bookmarked { Image(systemName: "bookmark.fill").font(.system(size: 9)).foregroundStyle(Theme.accent) }
@@ -1109,16 +1251,16 @@ private struct TranscriptLine: View {
                     if let speaker {
                         SpeakerChip(name: speaker.name, color: speaker.color, onRename: onRename)
                     }
-                    Text(text).font(Theme.serif).lineSpacing(5)
-                        .foregroundStyle(active ? Theme.text : Theme.text2)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                    if editing, let onEditWord {
+                        EditableLineBody(seg: seg, text: text, onEditWord: onEditWord, onSeek: onTap)
+                    } else {
+                        Text(text).font(Theme.serif).lineSpacing(5)
+                            .foregroundStyle(active ? Theme.text : Theme.text2)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
                 }
             }
-            .padding(.vertical, 6).padding(.horizontal, 8)
-            .background(RoundedRectangle(cornerRadius: 7).fill(active ? Theme.accentSoft : (hover ? Color.primary.opacity(0.04) : .clear)))
-            .contentShape(Rectangle())
         }
-        .buttonStyle(.plain).onHover { hover = $0 }
     }
 }
 
