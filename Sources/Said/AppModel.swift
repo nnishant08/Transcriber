@@ -269,8 +269,8 @@ final class AppModel: ObservableObject {
     @Published var neverDownloadModels: Bool {
         didSet {
             UserDefaults.standard.set(neverDownloadModels, forKey: "neverDownloadModels")
+            // The setter also flips FluidAudio's own `DownloadUtils.enforceOffline`.
             ModelGate.neverDownloadModels = neverDownloadModels
-        ModelGate.syncToDependencies()
         }
     }
 
@@ -556,11 +556,12 @@ final class AppModel: ObservableObject {
             try FileManager.default.trashItem(at: url, resultingItemURL: nil)
         }
 
-        // Phase 3: push the offline setting into SaidKit before anything can reach for a model.
-        // `ModelGate` reads the same UserDefaults key, so this is belt-and-braces rather than
-        // load-bearing — but a model fetch that slips through because a @Published property had not
-        // been touched yet would break the one promise the gate exists to keep.
-        ModelGate.neverDownloadModels = neverDownloadModels
+        // Phase 3: push the offline setting into the dependency before anything can reach for a
+        // model. The `@Published` property's `didSet` does this too, but a `didSet` does not fire on
+        // initialisation — so without this, a launch where the user never touches the toggle would
+        // leave `DownloadUtils.enforceOffline` at its `false` default and a fetch could slip past
+        // the one promise the gate exists to keep.
+        ModelGate.syncToDependencies()
 
         WindowManager.shared.showTranscript()
 
