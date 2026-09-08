@@ -220,7 +220,13 @@ final class AppModel: ObservableObject {
     /// Stage 2 / Feature B: the user's custom vocabulary UNIONED with every enabled vertical pack's
     /// vocabulary (deduped). With no user terms AND no enabled pack this is [] → promptTokens nil →
     /// byte-identical no-op. This is what actually feeds the streaming + finalPass bias.
-    var effectiveVocabulary: [String] { PackManager.shared.mergedVocabulary(userVocab: customVocabulary) }
+    /// Phase 3 additionally unions in the terms the user has taught Said by correcting the same
+    /// word twice (`CorrectionMemory`). Promotion into this list is the ONLY thing a learned
+    /// correction ever does — it is never applied as a string replacement to any transcript. See
+    /// `CorrectionMemory` for why that distinction is load-bearing rather than fussy.
+    var effectiveVocabulary: [String] {
+        PackManager.shared.mergedVocabulary(userVocab: customVocabulary + CorrectionMemory.promotedTerms())
+    }
     @Published var defaultSummaryStyle: SummaryStyle { // A3
         didSet { UserDefaults.standard.set(defaultSummaryStyle.rawValue, forKey: "defaultSummaryStyle") }
     }
@@ -236,6 +242,15 @@ final class AppModel: ObservableObject {
     /// it does not cover produces fluent nonsense rather than an error.
     @Published var enginePreference: EnginePreference {
         didSet { UserDefaults.standard.set(enginePreference.rawValue, forKey: "enginePreference") }
+    }
+    /// Cross-session voiceprint identity (Wave 4). OFF by default: with it off no embedding is ever
+    /// extracted, nothing is stored, and `session.json` gains no keys. Needs diarization, which
+    /// produces the embeddings it matches on.
+    @Published var voiceprintsEnabled: Bool {
+        didSet {
+            UserDefaults.standard.set(voiceprintsEnabled, forKey: "voiceprintsEnabled")
+            VoiceprintStore.isEnabled = voiceprintsEnabled
+        }
     }
     /// Refuse every model download (§10.2). OFF by default — on a fresh install with no models yet,
     /// defaulting it on would brick the app. With it on, an already-downloaded model still LOADS;
@@ -456,6 +471,7 @@ final class AppModel: ObservableObject {
         enginePreference = EnginePreference(rawValue: d.string(forKey: "enginePreference") ?? "")
             ?? .automatic
         neverDownloadModels = d.bool(forKey: "neverDownloadModels")
+        voiceprintsEnabled = d.bool(forKey: "voiceprintsEnabled")
         useProcessTap = (d.object(forKey: "useProcessTap") as? Bool) ?? true
         customVocabulary = (d.object(forKey: "customVocabulary") as? [String]) ?? []
         autoPauseEnabled = (d.object(forKey: "autoPauseEnabled") as? Bool) ?? true
@@ -1010,12 +1026,25 @@ final class AppModel: ObservableObject {
         notifySessionSaved(dir)
         let wantDiarize = diarizationEnabled
         let wantCleanup = cleanupEnabled
+        // Voiceprints need diarization's embeddings, so the toggle only means anything alongside it.
+        let wantVoiceprints = diarizationEnabled && voiceprintsEnabled
         let diarSamples: [Float] = wantDiarize ? engine.sink.snapshot() : []   // capture BEFORE a new session resets the sink
+        //
+        //    **The pass ORDER is load-bearing and is stated here on purpose** (§7.4): three of these
+        //    passes touch speaker labels or segment text, and an accidental reorder would be silent
+        //    and very hard to diagnose. It is:
+        //        diarize → align → voiceprint → cleanup
+        //    Alignment lives inside `DiarizationPass` (it is what consumes the turns), which is why
+        //    that pass returns the per-slot embeddings the voiceprint pass then matches on. Cleanup
+        //    runs last because it rewrites segment TEXT, and matching a voice must see the verbatim
+        //    segmentation the diarizer was aligned against.
         Task.detached(priority: .utility) {
             SearchIndex.shared.index(sessionDir: dir)   // searchable immediately, before slow titling
             SessionStore.ensureSessionID(dir: dir)      // D1: no-op for a session that already has one
             await SessionStore.ensureTitle(dir: dir)
-            if wantDiarize { await DiarizationPass.run(dir: dir, samples: diarSamples) }
+            var embeddings: [Int: [[Float]]] = [:]
+            if wantDiarize { embeddings = await DiarizationPass.run(dir: dir, samples: diarSamples) }
+            if wantVoiceprints { await VoiceprintPass.run(dir: dir, embeddings: embeddings) }
             if wantCleanup { await CleanupPass.run(dir: dir) }
         }
     }

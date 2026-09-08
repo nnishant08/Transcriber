@@ -289,6 +289,10 @@ public struct SessionMeta: Sendable, Codable {
     // especially once two engines can, and once "re-transcribe on the other one" is an option.
     public var engine: String?          // TranscriptionEngineID.rawValue: "whisper" | "parakeet"
     public var engineModel: String?     // e.g. "openai_whisper-base.en", "v3"
+    /// Phase 3 (Wave 4): cross-session speaker matches the post-save pass PROPOSED. Never an
+    /// assignment — `speakerNames` is only written once the user confirms in the Viewer. Absent
+    /// entirely when the voiceprint feature is off, which is the default.
+    public var voiceprintProposals: [VoiceprintProposal]?
 
     /// **Phase 3 diverges from its build prompt here, deliberately.** The prompt asked for a new
     /// `SessionDoc.schemaVersion` defaulting to 1, with this build writing 2. `SessionMeta` already
@@ -313,7 +317,8 @@ public struct SessionMeta: Sendable, Codable {
          speakerCount: Int? = nil, speakerNames: [String: String]? = nil, language: String? = nil,
          generatedArtifacts: [String: GeneratedArtifact]? = nil, retentionLocked: Bool? = nil,
          videoFile: String? = nil, videoWidth: Int? = nil, videoHeight: Int? = nil,
-         engine: String? = nil, engineModel: String? = nil) {
+         engine: String? = nil, engineModel: String? = nil,
+         voiceprintProposals: [VoiceprintProposal]? = nil) {
         self.id = id
         self.date = date
         self.sourceLabel = sourceLabel
@@ -340,6 +345,7 @@ public struct SessionMeta: Sendable, Codable {
         self.videoHeight = videoHeight
         self.engine = engine
         self.engineModel = engineModel
+        self.voiceprintProposals = voiceprintProposals
     }
 
     enum CodingKeys: String, CodingKey {
@@ -349,7 +355,7 @@ public struct SessionMeta: Sendable, Codable {
         case speakerCount, speakerNames, language
         case generatedArtifacts, retentionLocked
         case videoFile, videoWidth, videoHeight
-        case engine, engineModel
+        case engine, engineModel, voiceprintProposals
     }
 
     // Custom decode for backward compatibility: older session.json files lack the newer fields.
@@ -383,6 +389,7 @@ public struct SessionMeta: Sendable, Codable {
         videoHeight = try c.decodeIfPresent(Int.self, forKey: .videoHeight)
         engine = try c.decodeIfPresent(String.self, forKey: .engine)
         engineModel = try c.decodeIfPresent(String.self, forKey: .engineModel)
+        voiceprintProposals = try c.decodeIfPresent([VoiceprintProposal].self, forKey: .voiceprintProposals)
     }
 
     /// True when this session has a video to play alongside the transcript.
