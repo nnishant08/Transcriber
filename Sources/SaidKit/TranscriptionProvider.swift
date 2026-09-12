@@ -201,14 +201,17 @@ public enum EngineRouter {
         }
 
         // Automatic. Language decides, and an unknown language is not a licence to guess.
+        //
+        // This holds even when NO Whisper model is on disk: Parakeet asked for a language it does
+        // not cover emits confident, fluent nonsense with nothing in the output to say so, whereas a
+        // Whisper download costs bandwidth once and is visible in the status bar. `prepare` fetches
+        // it, exactly as the covered-language first-run branch below fetches Parakeet.
         guard let language, !language.isEmpty else {
-            if whisperInstalled {
-                return Decision(engine: .whisper,
-                                reason: "Whisper — the language isn't known yet", isFallback: false)
-            }
-            return Decision(engine: .parakeet,
-                            reason: "Parakeet — the language isn't known and no Whisper model is downloaded",
-                            isFallback: true)
+            return Decision(engine: .whisper,
+                            reason: whisperInstalled
+                                ? "Whisper — the language isn't known yet"
+                                : "Whisper — the language isn't known yet (downloading a Whisper model)",
+                            isFallback: false)
         }
 
         let code = ParakeetLanguages.normalize(language)
