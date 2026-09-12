@@ -56,7 +56,7 @@ final class RecordingModel: ObservableObject {
     private var stall = StallMonitor()
     private var writer: StreamingAudioWriter?
 
-    private var streamer: StreamingTranscriber?
+    private var streamer: (any TranscriptionStream)?
     private var streamTask: Task<Void, Never>?
     private var tick: Timer?
     private var busy = false
@@ -69,7 +69,9 @@ final class RecordingModel: ObservableObject {
     private var t0: TimeInterval = 0
     private var bookmarks: [Bookmark] = []
     private var frames: [FrameEvent] = []
-    private var promptTokens: [Int]?
+    /// The session's vocabulary bias, or nil when the merged vocabulary is empty — which
+    /// `VocabularyBias`'s failable init makes unrepresentable-as-empty → exact no-op.
+    private var sessionBias: VocabularyBias?
     private var language: String?
     private var pauseKind: PauseKind?
     private var observers: [NSObjectProtocol] = []
@@ -111,10 +113,10 @@ final class RecordingModel: ObservableObject {
             }
 
             engine.sink.reset()
-            // AFTER prepare: promptTokens needs the loaded tokenizer, and returns nil silently
-            // if asked before the model exists.
-            promptTokens = engine.promptTokens(
-                for: PackManager.shared.mergedVocabulary(userVocab: settings.customVocabulary))
+            // The bias is pure data (the provider tokenizes it per engine), so it no longer has to
+            // wait for a loaded tokenizer; an empty merged vocabulary yields nil → exact no-op.
+            sessionBias = VocabularyBias(
+                terms: PackManager.shared.mergedVocabulary(userVocab: settings.customVocabulary))
             language = settings.language == "auto" ? nil : settings.language
 
             startedAt = Date()
@@ -161,7 +163,7 @@ final class RecordingModel: ObservableObject {
             try await mic.start(sink: g)
             stall.start(now: CACurrentMediaTime())      // arm AFTER capture is live
 
-            attachStreamer()
+            await attachStreamer()
 
             isRecording = true
             status = .recording
@@ -171,9 +173,11 @@ final class RecordingModel: ObservableObject {
         }
     }
 
-    private func attachStreamer() {
-        guard let s = engine.makeStreamer(language: language, promptTokens: promptTokens,
-                                          onUpdate: { [weak self] live in
+    private func attachStreamer() async {
+        // `async` because Parakeet's sliding-window manager is an actor that loads and configures
+        // before it can accept audio — the Mac's AppModel made the same change.
+        guard let s = await engine.makeStreamer(language: language, bias: sessionBias,
+                                                onUpdate: { [weak self] live in
             Task { @MainActor in
                 guard let self, self.isRecording else { return }   // drop late updates
                 self.segments = live.confirmed
@@ -323,7 +327,7 @@ final class RecordingModel: ObservableObject {
                                                 segments: live, frames: frames), to: folder)
 
         var finalSegments = live
-        if let better = try? await engine.finalPassSegments(language: language, promptTokens: promptTokens),
+        if let better = try? await engine.finalPassSegments(language: language, bias: sessionBias),
            !better.isEmpty {
             finalSegments = better
         }
