@@ -6,7 +6,12 @@ import Foundation
 public struct LiveTranscript: Sendable {
     public var confirmed: [TranscriptSegment]
     public var hypothesis: String
-    public var text: String { TranscriptText.clean(confirmed.map { $0.text }.joined() + hypothesis) }
+    /// Joined with a space: Phase 3's word-folded segments are trimmed (Whisper's raw segments
+    /// carried their own leading space), and `clean` collapses any doubled run, so both shapes
+    /// read as prose. Live text only — the saved transcript is rendered from the segments.
+    public var text: String {
+        TranscriptText.clean((confirmed.map { $0.text } + [hypothesis]).joined(separator: " "))
+    }
 }
 
 /// The façade every caller in the app talks to — `AppModel`, `Importer`, every self-test.
