@@ -23,7 +23,7 @@ bar**. **Everything stays on this Mac — no cloud, no account, works offline.**
 > Studio / vertical packs / privacy & compliance) and screen recording. The pause /
 > capture-resilience work is built and partly verified.
 >
-> **Phases 1, 2 and 3 are built. Phase 3 has NOT been compiled — see the warning below.**
+> **Phases 1, 2 and 3 are built, compiled and self-tested; the human smoke-tests are still owed.**
 > **Phase 1** made the package **`SaidKit` (macOS + iOS) + `Said` (the macOS app)**: every macOS
 > assumption in the shared code is an injectable seam, sessions have a stable `id` and can be handed
 > over as a `.said` bundle, and the app carries the settled violet/amber/ink identity.
@@ -34,15 +34,22 @@ bar**. **Everything stays on this Mac — no cloud, no account, works offline.**
 > Parakeet as the default, transcript editing as an overlay, cross-session voiceprints, slide spans,
 > and hybrid semantic retrieval. See **Phase 3** below.
 >
-> ⚠️ **PHASE 3 WAS WRITTEN WITHOUT A COMPILER.** It was implemented in a Linux container with no
-> Swift toolchain, so nothing in it has been built, run or tested — not `swift build`, not the
-> self-tests, not the iOS gate, not `codesign`. Every third-party API it calls was verified by
-> reading the pinned dependency source, and an adversarial review pass was run over every file, but
-> **expect compile errors on the first real build.** `PHASE3-REPORT.md` lists exactly what was and
-> was not verified, and §15 there is the order to work in.
+> **Phase 3 was written without a compiler** (a Linux container, no Swift toolchain — every
+> third-party API verified by reading the pinned source) and was then **merged and built on this
+> Mac on 2026-09-12**: the merged tree compiled with zero errors on the first build, the full
+> sweep is **54/54**, the iOS gate is green, the iOS unit tests are 16/16, and Parakeet downloaded
+> and produced word-timed output. `PHASE3-REPORT.md` §0/§15 record what the container could and
+> could not verify. Four defects surfaced on that first real run, all fixed in the merge commits:
+> `EngineRouter` guessed toward Parakeet for an UNKNOWN language on a first run (the one rule it
+> exists to enforce; `--selftest-engine-route` caught it); the iPhone `RecordingModel` still called
+> the pre-seam `promptTokens:` API; `LiveTranscript.text` ran trimmed segments together; and two
+> hardcoded `transcript.md` paths bypassed `SessionPaths`. The before/after baselines
+> (`Scripts/capture_baselines.sh`) agree on the `--selftest-doc` md5, the designated requirement,
+> the file transcript and the final pass; the live streaming text now reaches the end of the clip
+> where the pre-merge build dropped windows after the second update.
 >
-> The iPhone app remains unbuilt. Phase 3's capabilities all live in `SaidKit` and reach iOS through
-> it, but the touch affordances are macOS-only.
+> Phase 3's capabilities all live in `SaidKit` and reach iOS through it, but the touch affordances
+> are macOS-only.
 
 ## User guide reference (SOURCE for info sheets / user instructions / quick-starts / FAQs)
 **When asked to produce any USER-FACING material (one-pager, quick-start, how-to, keyboard-shortcut card,
@@ -1834,7 +1841,8 @@ Screen Recording grant + on-screen content — use `--selftest-screenrec-live` f
       cross-session voiceprints that propose and never assign; slide spans with a search index that
       knows speech from slide text; hybrid RRF retrieval behind an embedding seam. Plus the offline
       gate, the storage panel, one re-transcribe command, six pure self-tests and `--compare-engines`.
-      **⚠️ NOT COMPILED, NOT RUN, NOT TESTED** — built in a container with no Swift toolchain. Every
+      **Written in a container with no Swift toolchain, then compiled and swept on this Mac
+      (2026-09-12) — see the status note at the top of this file.** Every
       third-party API was verified against the pinned dependency source, and an adversarial compile
       review was run over every new and changed file, then a self-audit over the six modified files
       the review's groups had not been assigned. Between them they found **twenty-five** real defects
@@ -1843,14 +1851,15 @@ Screen Recording grant + on-screen content — use `--selftest-screenrec-live` f
       all**: nothing in app code ever enrolled a voice, so the store stayed empty and every session
       returned at the empty-store guard), and the rest data races and wrong doc-claims. All are fixed
       and recorded in `PHASE3-REPORT.md` §3/§3a/§3b; the ones the self-test suite ran straight past
-      landed with the assertion that would have caught them. **Expect more on the first real build**
-      — the count rose every time the search widened, never because the code got worse, and the last
-      pass found an entire inert feature in files nobody had been asked to read. §0 of that report
-      lists exactly what was and was not verified; §15 is the order to work in.
-      **AWAITING everything:** a build, the self-test sweep, the iOS gate, the baselines,
-      `--compare-engines` over real sessions (which is what should actually decide the default
-      engine), the vocabulary-biasing proof, measured model sizes and performance, and the full human
-      smoke-test checklist below.
+      landed with the assertion that would have caught them. The first real build then found four
+      more (unknown-language routing, the iOS engine-API port, the live-text join, two
+      `transcript.md` paths) — see the status note at the top of this file. §0 of that report lists
+      what the container could and could not verify.
+      **DONE on this Mac:** the build (zero compile errors), the 54-mode sweep, the iOS gate, the 16
+      iOS unit tests, the before/after baselines, and a real Parakeet download + transcription.
+      **AWAITING:** `--compare-engines` over real sessions (which is what should actually decide the
+      default engine), the vocabulary-biasing proof, measured model sizes and performance, and the
+      full human smoke-test checklist below.
 - [~] **Phase 1 — cross-platform core, rebrand, session identity.** The package is split into
       `SaidKit` (cross-platform) + `Said` (macOS executable); every macOS assumption in the shared
       code is an injectable seam (session root, delete-to-Trash, light/dark colour resolution,
@@ -1873,9 +1882,9 @@ Screen Recording grant + on-screen content — use `--selftest-screenrec-live` f
 
 ## Phase 3 — human smoke-test checklist
 
-**Do §0 first: it has never been compiled.** `Scripts/build_app.sh`, fix what the compiler finds,
-then `Scripts/verify_selftests.sh`. The six pure Phase 3 modes should pass with no models at all.
-Capture the baselines on both sides per `PHASE3-REPORT.md` §1. Only then:
+**§0 is done** (2026-09-12): the build is green, `Scripts/verify_selftests.sh` is 54/54 with the iOS
+gate, and the baselines were captured on both sides per `PHASE3-REPORT.md` §1 — the `--selftest-doc`
+md5, designated requirement, file transcript and final pass are identical before and after. Now:
 
 1. **The engine change, felt.** Record a 45-minute meeting. Live text keeps up, the tail does not lag,
    and the wait after Stop before the session opens is dramatically shorter. Re-run the same audio on
