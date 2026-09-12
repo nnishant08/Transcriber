@@ -35,17 +35,44 @@ public actor DiarizerService {
     /// speaker turns. `prepare()` must have succeeded first. Synchronous CoreML work — callers run
     /// this off the main thread (it executes on the actor, never on main).
     public func diarize(samples: [Float]) throws -> [SpeakerTurn] {
-        guard let manager else { throw CaptureError.engineNotReady }
-        let result = try manager.performCompleteDiarization(samples, sampleRate: 16_000)
-        return SpeakerAlignment.normalize(result.segments.map {
-            (id: $0.speakerId, start: Double($0.startTimeSeconds), end: Double($0.endTimeSeconds))
-        })
+        try diarizeDetailed(samples: samples).turns
     }
 
-    // FUTURE (capability #2, deliberately out of scope for Stage 1): cross-session voiceprint
-    // identity would attach HERE — FluidAudio's `SpeakerManager` / `extractSpeakerEmbedding` can
-    // enroll a named speaker's embedding and match new sessions against a local voiceprint store,
-    // so "Speaker 1" auto-resolves to "Alice" across sessions. No voiceprint store is built now.
+    /// Diarize, and additionally return each normalized speaker slot's voice EMBEDDINGS, best
+    /// (highest-quality) first.
+    ///
+    /// Phase 3 (Wave 4) builds cross-session identity on this. No extra model and no extra API were
+    /// needed: `TimedSpeakerSegment.embedding` is already public at the pinned tag, and it is the
+    /// same WeSpeaker vector the clusterer itself compares — so a voiceprint match is measured in
+    /// exactly the units the diarizer was tuned in.
+    ///
+    /// Embeddings are ordered by `qualityScore` so a caller keeping only a few keeps the best few.
+    /// Segments shorter than `minEmbeddingSeconds` are dropped entirely: a half-second of speech
+    /// produces an embedding dominated by whatever else was in the room, and enrolling one is how a
+    /// voiceprint store slowly poisons itself.
+    public func diarizeDetailed(samples: [Float]) throws
+        -> (turns: [SpeakerTurn], embeddings: [Int: [[Float]]]) {
+        guard let manager else { throw CaptureError.engineNotReady }
+        let result = try manager.performCompleteDiarization(samples, sampleRate: 16_000)
+        let (turns, slotForID) = SpeakerAlignment.normalizeWithSlots(result.segments.map {
+            (id: $0.speakerId, start: Double($0.startTimeSeconds), end: Double($0.endTimeSeconds))
+        })
+
+        var byQuality: [Int: [(quality: Float, embedding: [Float])]] = [:]
+        for seg in result.segments {
+            guard let slot = slotForID[seg.speakerId] else { continue }
+            guard seg.durationSeconds >= Self.minEmbeddingSeconds else { continue }
+            guard !seg.embedding.isEmpty else { continue }
+            byQuality[slot, default: []].append((seg.qualityScore, seg.embedding))
+        }
+        let embeddings = byQuality.mapValues { list in
+            list.sorted { $0.quality > $1.quality }.map(\.embedding)
+        }
+        return (turns, embeddings)
+    }
+
+    /// The shortest diarized span whose embedding is trusted for enrollment or matching.
+    public static let minEmbeddingSeconds: Float = 2.0
 }
 
 /// The post-save diarization pass (Feature A). Runs OFF the save path — the session is already
@@ -57,26 +84,35 @@ public enum DiarizationPass {
     /// final pass transcribed, so both share the T0 timeline). Re-renders `transcript.md` with
     /// label prefixes — the verbatim text and every `[mm:ss]` anchor are unchanged — and stores
     /// `speaker` per segment + `speakerCount` in `session.json`.
-    public static func run(dir: URL, samples: [Float]) async {
-        guard samples.count > 16_000 else { return }   // < 1 s of audio — nothing to label
+    /// - Returns: each speaker slot's voice embeddings, for the voiceprint pass that runs NEXT in
+    ///   the chain. Empty when diarization did not run or produced nothing — so a caller can always
+    ///   pass the result straight on without checking anything first.
+    @discardableResult
+    public static func run(dir: URL, samples: [Float]) async -> [Int: [[Float]]] {
+        guard samples.count > 16_000 else { return [:] }   // < 1 s of audio — nothing to label
         do {
             try await DiarizerService.shared.prepare(progress: { msg, frac in
                 NSLog("[Diarize] \(msg) \(frac.map { String(format: "%.0f%%", $0 * 100) } ?? "")")
             })
-            let turns = try await DiarizerService.shared.diarize(samples: samples)
+            let (turns, embeddings) = try await DiarizerService.shared.diarizeDetailed(samples: samples)
             guard !turns.isEmpty,
                   var doc = DocumentBuilder.readSession(dir),
-                  !doc.segments.isEmpty else { return }
+                  !doc.segments.isEmpty else { return [:] }
+            // ALIGNMENT happens here, inside the diarization pass — step 2 of the four-step chain
+            // (diarize → align → voiceprint → cleanup). Phase 3 gave `assign` a word-boundary path;
+            // a session with no word timings still goes through the untouched legacy one.
             doc.segments = SpeakerAlignment.assign(segments: doc.segments, turns: turns)
             doc.meta.speakerCount = Set(doc.segments.compactMap { $0.speaker }).count
             DocumentBuilder.writeSession(doc, to: dir)   // re-render md with labels + session.json
             SearchIndex.shared.index(sessionDir: dir)    // labels become searchable
             SessionStore.postSessionSaved(dir)
             NSLog("[Diarize] \(doc.meta.speakerCount ?? 0) speaker(s) labeled for \(dir.lastPathComponent)")
+            return embeddings
         } catch {
             // Offline first run / model failure / mid-pass throw: the verbatim session is already
             // saved; we degrade to "no labels" and retry naturally on the next session.
             NSLog("[Diarize] skipped (\(error)) — session kept without speaker labels")
+            return [:]
         }
     }
 }

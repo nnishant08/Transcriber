@@ -220,12 +220,58 @@ final class AppModel: ObservableObject {
     /// Stage 2 / Feature B: the user's custom vocabulary UNIONED with every enabled vertical pack's
     /// vocabulary (deduped). With no user terms AND no enabled pack this is [] → promptTokens nil →
     /// byte-identical no-op. This is what actually feeds the streaming + finalPass bias.
-    var effectiveVocabulary: [String] { PackManager.shared.mergedVocabulary(userVocab: customVocabulary) }
+    /// Phase 3 additionally unions in the terms the user has taught Said by correcting the same
+    /// word twice (`CorrectionMemory`). Promotion into this list is the ONLY thing a learned
+    /// correction ever does — it is never applied as a string replacement to any transcript. See
+    /// `CorrectionMemory` for why that distinction is load-bearing rather than fussy.
+    var effectiveVocabulary: [String] {
+        PackManager.shared.mergedVocabulary(userVocab: customVocabulary + CorrectionMemory.promotedTerms())
+    }
     @Published var defaultSummaryStyle: SummaryStyle { // A3
         didSet { UserDefaults.standard.set(defaultSummaryStyle.rawValue, forKey: "defaultSummaryStyle") }
     }
     @Published var obsidianVaultPath: String {         // C3 (empty = not configured)
         didSet { UserDefaults.standard.set(obsidianVaultPath, forKey: "obsidianVaultPath") }
+    }
+
+    // MARK: Phase-3 settings (engine choice, offline enforcement)
+
+    /// Which ASR engine transcribes. `.automatic` (default) routes by language: Parakeet for the
+    /// languages it covers, Whisper for everything else. See `EngineRouter` — and note that an
+    /// UNKNOWN language routes to Whisper, never to Parakeet, because Parakeet asked for a language
+    /// it does not cover produces fluent nonsense rather than an error.
+    @Published var enginePreference: EnginePreference {
+        didSet { UserDefaults.standard.set(enginePreference.rawValue, forKey: "enginePreference") }
+    }
+    /// Cross-session voiceprint identity (Wave 4). OFF by default: with it off no embedding is ever
+    /// extracted, nothing is stored, and `session.json` gains no keys. Needs diarization, which
+    /// produces the embeddings it matches on.
+    @Published var voiceprintsEnabled: Bool {
+        didSet {
+            UserDefaults.standard.set(voiceprintsEnabled, forKey: "voiceprintsEnabled")
+            VoiceprintStore.isEnabled = voiceprintsEnabled
+        }
+    }
+    /// Hybrid semantic search (Wave 6). OFF by default and opt-in: it takes on a model asset and an
+    /// index lifecycle Said then owns forever. Turning it OFF purges the vectors rather than merely
+    /// ignoring them — an embedding is a lossy but real reconstruction of the text it came from, so
+    /// "disabled" has to mean "gone".
+    @Published var semanticSearchEnabled: Bool {
+        didSet {
+            UserDefaults.standard.set(semanticSearchEnabled, forKey: "semanticSearchEnabled")
+            SemanticIndex.isEnabled = semanticSearchEnabled
+            if !semanticSearchEnabled { SemanticIndex.shared.purgeCache() }
+        }
+    }
+    /// Refuse every model download (§10.2). OFF by default — on a fresh install with no models yet,
+    /// defaulting it on would brick the app. With it on, an already-downloaded model still LOADS;
+    /// only fetching is refused, which is what makes airplane mode a working configuration.
+    @Published var neverDownloadModels: Bool {
+        didSet {
+            UserDefaults.standard.set(neverDownloadModels, forKey: "neverDownloadModels")
+            // The setter also flips FluidAudio's own `DownloadUtils.enforceOffline`.
+            ModelGate.neverDownloadModels = neverDownloadModels
+        }
     }
 
     // MARK: Stage-1 settings (all additive; defaults preserve byte-identical output)
@@ -293,6 +339,13 @@ final class AppModel: ObservableObject {
 
     /// Transient UI: the resolved/detected session language ("Detected: Español"), recording state only.
     @Published var sessionLanguageLabel: String? = nil
+    /// Which engine this session is running on, shown in the status bar beside the language.
+    ///
+    /// Set only when it is worth saying: a plain "Parakeet ran, as expected" is noise, but "Whisper
+    /// — Parakeet doesn't cover Hindi" is the difference between a user trusting the transcript and
+    /// wondering why it reads differently from yesterday's. §5.2 requires that an auto-route be
+    /// visible rather than silent.
+    @Published var sessionEngineLabel: String? = nil
     /// Transient UI: a calendar meeting awaiting the user's Start/Ignore (prompt mode).
     @Published var meetingPrompt: MeetingCandidate? = nil
     /// Transient UI: title of a meeting recording that auto-started (dismissible banner).
@@ -338,7 +391,7 @@ final class AppModel: ObservableObject {
     /// `AudioCaptureProcessTap` while the tap backend is the live system-audio source. Held as
     /// `AnyObject` because the type is `@available(macOS 14.2)` and the deployment target is 14.0.
     private var processTap: AnyObject?
-    private var streamer: StreamingTranscriber?
+    private var streamer: (any TranscriptionStream)?
     private var streamTask: Task<Void, Never>?
     private var busy = false
     private var hudTimer: Timer?
@@ -385,7 +438,12 @@ final class AppModel: ObservableObject {
     // Prompt-2 session state
     private var mixer: AudioMixer?                 // non-nil only for the .micPlusSystem source
     private var sessionBookmarks: [Bookmark] = []  // live ⌥⌘B marks (seconds from T0)
-    private var sessionPromptTokens: [Int]?        // custom-vocab decode bias snapshot for this session
+    /// Custom-vocab bias snapshot for this session. `nil` when the effective vocabulary is empty,
+    /// which `VocabularyBias`'s failable init makes unrepresentable-as-empty → exact no-op.
+    private var sessionBias: VocabularyBias?
+    /// Which engine this session is running on, and why. Stamped into `SessionMeta` at save and
+    /// shown in the status bar when the router had to fall back to something the user didn't pick.
+    private var sessionDecision: EngineRouter.Decision?
 
     // Stage-1 session state
     private var sessionSource: AudioSource = .microphone  // the source THIS session records with
@@ -422,6 +480,11 @@ final class AppModel: ObservableObject {
         screenQuality = ScreenQuality(rawValue: d.string(forKey: "screenQuality") ?? "") ?? .balanced
         screenAudioSource = AudioSource(rawValue: d.string(forKey: "screenAudioSource") ?? "") ?? .micPlusSystem
         saveAudioEnabled = (d.object(forKey: "saveAudioEnabled") as? Bool) ?? true
+        enginePreference = EnginePreference(rawValue: d.string(forKey: "enginePreference") ?? "")
+            ?? .automatic
+        neverDownloadModels = d.bool(forKey: "neverDownloadModels")
+        voiceprintsEnabled = d.bool(forKey: "voiceprintsEnabled")
+        semanticSearchEnabled = d.bool(forKey: "semanticSearchEnabled")
         useProcessTap = (d.object(forKey: "useProcessTap") as? Bool) ?? true
         customVocabulary = (d.object(forKey: "customVocabulary") as? [String]) ?? []
         autoPauseEnabled = (d.object(forKey: "autoPauseEnabled") as? Bool) ?? true
@@ -492,6 +555,13 @@ final class AppModel: ObservableObject {
         SessionTrash.inject { url in
             try FileManager.default.trashItem(at: url, resultingItemURL: nil)
         }
+
+        // Phase 3: push the offline setting into the dependency before anything can reach for a
+        // model. The `@Published` property's `didSet` does this too, but a `didSet` does not fire on
+        // initialisation — so without this, a launch where the user never touches the toggle would
+        // leave `DownloadUtils.enforceOffline` at its `false` default and a fetch could slip past
+        // the one promise the gate exists to keep.
+        ModelGate.syncToDependencies()
 
         WindowManager.shared.showTranscript()
 
@@ -613,15 +683,33 @@ final class AppModel: ObservableObject {
         defer { busy = false }
 
         do {
+            // Feature B: resolve the session language BEFORE choosing an engine. Phase 3 moved this
+            // above the model load, because the engine is now routed BY the language: Parakeet for
+            // the languages it covers, Whisper for the rest. Default ("en") is byte-identical to the
+            // old hard pin. "auto" (multilingual models only) defers to a one-shot detection on the
+            // first seconds of audio — never per-window, so the language can't flip mid-session.
+            let langSetting = effectiveLanguageSetting
+            let autoDetect = (langSetting == "auto")
+            sessionLanguage = autoDetect ? nil : langSetting
+            sessionLanguageLabel = (!autoDetect && langSetting != "en") ? Self.languageName(langSetting) : nil
+
             status = .preparingModel("Preparing \(model.shortName)…")
             downloadFraction = nil
-            try await engine.prepare(model: model.rawValue) { [weak self] msg, fraction in
+            // A nil language (an Auto session) routes to Whisper — which is also the only engine
+            // that can perform the detection, so the Auto flow falls out of the routing rule rather
+            // than needing a special case. If detection then names a language Parakeet covers,
+            // `detectLanguageThenAttachStreamer` re-prepares onto Parakeet before attaching.
+            let decision = try await engine.prepare(preference: enginePreference,
+                                                    language: sessionLanguage,
+                                                    whisperVariant: model.rawValue) { [weak self] msg, fraction in
                 Task { @MainActor in
                     guard let self, self.isRecording == false else { return }
                     self.status = .preparingModel(msg)
                     self.downloadFraction = fraction
                 }
             }
+            sessionDecision = decision
+            sessionEngineLabel = Self.engineLabel(for: decision)
             downloadFraction = nil
 
             engine.sink.reset()
@@ -640,20 +728,12 @@ final class AppModel: ObservableObject {
             // Custom-vocab decode bias snapshot for this whole session (nil when empty → exact no-op).
             // Feature B: enabled vertical packs merge their vocabulary in here; with no user vocab AND
             // no enabled pack the union is empty → promptTokens nil → byte-identical no-op.
-            sessionPromptTokens = engine.promptTokens(for: effectiveVocabulary)
+            sessionBias = VocabularyBias(terms: effectiveVocabulary)
 
             // The source for THIS session: the user's pick, or a one-shot calendar-trigger override
             // (so a meeting auto-capture can use System Audio without flipping the persisted setting).
             sessionSource = sourceOverride ?? source
             sourceOverride = nil
-
-            // Feature B: resolve the session language once, up front. Default ("en") is byte-identical
-            // to the old hard pin. "auto" (multilingual models only) defers to a one-shot detection on
-            // the first seconds of audio — never per-window, so the language can't flip mid-session.
-            let langSetting = effectiveLanguageSetting
-            let autoDetect = (langSetting == "auto")
-            sessionLanguage = autoDetect ? nil : langSetting
-            sessionLanguageLabel = (!autoDetect && langSetting != "en") ? Self.languageName(langSetting) : nil
 
             // Single session clock T0 (monotonic): transcript segments are relative to the audio
             // buffer start (== T0) and frame events are stamped CACurrentMediaTime() - T0.
@@ -738,8 +818,9 @@ final class AppModel: ObservableObject {
                 // language, so every streaming window + the final pass share one fixed language.
                 // (The shared WhisperKit isn't transcribing yet, so detection can't collide with it.)
                 detectTask = Task { [weak self] in await self?.detectLanguageThenAttachStreamer() }
-            } else if !attachStreamer(language: sessionLanguage) {
-                throw CaptureError.engineNotReady
+            } else {
+                let attached = await attachStreamer(language: sessionLanguage)
+                if !attached { throw CaptureError.engineNotReady }
             }
 
             isRecording = true
@@ -813,8 +894,8 @@ final class AppModel: ObservableObject {
     /// Create + run the streaming transcriber with a FIXED language. Returns false when the engine
     /// isn't ready. The update closure (and everything downstream) is unchanged from before.
     @discardableResult
-    private func attachStreamer(language: String?) -> Bool {
-        guard let streamer = engine.makeStreamer(language: language, promptTokens: sessionPromptTokens, onUpdate: { [weak self] live in
+    private func attachStreamer(language: String?) async -> Bool {
+        guard let streamer = await engine.makeStreamer(language: language, bias: sessionBias, onUpdate: { [weak self] live in
             Task { @MainActor in
                 guard let self, self.isRecording else { return }
                 self.displaySegments = live.confirmed
@@ -848,8 +929,26 @@ final class AppModel: ObservableObject {
             sessionLanguageLabel = "English (detect failed)"
         }
         sessionLanguage = lang
+
+        // Phase 3: NOW the language is known, so re-run the routing decision. `startFlow` loaded
+        // Whisper because the language was unknown (and because Whisper is what detects); if the
+        // detected language is one Parakeet covers, swap onto it before any audio is transcribed.
+        // Re-preparing here rather than mid-stream is what keeps one session on one engine.
+        //
+        // **Never START that load once the user has pressed Stop.** `stopFlow` cancels this task and
+        // then AWAITS it, while `prepare` is a CoreML load — possibly a first-run model download —
+        // that does not observe cancellation. Entering it after Stop would hang the stop flow for as
+        // long as the load takes, with the UI still reading "recording". Skipping the swap costs one
+        // session on Whisper, which is already loaded and already correct.
+        guard isRecording, !Task.isCancelled else { return }
+        if let updated = try? await engine.prepare(preference: enginePreference, language: lang,
+                                                   whisperVariant: model.rawValue, progress: { _, _ in }) {
+            sessionDecision = updated
+            sessionEngineLabel = Self.engineLabel(for: updated)
+        }
+
         guard isRecording, streamer == nil else { return }
-        attachStreamer(language: lang)
+        await attachStreamer(language: lang)
     }
 
     private func stopFlow() async {
@@ -912,7 +1011,7 @@ final class AppModel: ObservableObject {
                 let lead = engine.sink.snapshot()
                 sessionLanguage = (try? await engine.detectLanguage(samples: Array(lead.prefix(30 * 16_000))))?.language ?? "en"
             }
-            let finalSegs = try await engine.finalPassSegments(language: sessionLanguage, promptTokens: sessionPromptTokens)
+            let finalSegs = try await engine.finalPassSegments(language: sessionLanguage, bias: sessionBias)
             let segs = finalSegs.isEmpty ? liveSegments : finalSegs
             if !segs.isEmpty {
                 transcript = segs.map { $0.text }.joined(separator: " ")
@@ -948,13 +1047,31 @@ final class AppModel: ObservableObject {
         notifySessionSaved(dir)
         let wantDiarize = diarizationEnabled
         let wantCleanup = cleanupEnabled
+        // Voiceprints need diarization's embeddings, so the toggle only means anything alongside it.
+        let wantVoiceprints = diarizationEnabled && voiceprintsEnabled
+        let wantSemantic = semanticSearchEnabled
         let diarSamples: [Float] = wantDiarize ? engine.sink.snapshot() : []   // capture BEFORE a new session resets the sink
+        //
+        //    **The pass ORDER is load-bearing and is stated here on purpose** (§7.4): three of these
+        //    passes touch speaker labels or segment text, and an accidental reorder would be silent
+        //    and very hard to diagnose. It is:
+        //        diarize → align → voiceprint → cleanup
+        //    Alignment lives inside `DiarizationPass` (it is what consumes the turns), which is why
+        //    that pass returns the per-slot embeddings the voiceprint pass then matches on. Cleanup
+        //    runs last because it rewrites segment TEXT, and matching a voice must see the verbatim
+        //    segmentation the diarizer was aligned against.
         Task.detached(priority: .utility) {
             SearchIndex.shared.index(sessionDir: dir)   // searchable immediately, before slow titling
             SessionStore.ensureSessionID(dir: dir)      // D1: no-op for a session that already has one
             await SessionStore.ensureTitle(dir: dir)
-            if wantDiarize { await DiarizationPass.run(dir: dir, samples: diarSamples) }
+            var embeddings: [Int: [[Float]]] = [:]
+            if wantDiarize { embeddings = await DiarizationPass.run(dir: dir, samples: diarSamples) }
+            if wantVoiceprints { await VoiceprintPass.run(dir: dir, embeddings: embeddings) }
             if wantCleanup { await CleanupPass.run(dir: dir) }
+            // LAST, deliberately: the semantic index embeds the finished text, so it must run after
+            // every pass that can still change it. Re-embedding after cleanup rewrote the segments
+            // would otherwise leave the vectors describing a transcript that no longer exists.
+            if wantSemantic { await SemanticIndex.shared.index(sessionDir: dir) }
         }
     }
 
@@ -1032,7 +1149,8 @@ final class AppModel: ObservableObject {
                                      language: langSetting == "auto" ? nil : langSetting,
                                      autoDetectLanguage: langSetting == "auto",
                                      vocabulary: effectiveVocabulary,
-                                     diarize: diarizationEnabled, cleanup: cleanupEnabled)
+                                     diarize: diarizationEnabled, cleanup: cleanupEnabled,
+                                     enginePreference: enginePreference)
         Task {
             var failure: String?
             // Keep an .error status visible on failure; only return to .idle when everything succeeded.
@@ -1512,6 +1630,15 @@ final class AppModel: ObservableObject {
         hud.quietSeconds = 0
     }
 
+    /// The status-bar string for a routing decision, or nil when there is nothing worth saying.
+    ///
+    /// Deliberately quiet in the ordinary case. A label on every session would train the user to
+    /// ignore it, and then the one time it says "Whisper — Parakeet doesn't cover Hindi" they would
+    /// not read it either.
+    static func engineLabel(for decision: EngineRouter.Decision) -> String? {
+        decision.isFallback || decision.reason.contains("—") ? decision.reason : nil
+    }
+
     private func sessionMeta(audioFile: String? = nil, durationSeconds: Double? = nil,
                              bookmarks: [Bookmark] = []) -> SessionMeta {
         SessionMeta(id: sessionID,
@@ -1527,7 +1654,11 @@ final class AppModel: ObservableObject {
                     audioFile: audioFile, durationSeconds: durationSeconds, bookmarks: bookmarks,
                     language: (sessionLanguage != nil && sessionLanguage != "en") ? sessionLanguage : nil,
                     videoFile: screenResult?.url.lastPathComponent,
-                    videoWidth: screenResult?.width, videoHeight: screenResult?.height)
+                    videoWidth: screenResult?.width, videoHeight: screenResult?.height,
+                    // Phase 3: which engine actually produced these words. Absent (and the key
+                    // omitted) for a session recorded before the seam existed.
+                    engine: sessionDecision?.engine.rawValue,
+                    engineModel: engine.activeModelName)
     }
 
     // MARK: Export (single-file HTML / PDF of the last session)

@@ -79,6 +79,10 @@ public enum SessionBundle {
 
     public static let fileExtension = "said"
     public static let manifestName = "manifest.json"
+    /// Present in a bundle ONLY when the sender explicitly opted in (see `write`). An older build of
+    /// Said that does not know this filename simply installs it into the session folder and ignores
+    /// it — degradation, not corruption, which is the same rule `formatVersion` is held at 1 for.
+    public static let voiceprintsName = "voiceprints.json"
 
     // MARK: - Write
 
@@ -87,8 +91,17 @@ public enum SessionBundle {
     /// The folder is staged into a temp directory first rather than archived in place, for two
     /// reasons: the manifest must appear INSIDE the archive without ever being written into the
     /// user's real session folder, and encrypted files have to be decrypted on the way in.
+    /// - Parameter includingVoiceprints: carry the VOICE PROFILES of this session's speakers into
+    ///   the bundle. **Defaults to false and must stay that way.** A voiceprint is biometric data;
+    ///   the recipient could use it to identify those speakers in their own recordings, which is a
+    ///   consequence the sender has to opt into knowingly rather than inherit from a share sheet.
+    ///
+    ///   The default is safe by construction rather than by remembering to filter: voiceprints live
+    ///   in Application Support, and `stageDecrypted` copies the SESSION FOLDER, so there is nothing
+    ///   to exclude. Including them requires this explicit injection.
     @discardableResult
-    public static func write(sessionDir: URL, to output: URL) throws -> URL {
+    public static func write(sessionDir: URL, to output: URL,
+                             includingVoiceprints: Bool = false) throws -> URL {
         let fm = FileManager.default
         guard fm.fileExists(atPath: sessionDir.appendingPathComponent("transcript.md").path) else {
             throw SessionBundleError.notASession(sessionDir)
@@ -109,6 +122,18 @@ public enum SessionBundle {
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         encoder.dateEncodingStrategy = .iso8601
         try encoder.encode(manifest).write(to: staging.appendingPathComponent(manifestName))
+
+        if includingVoiceprints {
+            // Only the voices that actually appear in THIS session, not the whole store — sharing
+            // one meeting should not hand over every colleague the user has ever recorded.
+            let slots = Set((DocumentBuilder.readSession(sessionDir)?.segments ?? []).compactMap(\.speaker))
+            let names = Set(slots.compactMap { meta?.speakerNames?[String($0)] }
+                                 .map { $0.lowercased() })
+            let relevant = VoiceprintStore.all().filter { names.contains($0.name.lowercased()) }
+            if !relevant.isEmpty, let data = try? encoder.encode(relevant) {
+                try data.write(to: staging.appendingPathComponent(voiceprintsName))
+            }
+        }
 
         try? fm.removeItem(at: output)
         try archive(directory: staging, to: output)
@@ -188,6 +213,15 @@ public enum SessionBundle {
         let dest = DocumentBuilder.makeSessionFolder(date: date, root: root)
         try installPayload(from: payload, into: dest)
 
+        // A bundle whose sender opted into sharing voice profiles: stage them for the user to
+        // ACCEPT, never merge them into their store silently. "Never silently merged" is the rule
+        // this is enforcing — the recipient is being handed biometric data about other people and
+        // has to agree to keep it.
+        let incomingVoices = payload.appendingPathComponent(voiceprintsName)
+        if fm.fileExists(atPath: incomingVoices.path) {
+            VoiceprintStore.stagePending(from: incomingVoices)
+        }
+
         SearchIndex.shared.index(sessionDir: dest)
         SessionStore.postSessionSaved(dest)
         return .imported(dest)
@@ -231,7 +265,13 @@ public enum SessionBundle {
         let fm = FileManager.default
         let entries = try fm.contentsOfDirectory(at: payload, includingPropertiesForKeys: [.isDirectoryKey],
                                                  options: [.skipsHiddenFiles])
-        for entry in entries where entry.lastPathComponent != manifestName {
+        // `voiceprintsName` is excluded for a reason that outlasts this function: a voiceprint file
+        // sitting INSIDE a session folder would be picked up by `stageDecrypted` and re-exported in
+        // every future `.said` of that session — silently, with no opt-in. Keeping the store out of
+        // session folders is the mechanism that makes the default safe, so the import path must not
+        // be the thing that puts one there. It is handed to `VoiceprintStore.stagePending` instead.
+        for entry in entries where entry.lastPathComponent != manifestName
+                                && entry.lastPathComponent != voiceprintsName {
             let isDir = (try? entry.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true
             let target = dest.appendingPathComponent(entry.lastPathComponent)
             if isDir {

@@ -10,12 +10,32 @@
 //     the headless `--selftest-*` suite (which tests SaidKit through its public API on purpose).
 //
 // Pinned EXACT versions (APIs drift across releases — read the pinned tag's README/source before bumping):
-//   WhisperKit 1.0.0 ships from the consolidated package "argmax-oss-swift" (product name still "WhisperKit").
+//   WhisperKit 1.1.0 ships from the consolidated package "argmax-oss-swift" (product name still "WhisperKit").
 //     Declares macOS 14 / iOS 17 → satisfied by both floors below.
+//     PHASE 3 BUMPED 1.0.0 → 1.1.0. Verified at both tags before bumping: `WhisperKit.download(
+//     variant:progressCallback:)`, `WhisperKitConfig(model:modelFolder:load:download:)`,
+//     `transcribe(audioArray:decodeOptions:)`, `transcribe(audioPath:decodeOptions:)`,
+//     `detectLangauge(audioArray:)` [sic] and `WhisperKit.sampleRate` are all UNCHANGED. The one
+//     breaking rename in 1.1.0 — `AudioInputConfig` → `AudioInputOptions`, with
+//     `WhisperKitConfig.audioInputConfig` deprecated — touches a symbol Said never referenced.
+//     What the bump buys: `AudioLoadingMode.incremental`, bounded-memory chunked file reading.
+//     It is OPT-IN (`.fullFile` is still the default) and applies to the `audioPath:` overload
+//     ONLY, so `TranscriptionEngine.transcribeFile` asks for it explicitly and the in-memory
+//     `audioArray:` paths are unaffected.
 //   KeyboardShortcuts 2.4.0 — macOS-only, so it is a dependency of the `Said` target ONLY.
-//   FluidAudio 0.15.2 (git tag v0.15.2) — on-device speaker diarization (CoreML, zero transitive deps).
+//   FluidAudio 0.15.2 (git tag v0.15.2) — speaker diarization AND (Phase 3) Parakeet ASR.
 //     VERIFIED at the tag: its manifest already declares `.macOS(.v14)` AND `.iOS(.v17)`, so the
 //     existing pin satisfies the iOS floor as-is. NO bump was needed and none was made.
+//     PHASE 3 RE-VERIFIED AND DELIBERATELY HELD AT 0.15.2. The README/podspec/CITATION.cff all
+//     still claim 0.15.2 does not exist (they say 0.12.4); `git ls-remote --tags` says otherwise and
+//     the tag list runs to v0.15.6. Everything Phase 3 needs is present at 0.15.2: `AsrManager`,
+//     `AsrModels.downloadAndLoad(version:)`, `ASRResult.tokenTimings`, `SlidingWindowAsrManager`
+//     (with its confirmed/volatile split) and `configureVocabularyBoosting`.
+//     What is NOT present is `ModelHub` — it lands at v0.15.5, and by v0.15.6 `DownloadUtils` is
+//     GONE, which breaks `AsrModels.download(progressHandler: DownloadUtils.ProgressHandler?)` and
+//     the diarizer's download plumbing. Said therefore does not take `ModelHub.offlineMode`; it
+//     enforces the offline promise itself in `ModelGate`, which is strictly broader anyway because
+//     it also covers WhisperKit — which has no offline flag at any version.
 import PackageDescription
 
 let package = Package(
@@ -39,7 +59,7 @@ let package = Package(
         .executable(name: "Said", targets: ["Said"]),
     ],
     dependencies: [
-        .package(url: "https://github.com/argmaxinc/argmax-oss-swift.git", exact: "1.0.0"),
+        .package(url: "https://github.com/argmaxinc/argmax-oss-swift.git", exact: "1.1.0"),
         .package(url: "https://github.com/sindresorhus/KeyboardShortcuts", exact: "2.4.0"),
         .package(url: "https://github.com/FluidInference/FluidAudio.git", exact: "0.15.2"),
     ],

@@ -79,6 +79,30 @@ enum AppMain {
             SelfTest.runDiarize(path: positional(after: idx, in: args)); return
         }
         if args.contains("--selftest-align") { SelfTest.runAlign(); return }
+        // Phase 3 (word substrate / engine seam / editing / voiceprints / slides / semantic search).
+        if args.contains("--selftest-words") { SelfTest.runWords(); return }
+        if args.contains("--selftest-engine-route") { SelfTest.runEngineRoute(); return }
+        if args.contains("--selftest-edit") { SelfTest.runEdit(); return }
+        if args.contains("--selftest-voiceprint") { SelfTest.runVoiceprint(); return }
+        if args.contains("--selftest-slides") { SelfTest.runSlides(); return }
+        if args.contains("--selftest-semantic") { SelfTest.runSemantic(); return }
+        // These three block on a semaphore and then `exit()`, like the majority of the existing
+        // modes — no trailing run loop, which would only hang if the function ever returned.
+        // Safe to block main: nothing on their await paths is @MainActor-isolated.
+        if let idx = args.firstIndex(of: "--selftest-parakeet") {
+            SelfTest.runParakeet(path: positional(after: idx, in: args)); return
+        }
+        if let idx = args.firstIndex(of: "--selftest-bias") {
+            let terms = (value(of: "--terms", in: args) ?? "")
+                .split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+                .filter { !$0.isEmpty }
+            SelfTest.runBias(path: positional(after: idx, in: args), terms: terms); return
+        }
+        if let idx = args.firstIndex(of: "--compare-engines") {
+            SelfTest.runCompareEngines(folder: positional(after: idx, in: args),
+                                       termsPath: value(of: "--terms-file", in: args),
+                                       out: value(of: "--out", in: args)); return
+        }
         if let idx = args.firstIndex(of: "--selftest-detect") {
             SelfTest.runDetect(path: positional(after: idx, in: args)); return
         }
@@ -151,6 +175,9 @@ enum AppMain {
         }
         SaidApp.main()
     }
+
+    /// `--emit-fixture <path>`, for the modes that can lock their own output against future drift.
+    static func fixturePath(in args: [String]) -> String? { value(of: "--emit-fixture", in: args) }
 
     private static func value(of flag: String, in args: [String]) -> String? {
         guard let i = args.firstIndex(of: flag), i + 1 < args.count else { return nil }
@@ -227,7 +254,7 @@ enum SelfTest {
                 print("input format: \(file.processingFormat)")
 
                 let collector = UpdateCollector()
-                guard let streamer = engine.makeStreamer(language: "en", onUpdate: { live in
+                guard let streamer = await engine.makeStreamer(language: "en", onUpdate: { live in
                     collector.update(live.text)
                 }) else { throw CaptureError.engineNotReady }
 
@@ -1135,6 +1162,37 @@ extension SelfTest {
         gate.append(quiet)
         check("digital silence reads as no level", gate.level == 0)
 
+        // --- SampleSink incremental read (Phase 3, §5.3) ---------------------------------
+        // The reader that makes live memory flat in session length instead of linear. Asserted here
+        // rather than in `--selftest-stream`, because that mode drives the WHISPER path, which by
+        // design still snapshots the whole buffer — it could never exercise this.
+        let inc = SampleSink()
+        let block: [Float] = (0..<1_600).map { sin(Float($0) * 0.03) * 0.2 }
+        var cursor = 0
+        for _ in 0..<10 { inc.append(block) }
+        let (first, next1) = inc.newSamples(after: cursor)
+        check("the first read returns everything buffered so far", first.count == 16_000)
+        cursor = next1
+        let (none, next2) = inc.newSamples(after: cursor)
+        check("a second read with nothing new returns nothing", none.isEmpty && next2 == cursor)
+        inc.append(block)
+        let (delta, next3) = inc.newSamples(after: cursor)
+        check("only what arrived since the last read comes back", delta.count == 1_600)
+        check("…and it is the samples that actually arrived", delta == block)
+        check("the cursor advances by exactly that much", next3 == cursor + 1_600)
+        // The whole point: the cost per pass tracks the audio ARRIVING, not the session so far.
+        check("no read ever hands back the whole session again",
+              inc.largestIncrementalRead == 16_000 && inc.count == 17_600)
+        // A `reset()` between two reads leaves a stale index past the end. That must resynchronise
+        // silently — a new session starting must never trap the recording that starts it.
+        inc.reset()
+        let (afterReset, next4) = inc.newSamples(after: 99_999)
+        check("a stale index after reset clamps instead of trapping",
+              afterReset.isEmpty && next4 == 0)
+        check("reset clears the instrumentation too", inc.largestIncrementalRead == 0)
+        let (negative, _) = inc.newSamples(after: -5)
+        check("a negative index clamps to the start", negative.isEmpty)
+
         // --- SilenceMonitor ------------------------------------------------------------
         var monitor = SilenceMonitor(enabled: true, pauseAfter: 30)
         let speech: Float = 0.08
@@ -1465,6 +1523,13 @@ extension SelfTest {
         check("no speakers → no labels", !mdPlain.contains("**Speaker") && mdPlain.contains("[00:00] one"))
         check("snippet path strips label", SessionStore.stripLeadingSpeakerLabel("**Alice:** hello there") == "hello there"
               && SessionStore.stripLeadingSpeakerLabel("plain line") == "plain line")
+
+        // Phase 3 (§7.7): word-boundary splitting, plus the legacy guarantee that a session with no
+        // word timings still produces byte-identical output to the pre-Phase-3 algorithm.
+        print("")
+        print("-- word-boundary alignment (Phase 3) --")
+        SelfTest.alignPhase3(check: check,
+                             emitFixture: AppMain.fixturePath(in: CommandLine.arguments))
 
         print(ok ? "OK" : "FAIL"); exit(ok ? 0 : 2)
     }

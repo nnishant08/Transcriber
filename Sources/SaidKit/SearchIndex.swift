@@ -4,6 +4,16 @@ import Foundation
 public struct SearchSnippet: Sendable {
     public let timestamp: String?
     public let text: String
+    /// True when this excerpt came from a SLIDE's OCR text rather than from speech (Phase 3,
+    /// Wave 5). The Library renders those differently, because "this was written on a slide" and
+    /// "someone said this" are different kinds of answer to the same query.
+    public let isSlide: Bool
+
+    public init(timestamp: String?, text: String, isSlide: Bool = false) {
+        self.timestamp = timestamp
+        self.text = text
+        self.isSlide = isSlide
+    }
 }
 
 /// A ranked search result: a session plus why it matched. Self-contained so a later "chat with your
@@ -14,6 +24,23 @@ public struct SessionHit: Sendable, Identifiable {
     let score: Double
     public let matchCount: Int
     public let snippets: [SearchSnippet]
+
+    /// True when at least one matched excerpt came from a slide. Drives the Library's slide badge
+    /// and the `slides:` search filter.
+    /// `contains(where:)`, not `contains(_:)`: the unlabelled form is the Equatable-element
+    /// overload, and `SearchSnippet` is deliberately not Equatable.
+    public var hasSlideMatch: Bool { snippets.contains(where: \.isSlide) }
+
+    /// Public because the `Said` module builds hits directly in two places: the semantic-only
+    /// results in `Intelligence.retrieve`, and `--selftest-semantic`. The synthesized memberwise
+    /// init is internal (`score` is), which would otherwise make both impossible from outside.
+    public init(dir: URL, meta: SessionMeta, score: Double, matchCount: Int, snippets: [SearchSnippet]) {
+        self.dir = dir
+        self.meta = meta
+        self.score = score
+        self.matchCount = matchCount
+        self.snippets = snippets
+    }
 
     public var id: String { dir.path }
     public var title: String {
@@ -46,8 +73,58 @@ public final class SearchIndex: @unchecked Sendable {
         public var title: String?
         public var tags: [String]
         var mtime: Date
+        /// Every term in the session, speech and slide text alike. UNCHANGED in meaning, so a
+        /// session with no slides ranks exactly as it did before Phase 3.
         var termFreq: [String: Int]
+        /// Slide OCR terms counted ONCE PER SLIDE SPAN. This is the de-duplicated slide signal.
+        var slideTermFreq: [String: Int] = [:]
+        /// Slide OCR terms counted once per captured FRAME — i.e. exactly the contribution slide
+        /// text makes to `termFreq`, since `transcript.md` interleaves the OCR block per frame.
+        ///
+        /// Stored so the speech-only frequency can be recovered by EXACT subtraction rather than by
+        /// re-tokenising a different string. That exactness is the point: a session with no frames
+        /// has both slide tables empty, so speech == `termFreq` and its score is bit-for-bit what it
+        /// was before Phase 3. No existing session's ranking moves.
+        var slideFrameTermFreq: [String: Int] = [:]
+
+        enum CodingKeys: String, CodingKey {
+            case path, date, title, tags, mtime, termFreq, slideTermFreq, slideFrameTermFreq
+        }
+
+        init(path: String, date: Date, title: String?, tags: [String], mtime: Date,
+             termFreq: [String: Int], slideTermFreq: [String: Int] = [:],
+             slideFrameTermFreq: [String: Int] = [:]) {
+            self.path = path; self.date = date; self.title = title; self.tags = tags
+            self.mtime = mtime; self.termFreq = termFreq
+            self.slideTermFreq = slideTermFreq; self.slideFrameTermFreq = slideFrameTermFreq
+        }
+
+        /// The slide tables are `decodeIfPresent` so a cache written before Phase 3 still loads;
+        /// those sessions score as pure speech until their next re-index, which is correct.
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            path = try c.decode(String.self, forKey: .path)
+            date = try c.decode(Date.self, forKey: .date)
+            title = try c.decodeIfPresent(String.self, forKey: .title)
+            tags = try c.decodeIfPresent([String].self, forKey: .tags) ?? []
+            mtime = try c.decode(Date.self, forKey: .mtime)
+            termFreq = try c.decode([String: Int].self, forKey: .termFreq)
+            slideTermFreq = try c.decodeIfPresent([String: Int].self, forKey: .slideTermFreq) ?? [:]
+            slideFrameTermFreq = try c.decodeIfPresent([String: Int].self, forKey: .slideFrameTermFreq) ?? [:]
+        }
     }
+
+    /// How much a slide-text match counts relative to a spoken one.
+    ///
+    /// Below 1 because slide text is much denser and much noisier than speech: a dense slide can
+    /// carry more words than a minute of talking, and OCR contributes misreadings that were never on
+    /// the slide at all. Weighting them equally lets one slide-heavy session outrank a session where
+    /// someone actually discussed the thing being searched for.
+    ///
+    /// Not zero, and not close to it — a phrase that appeared ONLY on a slide and was never spoken
+    /// still has to surface, since that is the differentiating capability this wave exists for.
+    /// Tuned, not derived — see `PHASE3-REPORT.md`.
+    static let slideMatchWeight = 0.35
 
     private let lock = NSLock()
     private var entries: [String: Entry] = [:]      // keyed by session dir path
@@ -93,11 +170,42 @@ public final class SearchIndex: @unchecked Sendable {
 
     private func indexInternal(dir: URL, mtime: Date) {
         let text = SessionStore.transcriptPlainText(dir: dir)
-        let meta = DocumentBuilder.readSession(dir)?.meta ?? SessionStore.synthMeta(dir: dir)
+        let doc = DocumentBuilder.readSession(dir)
+        let meta = doc?.meta ?? SessionStore.synthMeta(dir: dir)
         var freq: [String: Int] = [:]
         for term in Self.tokenize(text) { freq[term, default: 0] += 1 }
+
+        // Corrections are searchable, even though `transcript.md` never changes (Phase 3, §6).
+        //
+        // The edit overlay is deliberately not written into the verbatim file, so re-indexing after
+        // an edit used to be a complete no-op: the corrected word reached the SEMANTIC index (which
+        // chunks `EditStore.editedSegments`) and never reached this one, and the two disagreed about
+        // the same session. What is missing is exactly the CORRECTED words — an edit's ORIGINAL is
+        // still in the verbatim text and stays findable, which is right, since someone may well
+        // search for what the machine wrote. So the delta is added rather than the text re-derived.
+        for edit in EditStore.read(dir: dir) {
+            for term in Self.tokenize(edit.corrected) { freq[term, default: 0] += 1 }
+        }
+
+        // Slide text, counted once per SPAN. `transcriptPlainText` above already contains the OCR
+        // text once per captured FRAME — which is exactly the flooding problem: a slide left up for
+        // ten minutes contributes its words dozens of times and drowns out the speech. Recording
+        // the per-span counts separately lets `search` subtract the frames' over-counting back out
+        // and weight what remains, without a second index or a change to the transcript format.
+        var slideFreq: [String: Int] = [:]
+        for span in doc?.slideSpans ?? [] {
+            guard let t = span.text else { continue }
+            for term in Self.tokenize(t) { slideFreq[term, default: 0] += 1 }
+        }
+        var slideFrameFreq: [String: Int] = [:]
+        for frame in doc?.frames ?? [] {
+            guard let t = frame.text else { continue }
+            for term in Self.tokenize(t) { slideFrameFreq[term, default: 0] += 1 }
+        }
+
         let entry = Entry(path: dir.path, date: meta.date, title: meta.title,
-                          tags: meta.tags, mtime: mtime, termFreq: freq)
+                          tags: meta.tags, mtime: mtime, termFreq: freq,
+                          slideTermFreq: slideFreq, slideFrameTermFreq: slideFrameFreq)
         lock.lock(); entries[dir.path] = entry; lock.unlock()
     }
 
@@ -114,19 +222,36 @@ public final class SearchIndex: @unchecked Sendable {
         var hits: [SessionHit] = []
         for (_, e) in snapshot {
             var matchCount = 0, matchedTerms = 0
+            var weighted = 0.0
             for t in terms {
-                if let f = e.termFreq[t] { matchCount += f; matchedTerms += 1 }
+                if let f = e.termFreq[t] {
+                    matchCount += f
+                    matchedTerms += 1
+                    // Split the match into speech and slide contributions and weight them
+                    // differently. With no slide tables (every pre-Phase-3 session, and every
+                    // session without frames) `fromFrames` is 0, so `weighted` collapses to
+                    // `Double(matchCount)` and the score is exactly what it always was.
+                    let fromFrames = e.slideFrameTermFreq[t] ?? 0
+                    let speech = max(0, f - fromFrames)
+                    let slideSpans = e.slideTermFreq[t] ?? 0
+                    weighted += Double(speech) + Self.slideMatchWeight * Double(slideSpans)
+                }
             }
             guard matchCount > 0 else { continue }
             let ageDays = max(0, now.timeIntervalSince(e.date)) / 86_400
             let recency = 1.0 / (1.0 + ageDays / 30.0)                          // ~1 now, decays over weeks
             let allBonus = (matchedTerms == terms.count) ? Double(terms.count) : 0
-            let score = Double(matchCount) + allBonus + recency
+            let score = weighted + allBonus + recency
 
             let dir = URL(fileURLWithPath: e.path)
             let meta = DocumentBuilder.readSession(dir)?.meta
                 ?? SessionMeta(date: e.date, sourceLabel: "Unknown", modelName: "", title: e.title, tags: e.tags)
-            let snippets = Self.extractSnippets(dir: dir, terms: terms, limit: 3)
+            var snippets = Self.extractSnippets(dir: dir, terms: terms, limit: 3)
+            // A term that exists only in a CORRECTION is in the index but not in `transcript.md`,
+            // so the verbatim scan finds nothing and the hit would arrive with no excerpt at all.
+            // Fall back to the edited view — and only then, so an unedited session does exactly what
+            // it always did, down to the same allocations.
+            if snippets.isEmpty { snippets = Self.editedSnippets(dir: dir, terms: terms, limit: 3) }
             hits.append(SessionHit(dir: dir, meta: meta, score: score, matchCount: matchCount, snippets: snippets))
         }
         hits.sort { $0.score == $1.score ? $0.meta.date > $1.meta.date : $0.score > $1.score }
@@ -136,7 +261,12 @@ public final class SearchIndex: @unchecked Sendable {
     // MARK: - Tokenizing / snippets
 
     /// Lowercase alphanumeric tokens of length ≥ 2.
-    static func tokenize(_ s: String) -> [String] {
+    ///
+    /// **Public because it is the DEFINITION of "a searchable word" in Said**, not merely a helper.
+    /// `SlideSegmenter` compares slide readings with it, and `--selftest-compare-engines` measures
+    /// term recall with it — and a second implementation of this rule would be a place for the two
+    /// to drift apart silently, which is strictly worse than one exposed function.
+    public static func tokenize(_ s: String) -> [String] {
         var out: [String] = []
         var cur = ""
         for ch in s.lowercased() {
@@ -144,6 +274,25 @@ public final class SearchIndex: @unchecked Sendable {
             else { if cur.count >= 2 { out.append(cur) }; cur = "" }
         }
         if cur.count >= 2 { out.append(cur) }
+        return out
+    }
+
+    /// Snippets from the EDITED view, for terms that exist only in a correction.
+    ///
+    /// Separate from `extractSnippets` rather than folded into it: that function scans the raw
+    /// markdown line by line and is on the path of every search, and the overlay costs a session
+    /// read plus an apply. This runs only when the verbatim scan came back empty.
+    static func editedSnippets(dir: URL, terms: [String], limit: Int) -> [SearchSnippet] {
+        guard !EditStore.read(dir: dir).isEmpty,
+              let doc = DocumentBuilder.readSession(dir) else { return [] }
+        let segments = EditStore.editedSegments(dir: dir, segments: doc.segments)
+        var out: [SearchSnippet] = []
+        for seg in segments {
+            let tokens = Set(tokenize(seg.text))
+            guard terms.contains(where: { tokens.contains($0) }) else { continue }
+            out.append(SearchSnippet(timestamp: DocumentBuilder.timestamp(seg.start), text: seg.text))
+            if out.count >= limit { break }
+        }
         return out
     }
 
@@ -161,18 +310,23 @@ public final class SearchIndex: @unchecked Sendable {
         let termSet = Set(terms)
         var snippets: [SearchSnippet] = []
         var currentTS: String? = nil
+        // `DocumentBuilder` emits a fenced code block for exactly one thing — a frame's on-slide
+        // text — so a line inside a fence came from a slide, and one outside it came from speech.
+        // That is what lets a hit say which it was without a second index.
+        var insideSlideText = false
         for line in lines {
             let t = line.trimmingCharacters(in: .whitespaces)
+            if t.hasPrefix("```") { insideSlideText.toggle(); continue }
             if t.isEmpty { continue }
             if let ts = SessionStore.firstTimestamp(in: t) { currentTS = ts }
-            // Skip structural lines (header, image, details/summary, code fences).
+            // Skip structural lines (header, image, details/summary).
             if t.hasPrefix("#") || t == "---" || t.hasPrefix("- **") || t.hasPrefix("![")
-                || t.hasPrefix("<details") || t.hasPrefix("</details") || t.hasPrefix("<summary")
-                || t.hasPrefix("```") { continue }
+                || t.hasPrefix("<details") || t.hasPrefix("</details") || t.hasPrefix("<summary") { continue }
             if Set(tokenize(t)).isDisjoint(with: termSet) { continue }
             let clean = SessionStore.stripLeadingTimestamp(stripMarkup(t))
             if clean.isEmpty { continue }
-            snippets.append(SearchSnippet(timestamp: currentTS, text: String(clean.prefix(180))))
+            snippets.append(SearchSnippet(timestamp: currentTS, text: String(clean.prefix(180)),
+                                          isSlide: insideSlideText))
             if snippets.count >= limit { break }
         }
         return snippets
@@ -184,9 +338,20 @@ public final class SearchIndex: @unchecked Sendable {
 
     // MARK: - Persistence
 
+    /// The session's freshness stamp: the LATER of `transcript.md` and `edits.json`.
+    ///
+    /// Both, because both feed the index. Watching only the transcript would make `rebuildFromDisk`
+    /// skip an edited session as "still fresh" forever — the corrections would be indexed by the
+    /// `index(sessionDir:)` call that follows an edit and then silently lost at the next launch,
+    /// which is a worse failure than never indexing them at all, because it is intermittent.
     private func transcriptMTime(_ dir: URL) -> Date {
-        (try? dir.appendingPathComponent("transcript.md").resourceValues(forKeys: [.contentModificationDateKey]))?
-            .contentModificationDate ?? Date()
+        func mtime(_ name: String) -> Date? {
+            (try? dir.appendingPathComponent(name).resourceValues(forKeys: [.contentModificationDateKey]))?
+                .contentModificationDate
+        }
+        guard let transcript = mtime("transcript.md") else { return Date() }
+        guard let edits = mtime(EditStore.fileName) else { return transcript }
+        return max(transcript, edits)
     }
 
     private func loadCache() {

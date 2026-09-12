@@ -2,12 +2,43 @@ import Foundation
 
 // MARK: - Document model (shared by capture, OCR, builder, exporter)
 
+/// One recognised word, timed on the same pause-compressed `SessionClock` timeline as the segment
+/// that contains it (Phase 3, Wave 1).
+///
+/// **Where these come from.** The Parakeet provider gets them free from `ASRResult.tokenTimings` —
+/// no DTW, no forced alignment, no second model, on both the batch and the streaming path. Whisper
+/// can produce them too, but only on request (`DecodingOptions.wordTimestamps`, off by default) and
+/// only by running a DTW alignment that costs real time, so Said asks for them on the FINAL pass
+/// and never on the live one, where the latency would land on the critical path.
+///
+/// So `words` is absent for every session recorded before Phase 3, for any Whisper model whose
+/// alignment heads cannot serve the request, and for the live-save half of every session. Absence
+/// is the ordinary case, not an error case — which is the whole reason for `validWords` below.
+///
+/// `confidence` is `nil` — never a sentinel like 0 or 1 — when the engine does not report one, so
+/// "the engine was unsure" and "the engine did not say" stay distinguishable.
+public struct WordTiming: Codable, Sendable, Equatable {
+    public let text: String
+    public let start: TimeInterval
+    public let end: TimeInterval
+    public let confidence: Float?
+
+    public init(text: String, start: TimeInterval, end: TimeInterval, confidence: Float? = nil) {
+        self.text = text
+        self.start = start
+        self.end = end
+        self.confidence = confidence
+    }
+}
+
 /// A spoken-transcript segment, timestamped relative to the session clock T0 (seconds).
 /// `speaker` (1-based slot from diarization), `cleanedText` (Stage-1 cleanup pass), and
-/// `redactedText` (Stage-2 PII/PHI redaction pass) are all optional and absent-by-default, so old
-/// `session.json` files decode unchanged and a session recorded with those features off encodes
-/// byte-identically to before (synthesized `encode(to:)` uses `encodeIfPresent` for optionals).
-public struct TranscriptSegment: Sendable, Codable {
+/// `redactedText` (Stage-2 PII/PHI redaction pass) and `words` (Phase-3 word timings) are all
+/// optional and absent-by-default, so old `session.json` files decode unchanged and a session
+/// recorded with those features off encodes byte-identically to before. Coding is written out by
+/// hand rather than synthesized, because `words` must be omitted when EMPTY as well as when nil —
+/// the synthesized `encodeIfPresent` would write `"words":[]` and dirty every session.
+public struct TranscriptSegment: Sendable, Codable, Equatable {
     public var start: TimeInterval
     public var end: TimeInterval
     public var text: String
@@ -16,16 +47,114 @@ public struct TranscriptSegment: Sendable, Codable {
     /// Stage 2 (Feature C2): the redacted form of `text` with PII/PHI masked. The verbatim `text`
     /// and the `[mm:ss]` anchors are never touched; this is a parallel view, opt-in in the Viewer.
     public var redactedText: String? = nil
+    /// Phase 3 (Wave 1): per-word timing + confidence, when the engine that produced this segment
+    /// reported them. **Read this through `validWords`, never directly** — see that accessor for why.
+    ///
+    /// Normalized to `nil` rather than `[]` at construction and encoded only when non-empty, so a
+    /// session transcribed by an engine with no word timings gains no `words` key at all.
+    public var words: [WordTiming]? = nil
 
     public init(start: TimeInterval, end: TimeInterval, text: String, speaker: Int? = nil,
-                cleanedText: String? = nil, redactedText: String? = nil) {
+                cleanedText: String? = nil, redactedText: String? = nil,
+                words: [WordTiming]? = nil) {
         self.start = start
         self.end = end
         self.text = text
         self.speaker = speaker
         self.cleanedText = cleanedText
         self.redactedText = redactedText
+        // Empty and absent mean the same thing here, and only one of them should ever reach disk.
+        self.words = (words?.isEmpty ?? true) ? nil : words
     }
+
+    enum CodingKeys: String, CodingKey {
+        case start, end, text, speaker, cleanedText, redactedText, words
+    }
+
+    /// Decoded explicitly, and DEFENSIVELY on `words`, for the same reason `SessionDoc` decodes
+    /// `frames` defensively: a `words` array of an unexpected shape — a bundle from a future build,
+    /// a hand-edited file — must degrade to "this segment has no word timings" and leave the session
+    /// readable, never throw and make it unopenable.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        start = try c.decode(TimeInterval.self, forKey: .start)
+        end = try c.decode(TimeInterval.self, forKey: .end)
+        text = try c.decode(String.self, forKey: .text)
+        speaker = try c.decodeIfPresent(Int.self, forKey: .speaker)
+        cleanedText = try c.decodeIfPresent(String.self, forKey: .cleanedText)
+        redactedText = try c.decodeIfPresent(String.self, forKey: .redactedText)
+        let decoded = (try? c.decodeIfPresent([WordTiming].self, forKey: .words)) as? [WordTiming]
+        words = (decoded?.isEmpty ?? true) ? nil : decoded
+    }
+
+    /// Encoded explicitly so `words` is written **only when non-empty**, exactly as
+    /// `SessionDoc.frames` is. A session with no word timings therefore encodes byte-identically to
+    /// pre-Phase-3 output — which is what keeps every existing session on disk untouched.
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(start, forKey: .start)
+        try c.encode(end, forKey: .end)
+        try c.encode(text, forKey: .text)
+        try c.encodeIfPresent(speaker, forKey: .speaker)
+        try c.encodeIfPresent(cleanedText, forKey: .cleanedText)
+        try c.encodeIfPresent(redactedText, forKey: .redactedText)
+        if let words, !words.isEmpty { try c.encode(words, forKey: .words) }
+    }
+}
+
+// MARK: - The word-timing accessor discipline (Phase 3, Wave 1)
+
+public extension TranscriptSegment {
+
+    /// How far outside its own segment's bounds a word may sit before the array is judged
+    /// mismatched rather than merely rounded.
+    ///
+    /// Engines derive a segment's `start`/`end` from the same token timings, so in practice they
+    /// agree to within float noise; a quarter of a second absorbs any rounding an engine or a
+    /// re-timing pass introduces, while an array belonging to a *different* segment is out by
+    /// whole seconds and is still rejected.
+    static var wordBoundsTolerance: TimeInterval { 0.25 }
+
+    /// Validated word timings, or `nil`.
+    ///
+    /// **Every consumer goes through this, never through `words` directly.** Editing anchors edits
+    /// to a word index, speaker alignment splits segments at a word boundary, redaction maps spans
+    /// onto words, and semantic chunking cuts on word times — each of those silently corrupts a
+    /// transcript if handed timings that are non-monotonic or belong to a different span. Making
+    /// the *only* published reader a validating one is what keeps that class of bug impossible
+    /// rather than merely unlikely; it is the same discipline `SessionDoc.visual` applies to the
+    /// video-XOR-frames invariant, and for the same reason: the write path can be bypassed, but a
+    /// display path cannot.
+    ///
+    /// Returns `nil` — never garbage, never a throw — when words are absent (every legacy session,
+    /// and every session transcribed by an engine that does not report them), empty, non-monotonic,
+    /// or outside the segment's own bounds. Absence is the ordinary case and is silent; genuinely
+    /// malformed data logs, because that means something upstream is wrong and worth knowing about.
+    var validWords: [WordTiming]? {
+        guard let words, !words.isEmpty else { return nil }   // the ordinary case: silent
+        for w in words where !(w.start.isFinite && w.end.isFinite && w.start <= w.end) {
+            NSLog("[Words] rejected: word \"\(w.text)\" has a non-finite or inverted span "
+                  + "(\(w.start)…\(w.end)) in segment [\(start)…\(end)]")
+            return nil
+        }
+        for (a, b) in zip(words, words.dropFirst()) where b.start < a.start || b.end < a.end {
+            NSLog("[Words] rejected: non-monotonic timings around \"\(a.text)\" → \"\(b.text)\" "
+                  + "in segment [\(start)…\(end)]")
+            return nil
+        }
+        let tol = Self.wordBoundsTolerance
+        if let first = words.first, let last = words.last,
+           first.start < start - tol || last.end > end + tol {
+            NSLog("[Words] rejected: \(words.count) word(s) spanning \(first.start)…\(last.end) "
+                  + "fall outside segment [\(start)…\(end)]")
+            return nil
+        }
+        return words
+    }
+
+    /// True when this segment carries usable word-level timing. Cheap intent-revealing sugar over
+    /// `validWords != nil` for the many call sites that only need to choose a granularity.
+    var hasWordTimings: Bool { validWords != nil }
 }
 
 /// A still frame on the session's timeline — a slide photographed by the iPhone, with whatever text
@@ -128,7 +257,7 @@ public struct SessionMeta: Sendable, Codable {
     // these fields existed (older visual / Prompt-1 sessions) still decodes cleanly.
     public var title: String?
     public var tags: [String]
-    var schemaVersion: Int
+    public var schemaVersion: Int
     // Prompt 2 (Chat & Intelligence / Capture / UX): generated artifacts + saved-audio reference,
     // all backward-compatible (decodeIfPresent → sensible empty defaults).
     public var audioFile: String?                 // relative filename of saved playback audio (e.g. "audio.m4a")
@@ -154,8 +283,30 @@ public struct SessionMeta: Sendable, Codable {
     public var videoFile: String?
     var videoWidth: Int?
     public var videoHeight: Int?
+    // Phase 3 (Wave 2): which ASR engine produced this transcript, and which of its models.
+    // `decodeIfPresent` + synthesized `encodeIfPresent`, so every session written before Phase 3
+    // decodes unchanged and gains no keys. A user must be able to tell what wrote their words —
+    // especially once two engines can, and once "re-transcribe on the other one" is an option.
+    public var engine: String?          // TranscriptionEngineID.rawValue: "whisper" | "parakeet"
+    public var engineModel: String?     // e.g. "openai_whisper-base.en", "v3"
+    /// Phase 3 (Wave 4): cross-session speaker matches the post-save pass PROPOSED. Never an
+    /// assignment — `speakerNames` is only written once the user confirms in the Viewer. Absent
+    /// entirely when the voiceprint feature is off, which is the default.
+    public var voiceprintProposals: [VoiceprintProposal]?
 
-    public static let currentSchemaVersion = 2
+    /// **Phase 3 diverges from its build prompt here, deliberately.** The prompt asked for a new
+    /// `SessionDoc.schemaVersion` defaulting to 1, with this build writing 2. `SessionMeta` already
+    /// carried exactly that marker, already at 2, and a document with two disagreeing version
+    /// numbers is worse than one with a version number that moves — so the existing field is
+    /// reused and bumped instead.
+    ///
+    /// The ladder: **absent (decoded as 0)** = pre-unified-store; **2** = unified store through
+    /// Phase 2; **3** = Phase 3, i.e. a session that may carry `words` and `slides`.
+    ///
+    /// Only a *newly constructed* meta takes this value. A legacy session decodes at its own
+    /// version and is re-encoded at that version, so a title backfill or a diarization pass can
+    /// never silently upgrade a session it merely touched — asserted by `--selftest-words`.
+    public static let currentSchemaVersion = 3
 
     public init(id: UUID? = nil, date: Date, sourceLabel: String, modelName: String,
          targetLabel: String? = nil, modeLabel: String? = nil,
@@ -165,7 +316,9 @@ public struct SessionMeta: Sendable, Codable {
          summaries: [String: String] = [:], imported: Bool = false,
          speakerCount: Int? = nil, speakerNames: [String: String]? = nil, language: String? = nil,
          generatedArtifacts: [String: GeneratedArtifact]? = nil, retentionLocked: Bool? = nil,
-         videoFile: String? = nil, videoWidth: Int? = nil, videoHeight: Int? = nil) {
+         videoFile: String? = nil, videoWidth: Int? = nil, videoHeight: Int? = nil,
+         engine: String? = nil, engineModel: String? = nil,
+         voiceprintProposals: [VoiceprintProposal]? = nil) {
         self.id = id
         self.date = date
         self.sourceLabel = sourceLabel
@@ -190,6 +343,9 @@ public struct SessionMeta: Sendable, Codable {
         self.videoFile = videoFile
         self.videoWidth = videoWidth
         self.videoHeight = videoHeight
+        self.engine = engine
+        self.engineModel = engineModel
+        self.voiceprintProposals = voiceprintProposals
     }
 
     enum CodingKeys: String, CodingKey {
@@ -199,6 +355,7 @@ public struct SessionMeta: Sendable, Codable {
         case speakerCount, speakerNames, language
         case generatedArtifacts, retentionLocked
         case videoFile, videoWidth, videoHeight
+        case engine, engineModel, voiceprintProposals
     }
 
     // Custom decode for backward compatibility: older session.json files lack the newer fields.
@@ -230,10 +387,21 @@ public struct SessionMeta: Sendable, Codable {
         videoFile = try c.decodeIfPresent(String.self, forKey: .videoFile)
         videoWidth = try c.decodeIfPresent(Int.self, forKey: .videoWidth)
         videoHeight = try c.decodeIfPresent(Int.self, forKey: .videoHeight)
+        engine = try c.decodeIfPresent(String.self, forKey: .engine)
+        engineModel = try c.decodeIfPresent(String.self, forKey: .engineModel)
+        voiceprintProposals = try c.decodeIfPresent([VoiceprintProposal].self, forKey: .voiceprintProposals)
     }
 
     /// True when this session has a video to play alongside the transcript.
     public var hasVideo: Bool { videoFile?.isEmpty == false }
+
+    /// "Parakeet · v3", or nil for a session recorded before Phase 3. Shown in the Viewer so the
+    /// question "why does this transcript read differently from that one" has a visible answer.
+    public var engineLabel: String? {
+        guard let engine, let id = TranscriptionEngineID(rawValue: engine) else { return nil }
+        guard let engineModel, !engineModel.isEmpty else { return id.displayName }
+        return "\(id.displayName) · \(engineModel)"
+    }
 
     /// Display name for a diarized speaker slot: the user's rename when present, else "Speaker N".
     public func speakerLabel(_ slot: Int) -> String {
@@ -252,14 +420,24 @@ public struct SessionDoc: Sendable, Codable {
     /// Still frames on the timeline (Phase 2). Empty for every session the Mac records — the Mac
     /// renders frames but never captures them — so an audio-only `session.json` gains no key.
     public var frames: [FrameEvent]
+    /// Slide SPANS derived from `frames` (Phase 3, Wave 5): "slide 4 was up from 12:03 to 18:40".
+    ///
+    /// A materialised view, refreshed by `writeSession` on every write and never edited
+    /// independently — `frames` stays the single source of truth. Cached rather than always
+    /// recomputed because the Library draws a row per session and re-segmenting every one of them
+    /// on every keystroke of a search is work with no payoff. Read it through `slideSpans`, which
+    /// falls back to deriving when the cache is absent.
+    public var slides: [SlideSpan]?
 
-    public init(meta: SessionMeta, segments: [TranscriptSegment], frames: [FrameEvent] = []) {
+    public init(meta: SessionMeta, segments: [TranscriptSegment], frames: [FrameEvent] = [],
+                slides: [SlideSpan]? = nil) {
         self.meta = meta
         self.segments = segments
         self.frames = frames
+        self.slides = slides
     }
 
-    enum CodingKeys: String, CodingKey { case meta, segments, frames }
+    enum CodingKeys: String, CodingKey { case meta, segments, frames, slides }
 
     /// Decoded explicitly, and DEFENSIVELY on `frames`.
     ///
@@ -273,6 +451,9 @@ public struct SessionDoc: Sendable, Codable {
         meta = try c.decode(SessionMeta.self, forKey: .meta)
         segments = try c.decode([TranscriptSegment].self, forKey: .segments)
         frames = (try? c.decodeIfPresent([FrameEvent].self, forKey: .frames)) as? [FrameEvent] ?? []
+        // Defensive for the same reason `frames` is: a cache written by another build must degrade
+        // to "recompute it", never to an unopenable session.
+        slides = (try? c.decodeIfPresent([SlideSpan].self, forKey: .slides)) as? [SlideSpan]
     }
 
     /// Encoded only when non-empty, so a session with no frames produces `session.json` with no
@@ -282,6 +463,15 @@ public struct SessionDoc: Sendable, Codable {
         try c.encode(meta, forKey: .meta)
         try c.encode(segments, forKey: .segments)
         if !frames.isEmpty { try c.encode(frames, forKey: .frames) }
+        if let slides, !slides.isEmpty { try c.encode(slides, forKey: .slides) }
+    }
+
+    /// The session's slide spans: the cache when it is there, freshly derived when it is not.
+    /// A session with no frames has none, and gains no keys.
+    public var slideSpans: [SlideSpan] {
+        if let slides, !slides.isEmpty { return slides }
+        guard !frames.isEmpty else { return [] }
+        return SlideSegmenter.spans(frames: frames, sessionDuration: meta.durationSeconds)
     }
 
     /// The session's ONE visual timeline (Phase 2, §P3 invariant).
@@ -333,6 +523,12 @@ public enum DocumentBuilder {
         // `visual` is consulted for its side effect: it logs if the video-XOR-frames invariant is
         // violated, so a bad session is noisy at the write path as well as at every display path.
         _ = doc.visual
+        // Refresh the derived slide spans so the cache can never be stale relative to the frames it
+        // is a view of. Deriving costs nothing for the overwhelmingly common case of no frames.
+        var doc = doc
+        doc.slides = doc.frames.isEmpty
+            ? nil
+            : SlideSegmenter.spans(frames: doc.frames, sessionDuration: doc.meta.durationSeconds)
         let md = markdown(meta: doc.meta, segments: doc.segments, frames: doc.frames)
         // Route through SessionIO so encryption-at-rest (Feature C4) is transparent. When encryption
         // is OFF (default) this is a byte-identical plain UTF-8 write — same bytes as before.
