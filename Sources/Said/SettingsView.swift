@@ -120,6 +120,10 @@ struct SettingsView: View {
                 }
             }
 
+            // Phase 3. Each panel is a separate small View — see SettingsPhase3.swift for why
+            // (the type-checker already gave up on one inline Section in this Form once).
+            Section("Transcription engine") { EngineSettingsSection() }
+
             Section("Speakers") {
                 Toggle("Identify speakers (on-device)", isOn: $model.diarizationEnabled)
                 Text("Labels who spoke when (“Speaker 1, 2…”) after each session finishes — fully on-device (FluidAudio CoreML). First use downloads a small speaker model once, then works offline. Rename speakers per session in the Session Viewer.")
@@ -173,6 +177,14 @@ struct SettingsView: View {
                         .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 }
             }
+
+            Section("Voices") { VoicesSettingsSection() }
+
+            Section("Learned terms") { LearnedTermsSection() }
+
+            Section("Search") { SemanticSettingsSection() }
+
+            Section("Storage") { StorageSettingsSection() }
 
             Section("Vertical packs") {
                 Text("Domain bundles that add curated vocabulary (for accuracy) and surface matching Generation Studio templates. Enable any combination — their vocabulary unions with yours. 100% on-device.")

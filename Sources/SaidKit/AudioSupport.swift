@@ -62,9 +62,13 @@ public final class SampleTee: SampleReceiver, @unchecked Sendable {
 
 // MARK: - Shared sample sink (thread-safe accumulating buffer)
 
-/// A thread-safe buffer of 16 kHz mono Float32 PCM samples shared by the active
-/// capture source and the streaming transcription pipeline. Audio callbacks
-/// `append`; the pipeline `snapshot`s the whole recording each pass.
+/// A thread-safe buffer of 16 kHz mono Float32 PCM samples shared by the active capture source and
+/// the streaming transcription pipeline. Audio callbacks `append`.
+///
+/// There are two readers, and the difference between them matters (Phase 3, §5.3):
+/// `snapshot()` copies the WHOLE recording and is for the things that genuinely need it once — the
+/// final pass, the `audio.m4a` write, the diarization buffer. `newSamples(after:)` returns only what
+/// has arrived since the caller last asked, and is what a streaming engine consumes.
 public final class SampleSink: SampleReceiver, @unchecked Sendable {
     public init() {}
 
@@ -83,9 +87,55 @@ public final class SampleSink: SampleReceiver, @unchecked Sendable {
         return buffer
     }
 
+    // MARK: Incremental read (Phase 3, §5.3)
+
+    /// Samples appended since `index`, plus the index to pass next time.
+    ///
+    /// **This is the fix for the worst performance defect in the codebase.** The Whisper streamer
+    /// re-`snapshot()`s the ENTIRE growing buffer roughly once a second. Swift arrays are
+    /// copy-on-write, so the copy is not paid at the `snapshot()` — it is paid on the very next
+    /// `append`, which finds the buffer shared and duplicates all of it. At 16 kHz Float32 a
+    /// two-hour session is ~460 MB, so that is a 460 MB memcpy per second, growing linearly with
+    /// session length, on the audio callback's path.
+    ///
+    /// An engine that consumes incremental windows reads only what is new, so the cost per pass is
+    /// proportional to the AUDIO ARRIVING rather than to the session so far — flat, not linear.
+    /// `snapshot()` is left exactly as it was for the final pass, the audio write and the
+    /// diarization snapshot, which genuinely do want the whole buffer, once.
+    ///
+    /// Clamps rather than traps if `index` is out of range: a `reset()` between two reads (a new
+    /// session starting) leaves a stale index pointing past the end, and that must resynchronise
+    /// silently rather than crash a recording.
+    public func newSamples(after index: Int) -> (samples: [Float], next: Int) {
+        lock.lock(); defer { lock.unlock() }
+        let from = min(max(0, index), buffer.count)
+        guard from < buffer.count else { return ([], buffer.count) }
+        let slice = Array(buffer[from..<buffer.count])
+        maxIncrementalRead = max(maxIncrementalRead, slice.count)
+        return (slice, buffer.count)
+    }
+
+    private var maxIncrementalRead: Int = 0
+
+    /// The largest single `newSamples(after:)` result this sink has ever returned.
+    ///
+    /// Instrumentation, not behaviour: `--selftest-pause` asserts that no read ever hands back the
+    /// whole session again, which is what proves the full-buffer copy is actually gone rather than
+    /// merely moved. (Not `--selftest-stream`: that mode drives the WHISPER path, which by design
+    /// still snapshots, so it could never exercise this reader.) Reset by `reset()` with the buffer.
+    ///
+    /// Read under the lock like everything else here. A `public private(set) var` would have been a
+    /// plain unsynchronised read racing the writer above — which is exactly the exception an
+    /// `@unchecked Sendable` promise must not carry, however harmless a torn `Int` looks.
+    public var largestIncrementalRead: Int {
+        lock.lock(); defer { lock.unlock() }
+        return maxIncrementalRead
+    }
+
     public func reset() {
         lock.lock()
         buffer.removeAll(keepingCapacity: false)
+        maxIncrementalRead = 0
         lock.unlock()
     }
 

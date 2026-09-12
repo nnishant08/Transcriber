@@ -15,15 +15,21 @@ public enum Importer {
         public var vocabulary: [String]
         public var diarize: Bool = false          // Stage-1 post-passes (same as a recorded session)
         public var cleanup: Bool = false
+        /// Phase 3: an import routes through `EngineRouter` exactly like a recording, so a Hindi
+        /// lecture dropped on the Dock reaches Whisper rather than being answered fluently and
+        /// wrongly by an engine that does not cover the language.
+        public var enginePreference: EnginePreference = .automatic
 
         public init(model: String, language: String? = nil, autoDetectLanguage: Bool = false,
-                    vocabulary: [String] = [], diarize: Bool = false, cleanup: Bool = false) {
+                    vocabulary: [String] = [], diarize: Bool = false, cleanup: Bool = false,
+                    enginePreference: EnginePreference = .automatic) {
             self.model = model
             self.language = language
             self.autoDetectLanguage = autoDetectLanguage
             self.vocabulary = vocabulary
             self.diarize = diarize
             self.cleanup = cleanup
+            self.enginePreference = enginePreference
         }
     }
 
@@ -47,19 +53,27 @@ public enum Importer {
 
         progress("Loading model…")
         let engine = TranscriptionEngine()
-        try await engine.prepare(model: config.model) { msg, _ in progress(msg) }
 
         // "Auto" language: detect ONCE on a lead-in sample of the decoded file, then transcribe the
         // whole file with that fixed language (same detect-once-then-pin rule as live recording).
+        //
+        // Detection is a Whisper capability, so an auto-detect import loads Whisper FIRST and routes
+        // afterwards, on a language it actually knows — the same ordering the live Auto flow uses,
+        // and for the same reason: routing on a guess is what produces a confident wrong transcript.
         var language = config.language
         if config.autoDetectLanguage {
+            try await engine.prepare(model: config.model) { msg, _ in progress(msg) }
             progress("Detecting language…")
             language = (try? await engine.detectLanguage(samples: Array(samples.prefix(30 * 16_000))))?.language ?? "en"
         }
 
+        let decision = try await engine.prepare(preference: config.enginePreference,
+                                                language: language,
+                                                whisperVariant: config.model) { msg, _ in progress(msg) }
+
         progress("Transcribing…")
-        let promptTokens = engine.promptTokens(for: config.vocabulary)
-        let segments = try await engine.transcribeSamples(samples, language: language, promptTokens: promptTokens)
+        let bias = VocabularyBias(terms: config.vocabulary)   // nil when empty → exact no-op
+        let segments = try await engine.transcribeSamples(samples, language: language, bias: bias)
 
         // Session folder (unique even for same-second batch imports).
         let date = fileDate(url) ?? Date()
@@ -79,11 +93,13 @@ public enum Importer {
         }
 
         let label = isVideo ? "Imported video — \(url.lastPathComponent)" : "Imported — \(url.lastPathComponent)"
-        let meta = SessionMeta(id: UUID(), date: date, sourceLabel: label, modelName: config.model,
+        let engineModelName = engine.activeModelName ?? config.model
+        let meta = SessionMeta(id: UUID(), date: date, sourceLabel: label, modelName: engineModelName,
                                targetLabel: nil, modeLabel: isVideo ? "Imported video" : nil,
                                audioFile: audioName, durationSeconds: duration, imported: true,
                                language: (language != nil && language != "en") ? language : nil,
-                               videoFile: videoName)
+                               videoFile: videoName,
+                               engine: decision.engine.rawValue, engineModel: engineModelName)
         DocumentBuilder.writeSession(SessionDoc(meta: meta, segments: segments), to: dir)
 
         // Index + auto-title/tags + notify, exactly like a recorded session.

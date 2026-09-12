@@ -63,7 +63,10 @@ public enum Intelligence {
     /// whole timestamped transcript when it fits, else retrieves relevant passages via `SearchIndex`.
     /// The answer is instructed to cite `[mm:ss]`; the Viewer makes those citations clickable.
     public static func answerForSession(dir: URL, question: String, history: [ChatTurn]) async -> String {
-        let context = groundingContext(dir: dir, question: question)
+        // Semantic passages for THIS session, when the feature is on. Filtered by path inside
+        // `groundingContext`, so a corpus-wide search still only grounds on this session.
+        let semantic = await SemanticIndex.shared.search(question, limit: 12)
+        let context = groundingContext(dir: dir, question: question, semantic: semantic)
         guard !context.isEmpty else { return "There's no transcript text to answer from yet." }
 
         let instructions = """
@@ -95,7 +98,7 @@ public enum Intelligence {
     /// with references back to the source sessions (+ their [mm:ss]). The `sources` are returned so
     /// the Library can render clickable links even if FM is unavailable.
     public static func ask(question: String, index: SearchIndex) async -> AskResult {
-        let hits = Array(index.search(question).prefix(6))
+        let hits = await retrieve(question: question, index: index, limit: 6)
         guard !hits.isEmpty else {
             return AskResult(text: "Nothing in your sessions matched that. Try different keywords.",
                              sources: [], available: isAvailable)
@@ -243,16 +246,64 @@ public enum Intelligence {
 
     // MARK: - Internal
 
+    // MARK: Retrieval (Phase 3, Wave 6)
+
+    /// Cross-session retrieval: keyword and semantic, fused.
+    ///
+    /// **The prompts do not change — only what is retrieved.** That is the whole intervention.
+    /// Retrieval was the ceiling on every AI feature Said already shipped: ask "what did we decide
+    /// about pricing" against a transcript that says "the number we're going to charge" and the
+    /// keyword index returns nothing, at which point the model answers confidently from an empty
+    /// context. Fixing the retrieval fixes chat, Ask and every grounded summary at once.
+    ///
+    /// With semantic search off this is EXACTLY the previous behaviour: `SemanticIndex.search`
+    /// returns nothing, `fuse` returns the keyword ranking unchanged, and no model is loaded.
+    static func retrieve(question: String, index: SearchIndex, limit: Int) async -> [SessionHit] {
+        let keyword = index.search(question)
+        let semantic = await SemanticIndex.shared.search(question, limit: 12)
+        guard !semantic.isEmpty else { return Array(keyword.prefix(limit)) }
+
+        var fused = HybridRetrieval.fuse(keyword: keyword, semantic: semantic, limit: limit)
+
+        // Sessions ONLY semantic search found — the case the wave exists for. They have no keyword
+        // snippets by definition, so the matching passage itself becomes the snippet.
+        let extraPaths = HybridRetrieval.semanticOnlyPaths(keyword: keyword, semantic: semantic)
+        for path in extraPaths where fused.count < limit {
+            let dir = URL(fileURLWithPath: path)
+            guard let meta = DocumentBuilder.readSession(dir)?.meta else { continue }
+            let passages = semantic.filter { $0.chunk.sessionPath == path }.prefix(3)
+            guard !passages.isEmpty else { continue }
+            let snippets = passages.map {
+                SearchSnippet(timestamp: $0.chunk.timestamp, text: String($0.chunk.text.prefix(180)))
+            }
+            fused.append(SessionHit(dir: dir, meta: meta, score: 0, matchCount: 0, snippets: snippets))
+        }
+        return fused
+    }
+
     /// Build the grounding context for per-session chat: the whole timestamped transcript when it
-    /// fits, else the passages most relevant to the question (retrieved via SearchIndex over this one
-    /// session), with a head-of-transcript fallback when the query has no keyword hits.
-    private static func groundingContext(dir: URL, question: String) -> String {
+    /// fits, else the passages most relevant to the question, with a head-of-transcript fallback
+    /// when nothing matches.
+    ///
+    /// Phase 3 adds the semantic passages for THIS session ahead of the keyword ones. A paraphrased
+    /// question about a long session used to retrieve nothing and get answered from the first 8 000
+    /// characters — which is to say, from the beginning of the meeting regardless of what was asked.
+    private static func groundingContext(dir: URL, question: String,
+                                         semantic: [SemanticHit] = []) -> String {
         let full = SessionStore.timestampedTranscript(dir: dir, maxChars: 100_000)
         if full.count <= 8_000 { return full }
+
+        var lines: [String] = []
+        for hit in semantic where hit.chunk.sessionPath == dir.path {
+            lines.append("[\(hit.chunk.timestamp)] \(hit.chunk.text)")
+            if lines.count >= 8 { break }
+        }
         let terms = SearchIndex.tokenize(question)
         let passages = SearchIndex.extractSnippets(dir: dir, terms: terms, limit: 18)
-        if passages.isEmpty { return String(full.prefix(8_000)) }
-        return passages.map { "[\($0.timestamp ?? "--:--")] \($0.text)" }.joined(separator: "\n")
+        lines.append(contentsOf: passages.map { "[\($0.timestamp ?? "--:--")] \($0.text)" })
+
+        if lines.isEmpty { return String(full.prefix(8_000)) }
+        return lines.joined(separator: "\n")
     }
 
     private static func fallbackMessage(for error: Error) -> String {

@@ -317,6 +317,7 @@ private struct CaptureStatusBar: View {
                     StatusDot(); StatusText("Screen · \(model.screenTargetLabel) · \(model.screenQuality.shortLabel)")
                 }
                 if let lang = model.sessionLanguageLabel { StatusDot(); StatusText(lang) }
+                if let eng = model.sessionEngineLabel { StatusDot(); StatusText(eng) }
                 if let notice = model.captureNotice { StatusDot(); StatusText(notice) }
                 Spacer()
                 if model.isPaused {

@@ -1,5 +1,4 @@
 import Foundation
-import WhisperKit
 
 /// The live transcription state surfaced to the UI: confirmed (locked, timestamped) segments
 /// plus the trailing in-flight hypothesis. `text` is the full concatenation used for saving /
@@ -10,224 +9,185 @@ public struct LiveTranscript: Sendable {
     public var text: String { TranscriptText.clean(confirmed.map { $0.text }.joined() + hypothesis) }
 }
 
-/// Wraps WhisperKit: downloads/loads a model (with progress), provides the streaming
-/// rolling-window transcriber, and a one-shot full-quality pass over the whole recording.
+/// The façade every caller in the app talks to — `AppModel`, `Importer`, every self-test.
+///
+/// **Phase 3 changed what is underneath it, not what it looks like.** The engine seam
+/// (`TranscriptionProvider`) was introduced BELOW this type rather than in place of it, deliberately:
+/// the callers above are the part of the tree with the least test coverage, and swapping the ASR
+/// engine is already the largest regression risk in the phase. So `TranscriptionEngine` still owns
+/// the shared `SampleSink`, still exposes prepare / stream / final-pass, and now additionally knows
+/// which provider is answering.
+///
+/// It holds BOTH providers but loads at most the one in use — see `prepare(preference:…)`, which
+/// unloads the loser so two 600 MB models never sit resident for a session that needs one.
 public final class TranscriptionEngine: @unchecked Sendable {
     public init() {}
 
     public let sink = SampleSink()
 
-    private var whisperKit: WhisperKit?
-    private var loadedModel: String?
+    private let whisper = WhisperProvider()
+    private let parakeet = ParakeetProvider()
+    private let lock = NSLock()
+    private var active: TranscriptionEngineID = .whisper
+    private var decision: EngineRouter.Decision?
 
-    var isReady: Bool { whisperKit != nil }
+    /// Which engine is loaded, and why it was chosen. `AppModel` stamps both into `SessionMeta` so a
+    /// user can always tell what produced a transcript, and shows `reason` in the status bar when
+    /// the router had to fall back.
+    public var activeEngine: TranscriptionEngineID {
+        lock.lock(); defer { lock.unlock() }
+        return active
+    }
+    public var activeDecision: EngineRouter.Decision? {
+        lock.lock(); defer { lock.unlock() }
+        return decision
+    }
+    public var activeModelName: String? { provider(active).loadedModelName }
+
+    private func provider(_ id: TranscriptionEngineID) -> any TranscriptionProvider {
+        id == .parakeet ? parakeet : whisper
+    }
+
+    public var isReady: Bool { provider(activeEngine).loadedModelName != nil }
     public var sampleCount: Int { sink.count }
 
-    /// Downloads (first run, with progress) and loads the given model. No-op if already loaded.
-    /// `progress` is invoked with a human-readable message and an optional download fraction (0…1).
-    public func prepare(model: String, progress: @escaping @Sendable (String, Double?) -> Void) async throws {
-        if loadedModel == model, whisperKit != nil { return }
-
-        // Release any previously-loaded model before switching.
-        whisperKit = nil
-        loadedModel = nil
-
-        progress("Downloading the \(model) model", 0)
-        // Pre-download so we can surface progress; returns instantly if already cached (offline-OK).
-        let folder = try await WhisperKit.download(
-            variant: model,
-            progressCallback: { p in
-                progress("Downloading the \(model) model", p.fractionCompleted)
-            }
-        )
-
-        progress("Loading model…", nil)
-        let config = WhisperKitConfig(
-            model: model,
-            modelFolder: folder.path,
-            load: true,      // REQUIRED: with modelFolder set and load:true, models actually load.
-            download: false  // already downloaded above
-        )
-        whisperKit = try await WhisperKit(config)
-        loadedModel = model
-        progress("Model ready.", 1)
-    }
-
-    /// Build a streaming transcriber bound to the loaded model + shared sink. `promptTokens` biases
-    /// decoding toward custom-vocabulary terms (nil → no bias; see `promptTokens(for:)`).
-    public func makeStreamer(language: String?, promptTokens: [Int]? = nil,
-                      onUpdate: @escaping @Sendable (LiveTranscript) -> Void) -> StreamingTranscriber? {
-        guard let whisperKit else { return nil }
-        return StreamingTranscriber(whisperKit: whisperKit, sink: sink, language: language,
-                                    promptTokens: promptTokens, onUpdate: onUpdate)
-    }
-
-    /// Token IDs that bias decoding toward custom-vocabulary terms (names / acronyms / jargon), via
-    /// WhisperKit's `DecodingOptions.promptTokens` conditioning. An empty/whitespace term list returns
-    /// **nil** — an EXACT no-op (the decoder's prefill is byte-identical to today). Never returns `[]`
-    /// (which would prepend a bare <|startofprev|> and change the prefill).
-    public func promptTokens(for terms: [String]) -> [Int]? {
-        guard let whisperKit, let tokenizer = whisperKit.tokenizer else { return nil }
-        let cleaned = terms.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
-        guard !cleaned.isEmpty else { return nil }
-        // Leading space = natural-continuation convention; commas separate glossary entries.
-        let ids = tokenizer.encode(text: " " + cleaned.joined(separator: ", "))
-        let trimmed = Array(ids.suffix(111))   // (maxTokenContext 224 / 2) - 1, matching WhisperKit's trim
-        return trimmed.isEmpty ? nil : trimmed
-    }
-
-    /// One-shot language detection over a lead-in sample (multilingual models only — WhisperKit
-    /// throws for `*.en` decoders). Used by the "Auto" language path: detect ONCE, then pin the
-    /// result for all streaming windows + the final pass.
-    /// NOTE: at the pinned WhisperKit 1.0.0 tag the array-based API is literally spelled
-    /// `detectLangauge(audioArray:)` [sic] — only the `audioPath:` variant got the correct spelling.
-    public func detectLanguage(samples: [Float]) async throws -> (language: String, probs: [String: Float]) {
-        guard let whisperKit else { throw CaptureError.engineNotReady }
-        let result = try await whisperKit.detectLangauge(audioArray: samples)
-        return (result.language, result.langProbs)
-    }
-
-    /// One-shot full-quality transcription of an audio FILE (any format/sample rate —
-    /// WhisperKit decodes + resamples to 16 kHz mono internally). Used by `--selftest`.
-    public func transcribeFile(_ path: String, language: String?, promptTokens: [Int]? = nil) async throws -> String {
-        guard let whisperKit else { throw CaptureError.engineNotReady }
-        var options = DecodingOptions(language: language, skipSpecialTokens: true)
-        options.promptTokens = promptTokens
-        let results = try await whisperKit.transcribe(audioPath: path, decodeOptions: options)
-        return TranscriptText.clean(results.map { $0.text }.joined(separator: " "))
-    }
-
-    /// One full-quality, non-streaming pass over the entire recorded audio (the shared sink),
-    /// returning timed segments (seconds relative to the audio buffer start == session T0).
-    public func finalPassSegments(language: String?, promptTokens: [Int]? = nil) async throws -> [TranscriptSegment] {
-        try await transcribeSamples(sink.snapshot(), language: language, promptTokens: promptTokens)
-    }
-
-    /// Full-quality, VAD-chunked transcription of an explicit sample buffer → timed segments. Shared
-    /// by the live `finalPass` and the file/video import path. `promptTokens` applies the vocab bias.
-    public func transcribeSamples(_ samples: [Float], language: String?, promptTokens: [Int]? = nil) async throws -> [TranscriptSegment] {
-        guard let whisperKit else { throw CaptureError.engineNotReady }
-        guard samples.count > 1_600 else { return [] } // < ~0.1s of audio → nothing to do
-        var options = DecodingOptions(
-            language: language,
-            skipSpecialTokens: true,
-            clipTimestamps: [],
-            chunkingStrategy: .vad   // chunk on silence + decode chunks in parallel for accuracy/speed
-        )
-        options.promptTokens = promptTokens   // nil → byte-identical to the prior call
-        let results = try await whisperKit.transcribe(audioArray: samples, decodeOptions: options)
-        return results.flatMap { $0.segments }.map {
-            TranscriptSegment(start: TimeInterval($0.start), end: TimeInterval($0.end),
-                              text: TranscriptText.clean($0.text))
+    /// True when the given engine's models are already on disk. Feeds `EngineRouter`, so routing
+    /// never sends a session to an engine that would have to download mid-record — which with
+    /// "Never download models" on would fail outright.
+    public static func isInstalled(_ id: TranscriptionEngineID, whisperVariant: String) -> Bool {
+        let fm = FileManager.default
+        switch id {
+        case .whisper:
+            return fm.fileExists(atPath: ModelStorage.whisperRoot
+                .appendingPathComponent(whisperVariant, isDirectory: true).path)
+        case .parakeet:
+            return !ModelStorage.inventory().filter { $0.kind == .parakeet }.isEmpty
         }
     }
 
+    // MARK: Preparation
+
+    /// Route, then load. The primary entry point for a recording session.
+    ///
+    /// - Parameter language: the resolved language, or `nil` for an "Auto" session whose detection
+    ///   has not run yet. A `nil` routes to Whisper (see `EngineRouter.choose` for why guessing
+    ///   toward Whisper is the only safe direction), which is also the engine that can then DO the
+    ///   detection — so the Auto flow falls out of the routing rule rather than needing a special case.
+    /// - Returns: the decision, for `SessionMeta` and the status line.
+    @discardableResult
+    public func prepare(preference: EnginePreference,
+                        language: String?,
+                        whisperVariant: String,
+                        progress: @escaping @Sendable (String, Double?) -> Void) async throws -> EngineRouter.Decision {
+        let choice = EngineRouter.choose(
+            preference: preference,
+            language: language,
+            parakeetInstalled: Self.isInstalled(.parakeet, whisperVariant: whisperVariant),
+            whisperInstalled: Self.isInstalled(.whisper, whisperVariant: whisperVariant)
+        )
+        let variant = choice.engine == .parakeet ? ParakeetProvider.Variant.v3.rawValue : whisperVariant
+        try await provider(choice.engine).prepare(variant: variant, progress: progress)
+
+        lock.lock(); let previous = active; active = choice.engine; decision = choice; lock.unlock()
+        if previous != choice.engine { await provider(previous).unload() }
+        return choice
+    }
+
+    /// Prepare a SPECIFIC Whisper model, bypassing the router.
+    ///
+    /// Kept exactly as it was so the import path and every pre-Phase-3 self-test compile and behave
+    /// unchanged — `--selftest`, `--selftest-stream`, `--selftest-detect`, `--selftest-multilingual`
+    /// and `--selftest-vocab` all pin a Whisper variant on purpose, and rewriting them would destroy
+    /// their value as the regression proof for this refactor.
+    public func prepare(model: String, progress: @escaping @Sendable (String, Double?) -> Void) async throws {
+        try await whisper.prepare(variant: model, progress: progress)
+        lock.lock(); active = .whisper
+        decision = EngineRouter.Decision(engine: .whisper, reason: "Whisper (\(model))")
+        lock.unlock()
+    }
+
+    /// Prepare a specific Parakeet variant, bypassing the router (`--selftest-parakeet`).
+    public func prepareParakeet(variant: ParakeetProvider.Variant = .v3,
+                                progress: @escaping @Sendable (String, Double?) -> Void) async throws {
+        try await parakeet.prepare(variant: variant.rawValue, progress: progress)
+        lock.lock(); active = .parakeet
+        decision = EngineRouter.Decision(engine: .parakeet, reason: "Parakeet (\(variant.rawValue))")
+        lock.unlock()
+    }
+
+    /// Whether custom vocabulary actually reaches the decoder on the ACTIVE engine right now.
+    public var vocabularyBiasIsEffective: Bool { provider(activeEngine).supportsVocabularyBias }
+
+    /// Release every loaded model. Used by `--compare-engines`, which loads each engine in turn over
+    /// many sessions and would otherwise accumulate two resident models per iteration.
+    public func unloadAll() async {
+        await whisper.unload()
+        await parakeet.unload()
+    }
+
+    // MARK: Vocabulary
+
+    /// Whisper's `promptTokens` construction, retained on the façade because `--selftest-vocab`
+    /// asserts it directly — including the invariant that an empty term list yields **nil**, never
+    /// `[]`. Parakeet does not use prompt tokens; it takes `VocabularyBias` and runs a CTC spotter.
+    public func promptTokens(for terms: [String]) -> [Int]? {
+        whisper.promptTokensForSelfTest(terms: terms)
+    }
+
+    // MARK: Streaming
+
+    /// Build a streaming transcriber on the active provider, bound to the shared sink.
+    ///
+    /// `async` now (it was synchronous) because Parakeet's sliding-window manager is an actor that
+    /// loads, configures biasing and starts before it can accept audio. Both of `AppModel`'s call
+    /// sites were already inside async contexts.
+    public func makeStreamer(language: String?, bias: VocabularyBias? = nil,
+                             onUpdate: @escaping @Sendable (LiveTranscript) -> Void) async -> (any TranscriptionStream)? {
+        await provider(activeEngine).makeStream(sink: sink, language: language, bias: bias, onUpdate: onUpdate)
+    }
+
+    // MARK: Language detection
+
+    /// One-shot language detection over a lead-in sample.
+    ///
+    /// Always answered by **Whisper**, whichever engine is active, because Parakeet has no
+    /// language-ID head at all (verified at the pinned tag). Detection therefore requires a loaded
+    /// Whisper model — which the Auto flow guarantees, since a `nil` language routes to Whisper in
+    /// the first place.
+    public func detectLanguage(samples: [Float]) async throws -> (language: String, probs: [String: Float]) {
+        try await whisper.detectLanguageDetailed(samples: samples)
+    }
+
+    // MARK: Transcription
+
+    /// One-shot full-quality transcription of an audio FILE, returning plain joined text.
+    public func transcribeFile(_ path: String, language: String?, bias: VocabularyBias? = nil) async throws -> String {
+        let segs = try await provider(activeEngine).transcribeFile(path: path, language: language, bias: bias)
+        return TranscriptText.clean(segs.map { $0.text }.joined(separator: " "))
+    }
+
+    /// One full-quality, non-streaming pass over the entire recorded audio (the shared sink).
+    public func finalPassSegments(language: String?, bias: VocabularyBias? = nil) async throws -> [TranscriptSegment] {
+        try await transcribeSamples(sink.snapshot(), language: language, bias: bias)
+    }
+
+    /// Full-quality transcription of an explicit sample buffer → timed segments. Shared by the live
+    /// `finalPass` and the file/video import path.
+    public func transcribeSamples(_ samples: [Float], language: String?,
+                                  bias: VocabularyBias? = nil) async throws -> [TranscriptSegment] {
+        try await provider(activeEngine).transcribe(samples: samples, language: language, bias: bias)
+    }
+
     /// One full-quality, non-streaming pass returning plain joined text (used by self-tests).
-    public func finalPass(language: String?, promptTokens: [Int]? = nil) async throws -> String {
-        let segments = try await finalPassSegments(language: language, promptTokens: promptTokens)
+    public func finalPass(language: String?, bias: VocabularyBias? = nil) async throws -> String {
+        let segments = try await finalPassSegments(language: language, bias: bias)
         return TranscriptText.clean(segments.map { $0.text }.joined(separator: " "))
     }
 }
 
-/// Live transcription over a growing audio buffer. Mirrors WhisperKit's own
-/// AudioStreamTranscriber confirmation algorithm (which is mic-only and cannot be reused
-/// for system audio): re-transcribe from the last confirmed timestamp each pass, confirm
-/// all but the trailing `requiredSegmentsForConfirmation` segments, and keep the rest as a
-/// live hypothesis. `clipTimestamps: [lastConfirmedEnd]` avoids re-decoding confirmed audio,
-/// which also prevents duplicated text across passes.
-public actor StreamingTranscriber {
-    private let whisperKit: WhisperKit
-    private let sink: SampleSink
-    private let language: String?
-    private let promptTokens: [Int]?
-    private let onUpdate: @Sendable (LiveTranscript) -> Void
-    private let requiredSegmentsForConfirmation = 2
-
-    private var running = false
-    private var lastProcessedCount = 0
-    private var lastConfirmedEnd: Float = 0
-    private var confirmedSegments: [TranscriptionSegment] = []
-
-    init(whisperKit: WhisperKit, sink: SampleSink, language: String?, promptTokens: [Int]? = nil,
-         onUpdate: @escaping @Sendable (LiveTranscript) -> Void) {
-        self.whisperKit = whisperKit
-        self.sink = sink
-        self.language = language
-        self.promptTokens = promptTokens
-        self.onUpdate = onUpdate
-    }
-
-    public func run() async {
-        running = true
-        while running {
-            let samples = sink.snapshot()
-            let newSamples = samples.count - lastProcessedCount
-            let newSeconds = Float(newSamples) / Float(WhisperKit.sampleRate)
-
-            // Wait until at least ~1s of fresh audio has accumulated.
-            guard newSeconds > 1.0 else {
-                try? await Task.sleep(nanoseconds: 200_000_000)
-                continue
-            }
-            lastProcessedCount = samples.count
-
-            do {
-                var options = DecodingOptions(
-                    language: language,
-                    skipSpecialTokens: true,
-                    clipTimestamps: [lastConfirmedEnd]
-                )
-                options.promptTokens = promptTokens   // nil → byte-identical to the prior streaming call
-                let results = try await whisperKit.transcribe(audioArray: samples, decodeOptions: options)
-                guard running else { break }
-                applySegments(results.flatMap { $0.segments })
-            } catch {
-                NSLog("[Stream] transcribe error: \(error)")
-                try? await Task.sleep(nanoseconds: 200_000_000)
-            }
-        }
-    }
-
-    public func stop() {
-        running = false
-    }
-
-    /// Confirmed segments so far, as timed `TranscriptSegment`s (for the live document save).
-    public func snapshotSegments() -> [TranscriptSegment] {
-        confirmedSegments.map {
-            TranscriptSegment(start: TimeInterval($0.start), end: TimeInterval($0.end),
-                              text: TranscriptText.clean($0.text))
-        }
-    }
-
-    private func applySegments(_ segments: [TranscriptionSegment]) {
-        var unconfirmed: [TranscriptionSegment] = segments
-
-        if segments.count > requiredSegmentsForConfirmation {
-            let confirmCount = segments.count - requiredSegmentsForConfirmation
-            let toConfirm = Array(segments.prefix(confirmCount))
-            unconfirmed = Array(segments.suffix(requiredSegmentsForConfirmation))
-
-            if let last = toConfirm.last, last.end > lastConfirmedEnd {
-                lastConfirmedEnd = last.end
-                confirmedSegments.append(contentsOf: toConfirm)
-            }
-        }
-
-        // Surface confirmed (timestamped) segments + the trailing hypothesis separately so the UI
-        // can render the locked text solid and the in-flight tail dimmed with a caret.
-        let confirmed = confirmedSegments.map {
-            TranscriptSegment(start: TimeInterval($0.start), end: TimeInterval($0.end),
-                              text: TranscriptText.clean($0.text))
-        }
-        let hypothesis = unconfirmed.map { $0.text }.joined()
-        onUpdate(LiveTranscript(confirmed: confirmed, hypothesis: hypothesis))
-    }
-}
-
 /// Small text tidy-up shared by streaming + final passes.
-enum TranscriptText {
-    static func clean(_ s: String) -> String {
+public enum TranscriptText {
+    public static func clean(_ s: String) -> String {
         var out = s.replacingOccurrences(of: "  ", with: " ")
         while out.contains("  ") { out = out.replacingOccurrences(of: "  ", with: " ") }
         return out.trimmingCharacters(in: .whitespacesAndNewlines)

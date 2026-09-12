@@ -114,7 +114,14 @@ public enum RedactionPass {
     public static func run(dir: URL) async {
         guard let doc = DocumentBuilder.readSession(dir), !doc.segments.isEmpty,
               doc.segments.contains(where: { $0.redactedText == nil }) else { return }
-        let redacted = Redactor.redactSegments(doc.segments)
+        // Phase 3 (§6.5): **redaction applies AFTER edits.** A user who corrected a misheard name to
+        // its real spelling has, in the same stroke, made it findable — so redacting the verbatim
+        // text would mask the wrong string and leave the real name in plain sight in the Edited
+        // view. The redaction is therefore computed over the EDITED segments. Segment count and
+        // every `[mm:ss]` are unchanged by the overlay, so the index-wise merge below still lines up.
+        // Asserted by `--selftest-edit`.
+        let source = EditStore.editedSegments(dir: dir, segments: doc.segments)
+        let redacted = Redactor.redactSegments(source)
         guard redacted.contains(where: { $0.redactedText != nil }) else { return }
         guard var fresh = DocumentBuilder.readSession(dir), fresh.segments.count == redacted.count else { return }
         for i in fresh.segments.indices { fresh.segments[i].redactedText = redacted[i].redactedText }
