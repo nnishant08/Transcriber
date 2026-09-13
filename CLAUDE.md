@@ -985,7 +985,8 @@ least-tested part of the tree, and the engine swap is already the phase's larges
     rule `StreamingTranscriber` uses for Whisper — confirming words behind a 2 s trailing edge at
     sentence ends or pauses (forced at 12 s). Same audio: **0 words missing**, text visible ~1.4 s
     after speech, confirmed after ~5.6 s on average. `--selftest-stream --model parakeet` drives it
-    headlessly and prints the lag per update.
+    headlessly and prints the lag per update. **HUMAN-VERIFIED 2026-09-14** on a live System Audio
+    recording: live cadence, timestamped segments in the saved transcript, and Stop.
   - **Not `ChunkProcessor`** for the final pass. The vendor's overlapping-chunk merger drops clauses
     at joins ("critical boundaries on our sampling distribution to create" → "quick to create");
     `melChunkContext = false` only moves which clause is lost. `ParakeetProvider.chunkRanges` cuts
