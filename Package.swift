@@ -29,8 +29,10 @@
 //     PHASE 3 RE-VERIFIED AND DELIBERATELY HELD AT 0.15.2. The README/podspec/CITATION.cff all
 //     still claim 0.15.2 does not exist (they say 0.12.4); `git ls-remote --tags` says otherwise and
 //     the tag list runs to v0.15.6. Everything Phase 3 needs is present at 0.15.2: `AsrManager`,
-//     `AsrModels.downloadAndLoad(version:)`, `ASRResult.tokenTimings`, `SlidingWindowAsrManager`
-//     (with its confirmed/volatile split) and `configureVocabularyBoosting`.
+//     `AsrModels.downloadAndLoad(version:)`, `ASRResult.tokenTimings`, and the CTC vocabulary
+//     pieces (`CtcKeywordSpotter`, `VocabularyRescorer`). `SlidingWindowAsrManager` and the URL
+//     overload's `ChunkProcessor` exist too but Said deliberately does NOT use them — measured to
+//     drop 27% of words live and whole clauses at batch joins; see ParakeetProvider.swift.
 //     What is NOT present is `ModelHub` — it lands at v0.15.5, and by v0.15.6 `DownloadUtils` is
 //     GONE, which breaks `AsrModels.download(progressHandler: DownloadUtils.ProgressHandler?)` and
 //     the diarizer's download plumbing. Said therefore does not take `ModelHub.offlineMode`; it

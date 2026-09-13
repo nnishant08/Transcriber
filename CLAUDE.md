@@ -975,8 +975,30 @@ least-tested part of the tree, and the engine swap is already the phase's larges
   back once per model per app run if the alignment heads cannot serve it. Never on the live path,
   where DTW latency would land on the critical path. **A save never fails over timings.**
 - **`ParakeetProvider`** — NVIDIA Parakeet TDT via FluidAudio, on the ANE. Word timings come free
-  from `ASRResult.tokenTimings` on both paths; `SlidingWindowAsrManager` buffers internally and its
-  `isConfirmed` maps 1:1 onto Said's existing `LiveTranscript { confirmed, hypothesis }`.
+  from `ASRResult.tokenTimings`. **Two things it does NOT use, measured on a real lecture
+  (2026-09-14) and recorded so nobody puts them back:**
+  - **Not `SlidingWindowAsrManager`** for the live path. It dropped **27% of the words live** (131
+    of 486 in 3 minutes): whole windows come back empty from the decoder state it carries between
+    windows, and its stage-3 token dedup deletes everything before any single-token match with the
+    previous window. Neither is tunable from outside. `ParakeetStream` is a bounded rolling window
+    over the batch `transcribe(samples:)` with a FRESH decoder state each ~1 s tick — the same
+    rule `StreamingTranscriber` uses for Whisper — confirming words behind a 2 s trailing edge at
+    sentence ends or pauses (forced at 12 s). Same audio: **0 words missing**, text visible ~1.4 s
+    after speech, confirmed after ~5.6 s on average. `--selftest-stream --model parakeet` drives it
+    headlessly and prints the lag per update.
+  - **Not `ChunkProcessor`** for the final pass. The vendor's overlapping-chunk merger drops clauses
+    at joins ("critical boundaries on our sampling distribution to create" → "quick to create");
+    `melChunkContext = false` only moves which clause is lost. `ParakeetProvider.chunkRanges` cuts
+    audio itself at the quietest 200 ms in the last 4 s of each ≤ 14.5 s span (the model window is
+    15 s), decodes the chunks with fresh state and NO overlap, four in parallel over a pool of
+    `AsrManager`s that share the one loaded model set, and keeps chunk order. `transcribeFile` does
+    the same in 10-minute blocks with the tail carried over, so a multi-hour import is never
+    resident whole. Full 15.8-minute lecture: 2 516 words in 3.8 s (247× realtime), a superset of
+    the vendor chunker's output with its dropped phrases restored.
+  - **The token→word fold accepts a leading SPACE as the word boundary**, not only `▁`:
+    FluidAudio's `normalizedTimingToken` replaces `▁` with a space BEFORE building
+    `TokenTiming.token`. The `▁`-only fold turned the first real session into ONE word spanning
+    fifteen minutes and one segment with one timestamp. `--selftest-words` asserts both spellings.
 - **`VocabularyBias`** has a **failable init that cannot represent "empty"**. Said's long-standing
   "empty vocabulary ⇒ exact no-op" invariant is thereby enforced by the type rather than by each
   provider remembering to check.
@@ -1013,8 +1035,9 @@ every session would train the user to ignore it.
 re-`snapshot()`s the entire growing buffer roughly once a second. Swift arrays are copy-on-write, so
 the copy is paid on the very next `append`, which finds the buffer shared and duplicates all of it —
 a ~460 MB memcpy per second at the two-hour mark, growing linearly, on the audio callback's path.
-`SampleSink.newSamples(after:)` reads only what is new; Parakeet's manager buffers internally and
-trims what it has consumed, bounded to `left+chunk+right` seconds regardless of session length. **The
+`SampleSink.newSamples(after:)` reads only what is new; `ParakeetStream` reads from the last
+confirmed word to the live edge, bounded to ~12 s (+ the trailing edge) regardless of session
+length, so what is copied per tick is proportional to the window, never to the session. **The
 Whisper streamer keeps its old behaviour on purpose** — Whisper's decoder has no incremental entry
 point, so there is no half-fix; what changed is which engine is default. The reader is asserted in
 **`--selftest-pause`** (with the rest of the pure capture plumbing), NOT in `--selftest-stream`,
@@ -1535,7 +1558,10 @@ devices is a TRANSFER, not a sync — so the thing being moved is one obvious fi
 ## Headless self-tests (no mic / no permissions)
 Run the built binary (`.build/release/Transcriber` or the bundle's MacOS binary):
 - `--selftest [audio.wav] [--model <id>]` — one-shot file transcription.
-- `--selftest-stream [audio48k.wav]` — drives `Resampler16k` + `StreamingTranscriber` + `finalPass`.
+- `--selftest-stream [audio48k.wav] [--model parakeet]` — drives `Resampler16k` + the live
+  streamer + `finalPass`. With `--model parakeet` it drives `ParakeetStream` instead of the Whisper
+  `StreamingTranscriber`, and every update is stamped `fed / confirmed to / lag` so the live lag is
+  a number. Diff `STREAMING (last)` against `FINAL PASS` word-for-word to measure live loss.
 - `--summarize [transcript.md]` — on-device summary; prints availability + result.
 - `--selftest-screenrec [out.mp4]` — the screen-recording ENCODER, headlessly (no ScreenCaptureKit, no
   permission): synthetic BGRA frames + synthetic 16 kHz audio → one `.mp4`; asserts a video track AND an
