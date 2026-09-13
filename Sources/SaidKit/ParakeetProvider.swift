@@ -9,12 +9,14 @@ import FluidAudio
 /// 1. **Word timings come free.** `ASRResult.tokenTimings` is populated on both the batch and the
 ///    streaming path, with no DTW pass and no second model. Whisper only produces them on request,
 ///    at a cost, and never on the live path. Wave 1's whole substrate rests on this.
-/// 2. **Streaming is incremental by construction.** `SlidingWindowAsrManager` buffers internally and
-///    trims what it has consumed, so the caller pushes new audio and never re-hands it the session.
-///    That is the direct fix for §5.3's full-buffer copy.
-/// 3. **Its confirmed/volatile split is already Said's UI contract.** `SlidingWindowTranscriptionUpdate.
-///    isConfirmed` maps 1:1 onto `LiveTranscript { confirmed, hypothesis }`, so the amber live tail
-///    keeps working with no reinterpretation.
+/// 2. **Streaming stays incremental** — but NOT through `SlidingWindowAsrManager`. That was the
+///    first implementation and it was measured to drop 27% of the words live (see `ParakeetStream`
+///    for the numbers and why). The live path is now a bounded rolling window over the batch
+///    `transcribe(samples:)`, read through `SampleSink.newSamples(after:)`, so §5.3's full-buffer
+///    copy stays fixed: what is copied per tick is the window, never the session.
+/// 3. **It is fast enough to re-transcribe.** 241× realtime on the ANE means a 20 s live window
+///    costs ~80 ms a second — which is what lets the live words come from the same code path as
+///    the saved transcript instead of a second, weaker decoder.
 ///
 /// **Every API below was read at the pinned tag (v0.15.2, `7f963cd`), not from documentation.** The
 /// vendor's README, ASR guide and model card disagree with each other about the loading call —
@@ -90,7 +92,15 @@ public final class ParakeetProvider: TranscriptionProvider, @unchecked Sendable 
             }
         )
         progress("Loading model…", nil)
-        let mgr = AsrManager(config: .default)
+        // `boundarySearchFrames: 0` switches OFF stage 3 of FluidAudio's chunk-join token dedup —
+        // the "bounded substring" search that looks for any short run from the previous chunk's
+        // last 15 tokens anywhere in the next chunk's opening and deletes everything before it.
+        // On real speech it matches a single common token and throws the words in front of it
+        // away: measured on a lecture (2026-09-14), the batch pass rendered "critical boundaries
+        // on our sampling distribution to create" as "quick to create". Stage 2 — the exact
+        // suffix/prefix match that removes the genuine 2 s overlap — is untouched, and on the v3
+        // decoder this field has no other reader (verified at 0.15.2: only `TdtDecoderV2` uses it).
+        let mgr = AsrManager(config: ASRConfig(tdtConfig: TdtConfig(boundarySearchFrames: 0)))
         try await mgr.loadModels(loaded)
 
         lock.lock()
@@ -200,25 +210,130 @@ public final class ParakeetProvider: TranscriptionProvider, @unchecked Sendable 
         // FluidAudio throws `ASRError.invalidAudioData` below `minimumRequiredSamples` — 4 800
         // samples (0.3 s) at 16 kHz, verified at the pinned tag. Returning empty is the right
         // answer for a fragment that short anyway; letting it throw would fail a save over it.
-        guard samples.count >= 4_800 else { return [] }
+        guard samples.count >= Self.minimumSamples else { return [] }
 
-        var state = TdtDecoderState.make(decoderLayers: await mgr.decoderLayerCount)
-        let result = try await mgr.transcribe(samples, decoderState: &state,
-                                              language: fluidLanguage(language))
+        // Said cuts the audio itself — see `chunkRanges`. Anything the model can take in one
+        // inference (≤ 15 s) goes through as a single chunk, exactly as before.
+        let ranges = samples.count <= ASRConstants.maxModelSamples
+            ? [0..<samples.count] : Self.chunkRanges(samples)
 
-        var words = Self.words(from: result)
-        if let bias, !words.isEmpty {
-            words = await applyVocabularyBias(bias, to: words, transcript: result.text,
-                                              tokenTimings: result.tokenTimings ?? [], samples: samples)
+        let chunks = ranges.compactMap { range -> (samples: [Float], offset: Double)? in
+            guard range.count >= Self.minimumSamples else { return nil }   // a sub-0.3 s tail
+            return (Array(samples[range]), Double(range.lowerBound) / 16_000)
         }
+        let (words, texts) = try await decodeAll(chunks, primary: mgr, language: language, bias: bias)
+
+        let duration = Double(samples.count) / 16_000
         guard !words.isEmpty else {
-            return TranscriptAssembly.singleSegment(text: result.text,
-                                                    duration: Double(samples.count) / 16_000.0)
+            return TranscriptAssembly.singleSegment(text: texts.joined(separator: " "), duration: duration)
         }
         let segs = TranscriptAssembly.segments(words: words)
         return segs.isEmpty
-            ? TranscriptAssembly.singleSegment(text: result.text, duration: Double(samples.count) / 16_000.0)
+            ? TranscriptAssembly.singleSegment(text: texts.joined(separator: " "), duration: duration)
             : segs
+    }
+
+    static let minimumSamples = 4_800
+
+    /// ONE inference over ≤ 15 s of audio with a FRESH decoder state, plus the vocabulary bias.
+    private func decodeOne(_ chunk: [Float], manager mgr: AsrManager, language: String?,
+                           bias: VocabularyBias?) async throws -> (words: [WordTiming], text: String) {
+        var state = TdtDecoderState.make(decoderLayers: await mgr.decoderLayerCount)
+        let result = try await mgr.transcribe(chunk, decoderState: &state, language: fluidLanguage(language))
+        var words = Self.words(from: result)
+        if let bias, !words.isEmpty {
+            words = await applyVocabularyBias(bias, to: words, transcript: result.text,
+                                              tokenTimings: result.tokenTimings ?? [], samples: chunk)
+        }
+        return (words, result.text)
+    }
+
+    /// Decode independent chunks in parallel, returning words and texts in CHUNK ORDER.
+    ///
+    /// Sequential decoding measured 2.6× slower than the vendor's chunker (RTFx 82 vs 214) purely
+    /// because it runs four chunks at once. `AsrManager` is an actor, so parallelism means a pool
+    /// of managers; they share the ONE loaded `AsrModels` (CoreML model references), so a clone
+    /// costs its decoder scratch state and nothing else. Same size as the vendor's default pool.
+    private func decodeAll(_ chunks: [(samples: [Float], offset: Double)], primary: AsrManager,
+                           language: String?, bias: VocabularyBias?) async throws -> ([WordTiming], [String]) {
+        guard !chunks.isEmpty else { return ([], []) }
+        let workers = workerPool(primary: primary, count: min(Self.parallelism, chunks.count))
+        var results = [(words: [WordTiming], text: String)?](repeating: nil, count: chunks.count)
+        try await withThrowingTaskGroup(of: (Int, [WordTiming], String).self) { group in
+            var next = 0
+            func enqueue(_ i: Int, on worker: AsrManager) {
+                let chunk = chunks[i]
+                group.addTask {
+                    let (w, t) = try await self.decodeOne(chunk.samples, manager: worker, language: language, bias: bias)
+                    return (i, w.map {
+                        WordTiming(text: $0.text, start: $0.start + chunk.offset, end: $0.end + chunk.offset,
+                                   confidence: $0.confidence)
+                    }, t)
+                }
+            }
+            // One in-flight chunk per worker; each finished chunk hands its worker the next one.
+            var workerOf: [Int: AsrManager] = [:]
+            for w in workers where next < chunks.count { workerOf[next] = w; enqueue(next, on: w); next += 1 }
+            while let (i, w, t) = try await group.next() {
+                results[i] = (w, t)
+                if next < chunks.count, let worker = workerOf[i] { workerOf[next] = worker; enqueue(next, on: worker); next += 1 }
+            }
+        }
+        let done = results.compactMap { $0 }
+        return (done.flatMap(\.words), done.map(\.text).filter { !$0.isEmpty })
+    }
+
+    static let parallelism = 4
+
+    private func workerPool(primary: AsrManager, count: Int) -> [AsrManager] {
+        lock.lock(); let loaded = models; lock.unlock()
+        guard count > 1, let loaded else { return [primary] }
+        return [primary] + (1..<count).map { _ in
+            AsrManager(config: ASRConfig(tdtConfig: TdtConfig(boundarySearchFrames: 0)), models: loaded)
+        }
+    }
+
+    // MARK: Said's own chunking
+
+    /// Cut long audio into chunks the model takes in ONE inference, cutting at the quietest moment.
+    ///
+    /// **Why not FluidAudio's `ChunkProcessor`.** It decodes overlapping 15 s chunks and merges the
+    /// token streams (an LCS + midpoint merger, plus the token dedup). Measured on a real lecture
+    /// (2026-09-14): the merge dropped whole clauses at joins — "critical boundaries on our
+    /// sampling distribution to create" → "quick to create", and a nine-word sentence gone
+    /// outright — and toggling its `melChunkContext` merely moved WHICH clause was lost. Chunks
+    /// that do not overlap have nothing to merge, and a cut placed in a pause costs nothing: the
+    /// live path does exactly this and lost 0 of 486 words on the same audio.
+    ///
+    /// Each cut is the centre of the lowest-energy 200 ms probe in the last `searchBack` of the
+    /// span — a pause when there is one, the least-bad instant when there is not — so no chunk
+    /// exceeds `maxChunk` (14.5 s, half a second under the model's window). Energy is compared
+    /// directly; there is no threshold to tune.
+    static func chunkRanges(_ samples: [Float],
+                            maxChunk: Int = 232_000,      // 14.5 s
+                            searchBack: Int = 64_000,     // choose the cut within the last 4 s
+                            probe: Int = 3_200,           // 200 ms
+                            hop: Int = 800) -> [Range<Int>] {
+        var out: [Range<Int>] = []
+        var pos = 0
+        while samples.count - pos > maxChunk {
+            let zoneStart = pos + maxChunk - searchBack
+            let zoneEnd = pos + maxChunk
+            var bestStart = zoneEnd - probe
+            var bestEnergy = Float.greatestFiniteMagnitude
+            var start = zoneStart
+            while start + probe <= zoneEnd {
+                var energy: Float = 0
+                for i in start..<(start + probe) { energy += samples[i] * samples[i] }
+                if energy < bestEnergy { bestEnergy = energy; bestStart = start }
+                start += hop
+            }
+            let cut = bestStart + probe / 2
+            out.append(pos..<cut)
+            pos = cut
+        }
+        out.append(pos..<samples.count)
+        return out
     }
 
     // MARK: Vocabulary biasing on the BATCH path
@@ -317,11 +432,62 @@ public final class ParakeetProvider: TranscriptionProvider, @unchecked Sendable 
         lock.lock(); let mgr = manager; lock.unlock()
         guard let mgr else { throw CaptureError.engineNotReady }
         let url = URL(fileURLWithPath: path)
-        var state = TdtDecoderState.make(decoderLayers: await mgr.decoderLayerCount)
-        // The URL overload picks its own disk-backed path above `config.streamingThreshold`
-        // (~30 s), so a multi-hour lecture is never resident in full.
-        let result = try await mgr.transcribe(url, decoderState: &state, language: fluidLanguage(language))
-        return Self.segments(from: result, fallbackDuration: result.duration)
+
+        // Same chunking as the in-memory path — the vendor's URL overload runs its own overlapping
+        // chunk-joiner, which is exactly what `chunkRanges` exists to avoid. To keep a multi-hour
+        // file from being resident in full, the file is read in ~10-minute blocks, each block is
+        // cut with `chunkRanges`, and the last (possibly short) range is carried into the next block
+        // so no cut ever lands on an arbitrary block edge.
+        guard let file = try? AVAudioFile(forReading: url) else {
+            // Not AVAudioFile-readable (some video containers): decode whole via AVAssetReader.
+            let samples = try await AudioFileIO.decodeTo16kMono(url: url)
+            return try await transcribe(samples: samples, language: language, bias: bias)
+        }
+
+        let resampler = Resampler16k()
+        let fmt = file.processingFormat
+        let blockFrames = AVAudioFrameCount(fmt.sampleRate * 600)   // ~10 min of source audio
+        var carry: [Float] = []
+        var origin = 0                     // 16 kHz sample index of carry[0]
+        var words: [WordTiming] = []
+        var texts: [String] = []
+
+        func decode(_ ranges: [Range<Int>], in block: [Float]) async throws {
+            let chunks = ranges.compactMap { range -> (samples: [Float], offset: Double)? in
+                guard range.count >= Self.minimumSamples else { return nil }
+                return (Array(block[range]), Double(origin + range.lowerBound) / 16_000)
+            }
+            let (w, t) = try await decodeAll(chunks, primary: mgr, language: language, bias: bias)
+            words.append(contentsOf: w)
+            texts.append(contentsOf: t)
+        }
+
+        while file.framePosition < file.length {
+            guard let buf = AVAudioPCMBuffer(pcmFormat: fmt, frameCapacity: blockFrames) else { break }
+            try file.read(into: buf)
+            if buf.frameLength == 0 { break }
+            guard let fresh = resampler.resample(buf) else { continue }
+            let block = carry + fresh
+            let ranges = block.count <= ASRConstants.maxModelSamples ? [0..<block.count] : Self.chunkRanges(block)
+            // Decode everything but the tail; the tail becomes the next block's head.
+            try await decode(Array(ranges.dropLast()), in: block)
+            let tail = ranges.last ?? (0..<0)
+            carry = Array(block[tail])
+            origin += tail.lowerBound
+        }
+        if !carry.isEmpty {
+            try await decode(carry.count <= ASRConstants.maxModelSamples ? [0..<carry.count] : Self.chunkRanges(carry),
+                             in: carry)
+        }
+
+        let duration = Double(file.length) / fmt.sampleRate
+        guard !words.isEmpty else {
+            return TranscriptAssembly.singleSegment(text: texts.joined(separator: " "), duration: duration)
+        }
+        let segs = TranscriptAssembly.segments(words: words)
+        return segs.isEmpty
+            ? TranscriptAssembly.singleSegment(text: texts.joined(separator: " "), duration: duration)
+            : segs
     }
 
     /// `ASRResult`'s token timings folded into whole words. Empty when the engine reported none.
@@ -330,19 +496,6 @@ public final class ParakeetProvider: TranscriptionProvider, @unchecked Sendable 
         return TranscriptAssembly.words(fromTokens: timings.map {
             (text: $0.token, start: $0.startTime, end: $0.endTime, confidence: $0.confidence)
         })
-    }
-
-    /// `ASRResult` → Said's segments, via the pure assembler.
-    static func segments(from result: ASRResult, fallbackDuration: TimeInterval) -> [TranscriptSegment] {
-        let words = Self.words(from: result)
-        // §5.5: timings absent or malformed must never fail a save. One honest coarse segment.
-        guard !words.isEmpty else {
-            return TranscriptAssembly.singleSegment(text: result.text, duration: fallbackDuration)
-        }
-        let segs = TranscriptAssembly.segments(words: words)
-        // A pathological timing array (all zero-length, all at t=0) would assemble to nothing while
-        // the text is perfectly good. Prefer the text.
-        return segs.isEmpty ? TranscriptAssembly.singleSegment(text: result.text, duration: fallbackDuration) : segs
     }
 
     // MARK: Language identification — deliberately absent
@@ -361,159 +514,172 @@ public final class ParakeetProvider: TranscriptionProvider, @unchecked Sendable 
 
     public func makeStream(sink: SampleSink, language: String?, bias: VocabularyBias?,
                            onUpdate: @escaping @Sendable (LiveTranscript) -> Void) async -> (any TranscriptionStream)? {
-        lock.lock(); let loaded = models; lock.unlock()
-        guard let loaded else { return nil }
-
-        let sw = SlidingWindowAsrManager(config: .streaming)
-        do {
-            try await sw.loadModels(loaded)
-            if let bias, let ctc = await loadCtcModelsIfNeeded(),
-               let vocab = await vocabularyContext(bias, variant: ctc.variant) {
-                try await sw.configureVocabularyBoosting(vocabulary: vocab, ctcModels: ctc)
-            }
-            // No CTC models, or nothing tokenized → no boosting, but the session still records.
-            // Both cases log; neither is worth failing a recording over.
-            try await sw.startStreaming(source: .microphone)
-        } catch {
-            NSLog("[Parakeet] could not start the streaming engine: \(error)")
-            return nil
-        }
-        return ParakeetStream(manager: sw, sink: sink, onUpdate: onUpdate)
+        lock.lock(); let ready = manager != nil; lock.unlock()
+        guard ready else { return nil }
+        return ParakeetStream(provider: self, sink: sink, language: language, bias: bias, onUpdate: onUpdate)
     }
 }
 
 // MARK: - Parakeet's live stream
 
-/// Feeds the sliding-window manager incrementally and republishes its updates as `LiveTranscript`.
+/// A rolling window over the BATCH path, not FluidAudio's `SlidingWindowAsrManager`.
 ///
-/// **The pump is the point.** It reads only what has arrived since its last pass
-/// (`SampleSink.newSamples(after:)`) and hands it straight to the manager, which owns its own
-/// windowing and trims what it has consumed. Nothing here holds the session's audio, so live memory
-/// is flat in session length rather than linear — the defect §5.3 exists to fix.
+/// **Why not the vendor's streaming manager.** It was the first implementation, and it was measured
+/// on a real lecture (2026-09-14, `--selftest-stream --model parakeet`, 3 minutes, 486 words):
+/// **131 words — 27% of the speech — never appeared live.** Whole windows came back empty because
+/// the decoder state the manager carries between windows (its `timeJump` mechanism) periodically
+/// skipped 6–8 s of audio; shrinking the window and switching off its false-positive token dedup
+/// (which deleted eight words on a single-token match) only got that to 19%. None of it is
+/// tunable from outside. Meanwhile the batch path — `transcribe(samples:)` with a FRESH decoder
+/// state — produced 2 508 timed words for 2 508 spoken at 241× realtime on the same audio.
+///
+/// So this does what `StreamingTranscriber` already does for Whisper: about once a second,
+/// re-transcribe everything since the last confirmed point with a fresh state, confirm the words
+/// that are safely behind the trailing edge, and show the rest as the dimmed hypothesis. A 20 s
+/// window costs ~80 ms per tick at 241×. The live words are therefore produced by the SAME code
+/// that produces the saved transcript, which is also what makes the live save honest.
+///
+/// The pump-and-trim memory argument for the incremental reader still holds: the window is
+/// bounded by `maxWindowSeconds`, so what is copied per tick is proportional to the window, never
+/// to the session.
 public actor ParakeetStream: TranscriptionStream {
 
-    private let manager: SlidingWindowAsrManager
+    private let provider: ParakeetProvider
     private let sink: SampleSink
+    private let language: String?
+    private let bias: VocabularyBias?
     private let onUpdate: @Sendable (LiveTranscript) -> Void
 
     private var running = false
-    private var readIndex = 0
-    private var pumpTask: Task<Void, Never>?
-
-    /// Every word promoted to confirmed, in order. Segments are re-assembled from these on each
-    /// update so the live transcript is cut the same way the final one will be.
+    private var lastSeenCount = 0
+    /// Sample index where the next window begins — the end of the last confirmed word.
+    private var windowStartSample = 0
     private var confirmedWords: [WordTiming] = []
-    /// The MOST RECENT window's words, not yet superseded.
-    ///
-    /// **The manager never re-emits or revises a window.** `processWindow` emits each exactly once
-    /// and moves on, and `isConfirmed` describes whether THAT window cleared the confidence and
-    /// context bar — it is not a promise that the text will be re-sent later. So discarding the
-    /// words of an unconfirmed update loses that speech permanently.
-    ///
-    /// The vendor's own `updateTranscriptionState` does not discard it either: on a confirmed
-    /// window it promotes the PREVIOUS volatile text into confirmed and makes the new window
-    /// volatile. This mirrors that exactly, in words rather than strings.
+    /// The unconfirmed tail of the latest window, so the live save on stop loses nothing.
     private var pendingWords: [WordTiming] = []
-    private var hypothesis = ""
 
-    init(manager: SlidingWindowAsrManager, sink: SampleSink,
+    /// Wait for at least this much fresh audio between ticks.
+    static let tickSeconds: TimeInterval = 1.0
+    /// Never confirm a word that ends within this of the window's live edge — the decoder is still
+    /// changing its mind there (a word cut by the edge is the classic mistake).
+    static let trailingSeconds: TimeInterval = 2.0
+    /// Below this, confirm nothing: let a phrase form first.
+    static let minConfirmSeconds: TimeInterval = 4.0
+    /// Above this, confirm up to the trailing edge whether or not a good cut exists, so a run-on
+    /// speaker cannot grow the window (and the per-tick decode) without bound.
+    static let maxWindowSeconds: TimeInterval = 12.0
+    /// A pause between words at least this long is a good place to cut.
+    static let gapSeconds: TimeInterval = 0.3
+
+    init(provider: ParakeetProvider, sink: SampleSink, language: String?, bias: VocabularyBias?,
          onUpdate: @escaping @Sendable (LiveTranscript) -> Void) {
-        self.manager = manager
+        self.provider = provider
         self.sink = sink
+        self.language = language
+        self.bias = bias
         self.onUpdate = onUpdate
     }
 
     public func run() async {
         running = true
+        while running {
+            let (window, total) = sink.newSamples(after: windowStartSample)
+            let fresh = Double(total - lastSeenCount) / 16_000
+            guard fresh >= Self.tickSeconds else {
+                try? await Task.sleep(nanoseconds: 200_000_000)
+                continue
+            }
+            lastSeenCount = total
+            let offset = Double(windowStartSample) / 16_000
+            let windowEnd = Double(total) / 16_000
 
-        // Push audio in on its own task; consuming updates below must not stall the feed.
-        pumpTask = Task { [weak self] in
-            while await self?.isRunning == true {
-                await self?.pumpOnce()
-                try? await Task.sleep(nanoseconds: 100_000_000)   // 10 Hz — well inside the window size
+            var words: [WordTiming] = []
+            do {
+                let segs = try await provider.transcribe(samples: window, language: language, bias: bias)
+                guard running else { break }
+                words = segs.flatMap { $0.words ?? [] }.map {
+                    WordTiming(text: $0.text, start: $0.start + offset, end: $0.end + offset,
+                               confidence: $0.confidence)
+                }
+            } catch {
+                NSLog("[Parakeet] live window failed: \(error)")
+                try? await Task.sleep(nanoseconds: 200_000_000)
+                continue
+            }
+            apply(words, windowEnd: windowEnd, total: total)
+        }
+    }
+
+    private func apply(_ words: [WordTiming], windowEnd: TimeInterval, total: Int) {
+        let windowSeconds = windowEnd - Double(windowStartSample) / 16_000
+        let edge = windowEnd - Self.trailingSeconds
+
+        // Long silence: nothing to confirm, but do not let the window grow — advance past it.
+        if words.isEmpty {
+            if windowSeconds > Self.maxWindowSeconds {
+                windowStartSample = max(windowStartSample, Int(edge * 16_000))
+            }
+            pendingWords = []
+            onUpdate(LiveTranscript(confirmed: TranscriptAssembly.segments(words: confirmedWords), hypothesis: ""))
+            return
+        }
+
+        // A forced cut lands at a word's END, and the next window then begins on that word's last
+        // few milliseconds — enough for the decoder to re-emit it ("than than", "from from",
+        // measured). If the window's first word starts on the window's edge and repeats the last
+        // confirmed word, it is that echo, not speech.
+        var words = words
+        if let last = confirmedWords.last, let first = words.first,
+           first.start - Double(windowStartSample) / 16_000 < 0.25,
+           Self.bare(first.text) == Self.bare(last.text) {
+            words.removeFirst()
+            if words.isEmpty {
+                pendingWords = []
+                onUpdate(LiveTranscript(confirmed: TranscriptAssembly.segments(words: confirmedWords), hypothesis: ""))
+                return
             }
         }
 
-        // `transcriptionUpdates` installs a fresh continuation each time it is READ, replacing any
-        // previous one, so it is read exactly once here and iterated.
-        for await update in await manager.transcriptionUpdates {
-            guard running else { break }
-            apply(update)
+        var cut: Int? = nil   // index of the LAST word to confirm
+        if windowSeconds >= Self.minConfirmSeconds,
+           let lastBehindEdge = words.lastIndex(where: { $0.end <= edge }) {
+            // Prefer a sentence end or a pause, searching back from the edge; otherwise, once the
+            // window is long, take the edge itself.
+            var i = lastBehindEdge
+            while i >= 0 {
+                let w = words[i]
+                let endsSentence = w.text.last.map { ".!?。！？".contains($0) } ?? false
+                let gapAfter = i + 1 < words.count ? words[i + 1].start - w.end : .infinity
+                if endsSentence || gapAfter >= Self.gapSeconds { cut = i; break }
+                i -= 1
+            }
+            if cut == nil, windowSeconds >= Self.maxWindowSeconds { cut = lastBehindEdge }
         }
+
+        if let cut {
+            let confirmed = Array(words[...cut])
+            confirmedWords.append(contentsOf: confirmed)
+            windowStartSample = min(total, Int(confirmed[cut].end * 16_000))
+            pendingWords = Array(words[(cut + 1)...])
+        } else {
+            pendingWords = words
+        }
+
+        onUpdate(LiveTranscript(confirmed: TranscriptAssembly.segments(words: confirmedWords),
+                                hypothesis: pendingWords.map(\.text).joined(separator: " ")))
     }
 
-    private var isRunning: Bool { running }
-
-    /// One incremental read → the manager. Bounded by whatever arrived in the last ~100 ms.
-    ///
-    /// Awaited inline rather than spawned into a `Task`: `AVAudioPCMBuffer` is not `Sendable`, so
-    /// handing it to a detached task would cross an isolation boundary with a reference type that
-    /// makes no thread-safety promise. Awaiting keeps the buffer on one hop from creation to
-    /// consumption, and the manager's own input is an `AsyncStream` continuation, so the await is
-    /// a yield, not a stall.
-    private func pumpOnce() async {
-        let (samples, next) = sink.newSamples(after: readIndex)
-        readIndex = next
-        guard !samples.isEmpty, let buffer = Self.pcmBuffer(from: samples) else { return }
-        await manager.streamAudio(buffer)
-    }
-
-    private func apply(_ update: SlidingWindowTranscriptionUpdate) {
-        // Timings arrive already offset to session-absolute time (the manager applies its window's
-        // global frame offset before emitting), and the sink starts at session T0 with paused audio
-        // dropped by `CaptureGate` — so a word's time is on the same pause-compressed clock as every
-        // bookmark, frame and `[mm:ss]`.
-        let words = TranscriptAssembly.words(fromTokens: update.tokenTimings.map {
-            (text: $0.token, start: $0.startTime, end: $0.endTime, confidence: $0.confidence)
-        })
-        // A confirmed window promotes what was pending; the new window becomes pending in its place.
-        // Nothing is ever dropped — see `pendingWords`.
-        if update.isConfirmed {
-            confirmedWords.append(contentsOf: pendingWords)
-        }
-        pendingWords = words
-        hypothesis = update.text
-
-        let confirmed = TranscriptAssembly.segments(words: confirmedWords)
-        onUpdate(LiveTranscript(confirmed: confirmed, hypothesis: hypothesis))
+    private static func bare(_ text: String) -> String {
+        text.lowercased().filter { $0.isLetter || $0.isNumber }
     }
 
     public func stop() {
         running = false
-        pumpTask?.cancel()
-        pumpTask = nil
-        let mgr = manager
-        Task { await mgr.cancel() }
     }
 
-    /// Everything transcribed so far — confirmed AND the trailing pending window.
-    ///
-    /// Includes the pending window deliberately, mirroring the manager's own `finish()`, which
-    /// joins confirmed and volatile. This is the live save on stop, and the last window is real
-    /// transcribed speech that simply never had a later window to supersede it. Dropping it would
-    /// silently truncate every session by up to one window.
+    /// Everything transcribed so far — confirmed AND the unconfirmed tail of the last window. This
+    /// is the live save on stop; the tail is real speech that never had a later tick to confirm it.
     public func snapshotSegments() -> [TranscriptSegment] {
         TranscriptAssembly.segments(words: confirmedWords + pendingWords)
-    }
-
-    /// 16 kHz mono Float32 → `AVAudioPCMBuffer`, the currency the manager takes.
-    ///
-    /// The samples are ALREADY at the manager's own rate (Said resamples once, at capture, in
-    /// `Resampler16k`), so its internal `AudioConverter` sees matching formats and does no work.
-    /// Resampling here as well — which the vendor's mic examples do — would be a second conversion
-    /// of audio that is already correct.
-    nonisolated static func pcmBuffer(from samples: [Float]) -> AVAudioPCMBuffer? {
-        guard !samples.isEmpty,
-              let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16_000,
-                                         channels: 1, interleaved: false),
-              let buffer = AVAudioPCMBuffer(pcmFormat: format,
-                                            frameCapacity: AVAudioFrameCount(samples.count)),
-              let dst = buffer.floatChannelData?[0]
-        else { return nil }
-        samples.withUnsafeBufferPointer { src in
-            dst.update(from: src.baseAddress!, count: samples.count)
-        }
-        buffer.frameLength = AVAudioFrameCount(samples.count)
-        return buffer
     }
 }

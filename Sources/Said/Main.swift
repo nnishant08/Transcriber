@@ -255,15 +255,26 @@ enum SelfTest {
         Task.detached {
             do {
                 let engine = TranscriptionEngine()
-                try await engine.prepare(model: model) { msg, _ in print("  [status] \(msg)") }
+                // `--model parakeet` drives the SAME harness on the Parakeet sliding window, so its
+                // live cadence and lag can be measured headlessly (it is a different code path).
+                if model == "parakeet" {
+                    try await engine.prepareParakeet { msg, _ in print("  [status] \(msg)") }
+                } else {
+                    try await engine.prepare(model: model) { msg, _ in print("  [status] \(msg)") }
+                }
                 engine.sink.reset()
 
                 let file = try AVAudioFile(forReading: URL(fileURLWithPath: audioPath))
                 print("input format: \(file.processingFormat)")
 
+                // Each update is stamped with how much audio had been FED when it arrived, next to
+                // the end time of the newest confirmed word — the difference is the live lag.
                 let collector = UpdateCollector()
                 guard let streamer = await engine.makeStreamer(language: "en", onUpdate: { live in
-                    collector.update(live.text)
+                    let fed = Double(engine.sampleCount) / 16_000
+                    let newest = live.confirmed.last?.end ?? 0
+                    collector.update(live.text, note: String(format: "fed %.1fs · confirmed to %.1fs · lag %.1fs",
+                                                              fed, newest, fed - newest))
                 }) else { throw CaptureError.engineNotReady }
 
                 let runTask = Task { await streamer.run() }
@@ -2821,12 +2832,13 @@ final class UpdateCollector: @unchecked Sendable {
     private var _last = ""
     private var _count = 0
 
-    func update(_ text: String) {
+    func update(_ text: String, note: String? = nil) {
         lock.lock()
         _last = text
         _count += 1
         lock.unlock()
-        print("  [update #\(_count)] \(text)")
+        let shown = text.count > 160 ? "…" + text.suffix(160) : text
+        print("  [update #\(_count)]\(note.map { " (\($0))" } ?? "") \(shown)")
     }
     var last: String { lock.lock(); defer { lock.unlock() }; return _last }
     var count: Int { lock.lock(); defer { lock.unlock() }; return _count }

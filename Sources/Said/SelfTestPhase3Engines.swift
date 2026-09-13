@@ -226,6 +226,16 @@ extension SelfTest {
                 check("produced text", !segments.isEmpty && segments.contains { !$0.text.isEmpty })
                 let timed = segments.filter { $0.validWords != nil }
                 check("word timings are present", !timed.isEmpty)
+                // ONE word carrying the whole transcript satisfies "present" — that is exactly the
+                // fold bug the first real session hit (FluidAudio marks word starts with a leading
+                // space, not ▁). A word is a word: none may contain internal whitespace, and the count
+                // has to be in the neighbourhood of the whitespace-split word count.
+                let allWords = segments.flatMap { $0.validWords ?? [] }
+                let spoken = segments.flatMap { $0.text.split(separator: " ") }.count
+                check("no timed word contains internal whitespace",
+                      allWords.allSatisfy { !$0.text.contains(" ") })
+                check("timed word count ≈ spoken word count (\(allWords.count) vs \(spoken))",
+                      allWords.count >= max(1, spoken / 2))
                 check("word timings are monotonic within each segment",
                       timed.allSatisfy { seg in
                           let w = seg.validWords ?? []

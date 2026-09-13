@@ -96,7 +96,17 @@ public enum TranscriptAssembly {
 
     /// SentencePiece word-boundary marker (▁, U+2581) — the same constant FluidAudio's own token
     /// filter uses. A token carrying it starts a new word; tokens without it continue the previous.
+    ///
+    /// **A leading SPACE is the same marker.** FluidAudio's `AsrManager.normalizedTimingToken`
+    /// (verified at 0.15.2) replaces `▁` with `" "` BEFORE it builds `TokenTiming.token`, so what
+    /// actually reaches this fold is `" Welcome"`, `"to"`… and never a `▁`. Treating only `▁` as the
+    /// boundary folded a 15-minute recording into ONE word (found on the first real session,
+    /// 2026-09-14). Both spellings are accepted so the fold is correct whichever a future tag emits.
     public static let wordBoundaryMarker: Character = "\u{2581}"
+    static func startsWord(_ piece: String) -> Bool {
+        guard let c = piece.first else { return false }
+        return c == wordBoundaryMarker || c == " "
+    }
 
     /// Fold sub-word tokens into whole words.
     ///
@@ -123,8 +133,9 @@ public enum TranscriptAssembly {
 
         for tok in tokens {
             let piece = tok.text
-            let startsWord = piece.first == wordBoundaryMarker
+            let startsWord = Self.startsWord(piece)
             let cleaned = String(piece.filter { $0 != wordBoundaryMarker })
+                .trimmingCharacters(in: .whitespaces)
             if startsWord || buf.isEmpty {
                 flush()
                 start = tok.start

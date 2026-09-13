@@ -161,6 +161,27 @@ extension SelfTest {
                 DocumentBuilder.readSession(dir)?.segments.first?.validWords?.count == 3)
         flags.restore()
 
+        // ---- Token → word fold, PURE. Both boundary spellings must fold identically: raw
+        // SentencePiece (`▁to`) and what FluidAudio 0.15.2 actually emits after
+        // `normalizedTimingToken` (`" to"`). The second is the one the first real session hit —
+        // every token was glued into ONE word spanning fifteen minutes.
+        typealias Tok = (text: String, start: TimeInterval, end: TimeInterval, confidence: Float)
+        func fold(_ toks: [Tok]) -> [WordTiming] { TranscriptAssembly.words(fromTokens: toks) }
+        let raw: [Tok] = [("\u{2581}Wel", 0.0, 0.2, 0.9), ("come", 0.2, 0.4, 0.8),
+                          ("\u{2581}to", 0.5, 0.6, 0.95), ("\u{2581}Psych", 0.7, 1.0, 0.7), (".", 1.0, 1.05, 0.99)]
+        let spaced: [Tok] = raw.map { (text: $0.text.replacingOccurrences(of: "\u{2581}", with: " "),
+                                       start: $0.start, end: $0.end, confidence: $0.confidence) }
+        let wr = fold(raw), ws = fold(spaced)
+        c.check("▁-marked tokens fold into three words", wr.map(\.text) == ["Welcome", "to", "Psych."])
+        c.check("space-marked tokens (FluidAudio's shape) fold into the SAME three words",
+                ws.map(\.text) == ["Welcome", "to", "Psych."])
+        c.check("no folded word carries whitespace", (wr + ws).allSatisfy { !$0.text.contains(" ") })
+        c.check("a word's timing spans its first to last token", wr[0].start == 0.0 && wr[0].end == 0.4)
+        c.check("a word's confidence is the MINIMUM of its tokens", wr[0].confidence == 0.8)
+        c.check("a punctuation continuation attaches to the preceding word", wr[2].end == 1.05)
+        c.check("…and segments cut from those words carry a real anchor",
+                TranscriptAssembly.segments(words: ws).first?.start == 0.0)
+
         c.finish()
     }
 

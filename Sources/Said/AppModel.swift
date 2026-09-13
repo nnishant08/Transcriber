@@ -995,7 +995,20 @@ final class AppModel: ObservableObject {
         await detectTask?.value
         detectTask = nil
 
+        // Phase timings, so "Stop takes N seconds" is a number per phase rather than a guess.
+        // Written to the persisted debug log as well as NSLog, so they survive the app quitting.
+        let stopT0 = Date()
+        var lastMark = stopT0
+        func mark(_ phase: String) {
+            let now = Date()
+            let line = String(format: "[Stop] %@ %.2fs (total %.2fs)", phase,
+                              now.timeIntervalSince(lastMark), now.timeIntervalSince(stopT0))
+            NSLog("%@", line); debugLog(line)
+            lastMark = now
+        }
+
         await teardownCaptures()
+        mark("captures torn down")
 
         // Grab the live (confirmed) segments before discarding the streamer, then ensure the loop
         // has fully exited (no in-flight transcribe) before the final pass — shared WhisperKit.
@@ -1004,12 +1017,14 @@ final class AppModel: ObservableObject {
         await streamTask?.value
         streamer = nil
         streamTask = nil
+        mark("streamer stopped")
 
         status = .finalizing
 
         if let dir = sessionDir {
-            await finalizeDocumentSession(dir: dir, liveSegments: liveSegments)
+            await finalizeDocumentSession(dir: dir, liveSegments: liveSegments, mark: mark)
         }
+        mark("finalized")
 
         pendingTitleSeed = nil
         autoStartedMeeting = nil
@@ -1024,7 +1039,8 @@ final class AppModel: ObservableObject {
     /// Finalize a session into its folder: the transcript `.md` + session.json (+ audio.m4a, + screen.mp4
     /// when the screen was recorded). Same two-pass shape as before — immediate live save, then the
     /// full-quality re-transcription.
-    private func finalizeDocumentSession(dir: URL, liveSegments: [TranscriptSegment]) async {
+    private func finalizeDocumentSession(dir: URL, liveSegments: [TranscriptSegment],
+                                         mark: (String) -> Void = { _ in }) async {
         let meta = sessionMeta()
 
         // 1) Immediate live save (interleaved, no OCR yet). Do NOT blank the on-screen transcript to
@@ -1036,6 +1052,7 @@ final class AppModel: ObservableObject {
         lastSessionHasVideo = screenResult != nil
         lastSavedURL = SessionPaths.transcriptURL(in: dir)
         notifySessionSaved(dir)
+        mark("live save")
 
         // 2) Full-quality transcript segments (+ custom-vocab bias), re-saved over the live pass.
         do {
@@ -1046,6 +1063,7 @@ final class AppModel: ObservableObject {
                 sessionLanguage = (try? await engine.detectLanguage(samples: Array(lead.prefix(30 * 16_000))))?.language ?? "en"
             }
             let finalSegs = try await engine.finalPassSegments(language: sessionLanguage, bias: sessionBias)
+            mark("final pass (\(engine.activeEngine.rawValue), \(finalSegs.count) segments)")
             let segs = finalSegs.isEmpty ? liveSegments : finalSegs
             if !segs.isEmpty {
                 transcript = segs.map { $0.text }.joined(separator: " ")
@@ -1060,11 +1078,13 @@ final class AppModel: ObservableObject {
             var audioName: String? = nil
             if saveAudioEnabled, buffer.count > 1_600 {
                 audioName = (try? AudioFileIO.writeCompactAudio(buffer, to: dir.appendingPathComponent("audio.m4a")))?.lastPathComponent
+                mark("audio.m4a written")
             }
 
             // Final save with enriched meta (saved audio + screen video + live ⌥⌘B bookmarks).
             let finalMeta = sessionMeta(audioFile: audioName, durationSeconds: duration, bookmarks: sessionBookmarks)
             DocumentBuilder.writeSession(SessionDoc(meta: finalMeta, segments: segs), to: dir)
+            mark("final save")
 
             // D3: notify when a long pass completes (silent no-op if Notifications aren't granted).
             if let duration, duration > 30 {
