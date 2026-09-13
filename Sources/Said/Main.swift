@@ -56,6 +56,11 @@ enum AppMain {
             SelfTest.runRetag(dir: positional(after: idx, in: args), force: args.contains("--force"))
             return
         }
+        if let idx = args.firstIndex(of: "--retranscribe") {
+            let engine = args.firstIndex(of: "--engine").flatMap { positional(after: $0, in: args) }
+            SelfTest.runRetranscribe(dir: positional(after: idx, in: args), engine: engine)
+            return
+        }
         if let idx = args.firstIndex(of: "--rename-transcripts") {
             SelfTest.runRenameTranscripts(dir: positional(after: idx, in: args),
                                           dryRun: args.contains("--dry-run"))
@@ -913,6 +918,44 @@ extension SelfTest {
         let again = SessionStore.migrateTranscriptNames(root: root)
         print(again == 0 ? "OK (a second pass is a no-op)" : "FAIL (a second pass renamed \(again) more)")
         exit(again == 0 ? 0 : 2)
+    }
+
+    /// `--retranscribe <session-folder> [--engine parakeet|whisper]` — maintenance utility (NOT a
+    /// self-test): the Viewer's "Re-transcribe…" from the command line. Re-runs the final pass over
+    /// the session's saved audio and replaces the words, keeping the id, title, bookmarks and
+    /// speaker names. Added to repair sessions saved by the one-word fold bug (2026-09-14) without
+    /// opening each in the Viewer.
+    static func runRetranscribe(dir: String?, engine: String?) {
+        setbuf(stdout, nil)
+        guard let dir else { print("usage: --retranscribe <session-folder> [--engine parakeet|whisper]"); exit(2) }
+        let url = URL(fileURLWithPath: dir)
+        guard SessionPaths.isSessionFolder(url) else { print("not a session folder: \(dir)"); exit(2) }
+        let preference: EnginePreference
+        switch engine {
+        case nil, "auto": preference = .automatic
+        case "parakeet": preference = .parakeet
+        case "whisper": preference = .whisper
+        default: print("unknown engine '\(engine!)'"); exit(2)
+        }
+        print("== re-transcribe: \(url.lastPathComponent) ==")
+        let sema = DispatchSemaphore(value: 0)
+        var code: Int32 = 0
+        Task.detached {
+            do {
+                let doc = DocumentBuilder.readSession(url)
+                let language = doc?.meta.language
+                try await Retranscriber.run(dir: url, preference: preference,
+                                            whisperVariant: UserDefaults.standard.string(forKey: "model") ?? WhisperModel.baseEn.rawValue,
+                                            language: language, vocabulary: []) { print("  [status] \($0)") }
+                let after = DocumentBuilder.readSession(url)
+                print("segments: \(doc?.segments.count ?? 0) → \(after?.segments.count ?? 0)")
+                print("OK")
+            } catch {
+                print("FAIL: \(error)"); code = 1
+            }
+            sema.signal()
+        }
+        sema.wait(); exit(code)
     }
 
     static func runRetag(dir: String?, force: Bool) {

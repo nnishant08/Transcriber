@@ -578,7 +578,15 @@ public enum DocumentBuilder {
                                 frames: [FrameEvent] = []) -> String {
         var out = "# Transcript — \(humanStamp.string(from: meta.date))\n\n"
         out += "- **Source:** \(meta.sourceLabel)\n"
-        out += "- **Model:** \(meta.modelName)\n"
+        // Name the engine that actually produced the words. `modelName` is the configured Whisper
+        // model, which is what ran unless `engine` says otherwise — a Parakeet session used to be
+        // headed "Model: openai_whisper-base.en". Whisper sessions (and every legacy session,
+        // which has no `engine`) render byte-identically to before.
+        if meta.engine == "parakeet" {
+            out += "- **Model:** Parakeet\(meta.engineModel.map { " \($0)" } ?? "")\n"
+        } else {
+            out += "- **Model:** \(meta.modelName)\n"
+        }
         if let v = meta.videoFile {
             var line = "- **Screen recording:** \(v)"
             if let t = meta.targetLabel { line += " — \(t)" }
