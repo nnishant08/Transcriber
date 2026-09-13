@@ -1704,6 +1704,11 @@ Run the built binary (`.build/release/Transcriber` or the bundle's MacOS binary)
   exist — they tested the screenshot/OCR/slide-chat feature that was replaced by real screen
   recording. `verify_selftests.sh` was still calling all three (i.e. it was failing); Phase 1 removed
   them and added `--selftest-screenrec`, which had never been wired in.
+- `--retranscribe <session-folder> [--engine parakeet|whisper]` — maintenance utility (NOT a
+  self-test): the Viewer's *Re-transcribe…* from the command line. Re-runs the final pass over the
+  session's saved `audio.m4a` and replaces the words, keeping id / title / tags / bookmarks /
+  speaker names (speaker labels are cleared — they described the old segmentation). Added to
+  repair sessions saved by the one-word fold bug (2026-09-14) without opening each in the Viewer.
 - `--retag [dir] [--force]` — maintenance utility (NOT a self-test): fills missing tags on titled-but-
   untagged sessions (keeps the title; skips near-empty `[BLANK_AUDIO]` transcripts) via `generateTags`.
   `--force` regenerates tags even on already-tagged sessions. Defaults to `~/Desktop/Transcripts`.
