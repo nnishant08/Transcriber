@@ -305,7 +305,10 @@ public protocol TranscriptionProvider: AnyObject, Sendable {
 
     /// Full-quality pass over a whole buffer → timed segments (seconds from the audio buffer start,
     /// which is session T0). Carries word timings when the provider reports them.
-    func transcribe(samples: [Float], language: String?, bias: VocabularyBias?) async throws -> [TranscriptSegment]
+    /// `progress(done, total)` reports chunks of a long pass as they finish, so a caller can show
+    /// "40 of 115" instead of a bare spinner; a provider that decodes in one piece may never call it.
+    func transcribe(samples: [Float], language: String?, bias: VocabularyBias?,
+                    progress: (@Sendable (Int, Int) -> Void)?) async throws -> [TranscriptSegment]
 
     /// Full-quality pass over an audio FILE, letting the provider do its own decoding (which is how
     /// both engines avoid holding a multi-hour file in memory).
@@ -333,5 +336,12 @@ public extension TranscriptionProvider {
         if supportedLanguages.isEmpty { return true }
         guard let language else { return false }
         return supportedLanguages.contains(ParakeetLanguages.normalize(language))
+    }
+}
+
+public extension TranscriptionProvider {
+    /// The three-argument form every existing caller uses — no progress reporting.
+    func transcribe(samples: [Float], language: String?, bias: VocabularyBias?) async throws -> [TranscriptSegment] {
+        try await transcribe(samples: samples, language: language, bias: bias, progress: nil)
     }
 }

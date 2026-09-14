@@ -204,7 +204,8 @@ public final class ParakeetProvider: TranscriptionProvider, @unchecked Sendable 
 
     // MARK: Batch transcription
 
-    public func transcribe(samples: [Float], language: String?, bias: VocabularyBias?) async throws -> [TranscriptSegment] {
+    public func transcribe(samples: [Float], language: String?, bias: VocabularyBias?,
+                           progress: (@Sendable (Int, Int) -> Void)?) async throws -> [TranscriptSegment] {
         lock.lock(); let mgr = manager; lock.unlock()
         guard let mgr else { throw CaptureError.engineNotReady }
         // FluidAudio throws `ASRError.invalidAudioData` below `minimumRequiredSamples` — 4 800
@@ -221,7 +222,8 @@ public final class ParakeetProvider: TranscriptionProvider, @unchecked Sendable 
             guard range.count >= Self.minimumSamples else { return nil }   // a sub-0.3 s tail
             return (Array(samples[range]), Double(range.lowerBound) / 16_000)
         }
-        let (words, texts) = try await decodeAll(chunks, primary: mgr, language: language, bias: bias)
+        let (words, texts) = try await decodeAll(chunks, primary: mgr, language: language, bias: bias,
+                                                 progress: progress)
 
         let duration = Double(samples.count) / 16_000
         guard !words.isEmpty else {
@@ -255,16 +257,25 @@ public final class ParakeetProvider: TranscriptionProvider, @unchecked Sendable 
     /// of managers; they share the ONE loaded `AsrModels` (CoreML model references), so a clone
     /// costs its decoder scratch state and nothing else. Same size as the vendor's default pool.
     private func decodeAll(_ chunks: [(samples: [Float], offset: Double)], primary: AsrManager,
-                           language: String?, bias: VocabularyBias?) async throws -> ([WordTiming], [String]) {
+                           language: String?, bias: VocabularyBias?,
+                           progress: (@Sendable (Int, Int) -> Void)? = nil) async throws -> ([WordTiming], [String]) {
         guard !chunks.isEmpty else { return ([], []) }
         let workers = workerPool(primary: primary, count: min(Self.parallelism, chunks.count))
         var results = [(words: [WordTiming], text: String)?](repeating: nil, count: chunks.count)
+        let started = Date()
+        let chunkTimes = ChunkTimes()
         try await withThrowingTaskGroup(of: (Int, [WordTiming], String).self) { group in
             var next = 0
             func enqueue(_ i: Int, on worker: AsrManager) {
                 let chunk = chunks[i]
-                group.addTask {
+                // `.userInitiated`: the person is waiting on this. Measured under 8 busy CPU
+                // threads, the pass slowed 6.0 s → 10.5 s at default priority; the decoder loop
+                // is CPU work between ANE calls and should not share the machine equally with
+                // whatever is playing in a browser tab.
+                group.addTask(priority: .userInitiated) {
+                    let t0 = Date()
                     let (w, t) = try await self.decodeOne(chunk.samples, manager: worker, language: language, bias: bias)
+                    chunkTimes.record(Date().timeIntervalSince(t0))
                     return (i, w.map {
                         WordTiming(text: $0.text, start: $0.start + chunk.offset, end: $0.end + chunk.offset,
                                    confidence: $0.confidence)
@@ -274,16 +285,47 @@ public final class ParakeetProvider: TranscriptionProvider, @unchecked Sendable 
             // One in-flight chunk per worker; each finished chunk hands its worker the next one.
             var workerOf: [Int: AsrManager] = [:]
             for w in workers where next < chunks.count { workerOf[next] = w; enqueue(next, on: w); next += 1 }
+            var finished = 0
             while let (i, w, t) = try await group.next() {
                 results[i] = (w, t)
+                finished += 1
+                progress?(finished, chunks.count)
                 if next < chunks.count, let worker = workerOf[i] { workerOf[next] = worker; enqueue(next, on: worker); next += 1 }
             }
         }
         let done = results.compactMap { $0 }
+        // Only for a multi-chunk pass (i.e. the final pass, never the live tick), so the log says
+        // what a slow Stop was doing: how many chunks, how wide the pool, how long each decode
+        // took, and whether the machine was throttling.
+        if chunks.count > 1 {
+            let audio = chunks.reduce(0.0) { $0 + Double($1.samples.count) / 16_000 }
+            let wall = Date().timeIntervalSince(started)
+            let thermal = ["nominal", "fair", "serious", "critical"][min(3, ProcessInfo.processInfo.thermalState.rawValue)]
+            SaidLog.note(String(format: "[Parakeet] batch: %d chunks over %d workers, %.1fs audio in %.2fs (%.0f×), per-chunk min/avg/max %.0f/%.0f/%.0f ms, bias %@, thermal %@",
+                                chunks.count, workers.count, audio, wall, audio / max(wall, 0.001),
+                                chunkTimes.min * 1000, chunkTimes.avg * 1000, chunkTimes.max * 1000,
+                                bias == nil ? "off" : "on", thermal))
+        }
         return (done.flatMap(\.words), done.map(\.text).filter { !$0.isEmpty })
     }
 
-    static let parallelism = 4
+    private final class ChunkTimes: @unchecked Sendable {
+        private let lock = NSLock()
+        private var times: [TimeInterval] = []
+        func record(_ t: TimeInterval) { lock.lock(); times.append(t); lock.unlock() }
+        var min: TimeInterval { lock.lock(); defer { lock.unlock() }; return times.min() ?? 0 }
+        var max: TimeInterval { lock.lock(); defer { lock.unlock() }; return times.max() ?? 0 }
+        var avg: TimeInterval { lock.lock(); defer { lock.unlock() }; return times.isEmpty ? 0 : times.reduce(0, +) / Double(times.count) }
+    }
+
+    /// Pool width: cores − 2, capped at 8 (this Mac: 8; an iPhone: 4). Measured on a 24-minute
+    /// recording on an M1 Pro (10 cores): 4 workers 5.8 s, 6–8 workers 4.7 s idle; under eight
+    /// busy CPU threads 4 workers 10.3 s vs 8 workers 7.2 s. Raising the decode tasks' QoS did
+    /// nothing measurable — CoreML's own threads do not inherit it — so width is the lever.
+    static var parallelism: Int {
+        if let forced = ProcessInfo.processInfo.environment["SAID_PARALLEL"].flatMap(Int.init) { return forced }
+        return max(2, min(8, ProcessInfo.processInfo.activeProcessorCount - 2))
+    }
 
     private func workerPool(primary: AsrManager, count: Int) -> [AsrManager] {
         lock.lock(); let loaded = models; lock.unlock()

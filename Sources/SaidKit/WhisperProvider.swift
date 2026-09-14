@@ -117,7 +117,9 @@ public final class WhisperProvider: TranscriptionProvider, @unchecked Sendable {
 
     // MARK: Transcription
 
-    public func transcribe(samples: [Float], language: String?, bias: VocabularyBias?) async throws -> [TranscriptSegment] {
+    public func transcribe(samples: [Float], language: String?, bias: VocabularyBias?,
+                           progress: (@Sendable (Int, Int) -> Void)?) async throws -> [TranscriptSegment] {
+        // (`progress` unused: WhisperKit's VAD-chunked pass exposes no per-chunk hook.)
         // One critical section for everything this call reads. `wordTimestampsUnsupported` was
         // previously read outside the lock while being mutated inside it — every other stored
         // property here is lock-guarded, so that was an oversight, not a deliberate relaxation.

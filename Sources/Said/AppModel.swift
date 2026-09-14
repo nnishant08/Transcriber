@@ -88,7 +88,7 @@ enum EngineStatus: Equatable {
     case preparingModel(String)
     case recording
     case paused
-    case finalizing
+    case finalizing(String?)   // optional detail, e.g. "40 of 115"
     case error(String)
 
     var menuText: String {
@@ -97,7 +97,7 @@ enum EngineStatus: Equatable {
         case .preparingModel(let m): return m
         case .recording: return "Recording…"
         case .paused: return "Paused"
-        case .finalizing: return "Finalizing…"
+        case .finalizing(let d): return d.map { "Finalizing… \($0)" } ?? "Finalizing…"
         case .error(let e): return "Error: \(e)"
         }
     }
@@ -559,6 +559,7 @@ final class AppModel: ObservableObject {
     /// icon, no window, just a small menu-bar icon) and assumes the app didn't open.
     func onLaunch() {
         debugLog("onLaunch")
+        SaidLog.extra = { debugLog($0) }   // Stop timings + batch summaries persist with the launch log
 
         // C2 seam: install the macOS delete implementation before anything can delete a session.
         // FileManager.trashItem, NOT NSWorkspace.recycle — `recycle` asks FINDER to do the move via
@@ -1003,7 +1004,7 @@ final class AppModel: ObservableObject {
             let now = Date()
             let line = String(format: "[Stop] %@ %.2fs (total %.2fs)", phase,
                               now.timeIntervalSince(lastMark), now.timeIntervalSince(stopT0))
-            NSLog("%@", line); debugLog(line)
+            SaidLog.note(line)
             lastMark = now
         }
 
@@ -1019,7 +1020,7 @@ final class AppModel: ObservableObject {
         streamTask = nil
         mark("streamer stopped")
 
-        status = .finalizing
+        status = .finalizing(nil)
 
         if let dir = sessionDir {
             await finalizeDocumentSession(dir: dir, liveSegments: liveSegments, mark: mark)
@@ -1062,7 +1063,12 @@ final class AppModel: ObservableObject {
                 let lead = engine.sink.snapshot()
                 sessionLanguage = (try? await engine.detectLanguage(samples: Array(lead.prefix(30 * 16_000))))?.language ?? "en"
             }
-            let finalSegs = try await engine.finalPassSegments(language: sessionLanguage, bias: sessionBias)
+            let finalSegs = try await engine.finalPassSegments(language: sessionLanguage, bias: sessionBias) { [weak self] done, total in
+                Task { @MainActor in
+                    guard let self, case .finalizing = self.status else { return }
+                    self.status = .finalizing("\(done) of \(total)")
+                }
+            }
             mark("final pass (\(engine.activeEngine.rawValue), \(finalSegs.count) segments)")
             let segs = finalSegs.isEmpty ? liveSegments : finalSegs
             if !segs.isEmpty {

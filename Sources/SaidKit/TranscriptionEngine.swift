@@ -172,15 +172,18 @@ public final class TranscriptionEngine: @unchecked Sendable {
     }
 
     /// One full-quality, non-streaming pass over the entire recorded audio (the shared sink).
-    public func finalPassSegments(language: String?, bias: VocabularyBias? = nil) async throws -> [TranscriptSegment] {
-        try await transcribeSamples(sink.snapshot(), language: language, bias: bias)
+    public func finalPassSegments(language: String?, bias: VocabularyBias? = nil,
+                                  progress: (@Sendable (Int, Int) -> Void)? = nil) async throws -> [TranscriptSegment] {
+        try await transcribeSamples(sink.snapshot(), language: language, bias: bias, progress: progress)
     }
 
     /// Full-quality transcription of an explicit sample buffer → timed segments. Shared by the live
-    /// `finalPass` and the file/video import path.
+    /// `finalPass` and the file/video import path. `progress(done, total)` counts chunks of a long
+    /// pass (Parakeet); Whisper never calls it.
     public func transcribeSamples(_ samples: [Float], language: String?,
-                                  bias: VocabularyBias? = nil) async throws -> [TranscriptSegment] {
-        try await provider(activeEngine).transcribe(samples: samples, language: language, bias: bias)
+                                  bias: VocabularyBias? = nil,
+                                  progress: (@Sendable (Int, Int) -> Void)? = nil) async throws -> [TranscriptSegment] {
+        try await provider(activeEngine).transcribe(samples: samples, language: language, bias: bias, progress: progress)
     }
 
     /// One full-quality, non-streaming pass returning plain joined text (used by self-tests).

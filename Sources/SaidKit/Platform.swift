@@ -125,3 +125,17 @@ public enum SaidAppInfo {
     /// e.g. `Said 1.0 (macOS)` — the `producedBy` field of a `.said` manifest.
     public static var producedBy: String { "\(name) \(version) (\(platformName))" }
 }
+
+// MARK: - Diagnostic log hook
+
+/// A second destination for the handful of diagnostic lines that matter after the fact (the
+/// Stop phase timings, the batch-pass summary). `NSLog` from a self-signed, non-App-Store binary
+/// does not reliably survive into `log show`, so the Mac app points this at its persisted
+/// `transcriber_launch.log`; the CLI self-tests and iOS leave it nil. Never on a hot path.
+public enum SaidLog {
+    public nonisolated(unsafe) static var extra: (@Sendable (String) -> Void)?
+    public static func note(_ line: String) {
+        NSLog("%@", line)
+        extra?(line)
+    }
+}
