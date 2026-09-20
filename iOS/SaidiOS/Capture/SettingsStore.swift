@@ -18,8 +18,14 @@ final class SettingsStore: ObservableObject {
         cleanupEnabled = d.bool(forKey: "cleanupEnabled")
         allowBluetooth = d.bool(forKey: "allowBluetoothInput")
         customVocabulary = d.stringArray(forKey: "customVocabulary") ?? []
+        figuresEnabled = d.bool(forKey: "figuresEnabled")
         AudioCaptureMic.allowsBluetoothInput = allowBluetooth
     }
+
+    /// The figures layer. OFF by default; same key as the Mac (`FigureStore.isEnabled` reads it),
+    /// so a device that turns it on gets the same sidecar the Mac writes. Turning it on costs a
+    /// small figures.json per session and, when labelling runs, a few on-device model calls.
+    @Published var figuresEnabled: Bool { didSet { d.set(figuresEnabled, forKey: "figuresEnabled") } }
 
     @Published var model: String { didSet { d.set(model, forKey: "whisperModel") } }
     @Published var language: String { didSet { d.set(language, forKey: "transcriptionLanguage") } }

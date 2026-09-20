@@ -429,6 +429,9 @@ were wrong.
   `CorrectionMemory`) · `Voiceprints` (`VoiceprintMatcher`, `VoiceprintStore`, `VoiceprintPass`) ·
   `SlideSegmenter` · `SemanticIndex` (+ `SemanticChunker`, `HybridRetrieval`) · `Embedding`
   (`EmbeddingProvider`, `AppleContextualEmbedder`) · `ModelGate` (+ `ModelStorage`).
+- `Figures.swift` · `FigureDetector.swift` · `FigureLabeller.swift` · `FigurePass.swift` — the
+  figures layer (see its own section): the model + sidecar + anchoring rules + density, the
+  deterministic detector, the on-device labeller behind a seam, and the post-save pass.
 - Everything else that was portable, unchanged in behaviour: `DocumentBuilder` · `SessionStore` ·
   `SessionIO` · `SearchIndex` · `TitleGenerator` · `Intelligence` · `Summarizer` · `Generation` ·
   `GenerationTemplates` · `Packs` (+ `Packs/*.json`) · `Entitlements` · `Retention` · `Redaction` ·
@@ -441,7 +444,9 @@ were wrong.
 `WindowManager` · `MenuContent` · `MenuCommands` (`SaidCommands`) · `MainWindow` · `TranscriptCanvas` ·
 `TranscriptComponents` · `Materials` (NSVisualEffectView) · `SettingsView` · `LibraryWindow` ·
 `SessionViewer` · `AskWindow` · `OnboardingWindow` · `Shortcuts` · `Sharing` (NSSharingServicePicker) ·
-`ScreenRecorder` · `AudioCaptureSystem` · `AudioCaptureProcessTap` · `SysAudioProbe`.
+`ScreenRecorder` · `AudioCaptureSystem` · `AudioCaptureProcessTap` · `SysAudioProbe` ·
+`SessionFigures` (the Viewer's figure state, the inline figure, the rail, the rebuilt header) ·
+`SelfTestFigures`.
 Phase 3 adds `TranscriptEditing` (the editable-word views, the `FlowLayout` wrap, and the
 `SessionViewerModel` edit extension) · `SettingsPhase3` (five panels as SEPARATE View structs — the
 Form's type-checker already gave up on one inline Section once, and three panels need their own
@@ -1372,6 +1377,133 @@ output text, and `session.json` gaining optional keys (`words`, `slides`, `engin
 - **Imports do not use WhisperKit 1.1.0's incremental file reader** — `Importer` decodes to `[Float]`
   first. The highest-value follow-up for long lectures.
 
+## The figures layer — Sources: SaidKit/Figures · FigureDetector · FigureLabeller · FigurePass · SearchIndex · Intelligence / Said/SessionFigures · SessionViewer / iOS/FiguresViews
+**A figure is a quantity plus what it is a quantity of, anchored to the moment it was said.** The
+wave finds the numbers people actually said, anchors them to their words, and makes them visible
+(inline + a rail), clickable (seek), and searchable (by the raw string and by what it referred
+to). It also rebuilt the session header. **Default OFF** (`figuresEnabled`, same `UserDefaults`
+key on both platforms; with it off no byte is read or written and every surface is what it was —
+proven by `--selftest-figures-offswitch`).
+
+**Prime directives, all enforced rather than hoped for:** `transcript.md` is never written (the
+extraction pass opens it read-only and `--selftest-figures-bundle` asserts the bytes); nothing
+leaves the device (no new dependency, no network); **the model never returns offsets** — every
+character range comes from the deterministic detector, the labeller's request carries an index
+and its response is joined back by that index only; a stale anchor is never rendered (dropped and
+counted instead); extraction runs off the save path, after the session is durable, in the same
+post-save chain as diarization.
+
+**Classes and the lexicon** (`FigureDetector`): money (`$2.4 million`, `2,400,000 dollars`, `two
+point four million dollars`, `240 quid`, `€18,000`, `USD 240` — symbols `$€£`, words dollars/
+bucks/euros/pounds/quid/cents, codes USD/EUR/GBP; **"pounds" is money, not mass**, by decision),
+percentage (`18%`, `eighteen percent`, `per cent`, `18 basis points`/`bps`), multiplier (`3x`,
+`ten times`, `-fold`, and `doubled`/`tripled`/`halved` ONLY with a number phrase within four
+tokens), count with a recognised unit (hours/people/gigabytes/users/… — the table in the file;
+**a number with no recognised unit is not a figure**, which is the one rule that keeps page
+numbers, years and "3 options" out), duration (`three weeks`, `40 days`) and deadline (`by year
+end`, `next sprint`, `in Q3`, and an `NSDataDetector` calendar date ONLY behind by/before/until/
+within — "on March 3rd" is a diary entry, not a figure). Overlaps resolve by longest match, then
+money > percentage > multiplier > count > duration. Never across a segment: a figure has one
+speaker. Slide OCR text is `FrameEvent` content and is out of scope.
+
+**Number parsing, and what `NumberFormatter` actually does** (measured, not assumed):
+`.decimal`/`.currency` need locale `en_US` — `en_US_POSIX` parses NO grouped digits. Raw
+`.spellOut` reads **"twenty four" as 2004**, "fifth" as 5, "two point four million" as nothing.
+So it is wrapped: tens+units are hyphenated first, chunks are split at thousand/million/billion,
+ordinals are refused before parsing, and "point" chains the formatter cannot handle are composed
+by hand. `--selftest-figures-detect` pins all three traps.
+
+**Negatives, each with a test:** speaker names, phone numbers (`NSDataDetector`), calendar dates
+with no quantity sense, slide/page/section/version/room/… numbers (an identifier-prefix list),
+bare ordinals, version numbers, clock times, digits inside a word, and bare numbers.
+
+**The two-stage split.** Stage 1 is the detector: pure, AI-free, same output on both platforms
+(the committed fixture `Fixtures/figures/session` proves it — the phone re-detects the Mac's
+sidecar element for element). Stage 2 is the labeller (`FigureLabeller` over a
+`FigureLabelBackend` seam; `OnDeviceFigureLabelBackend` is FoundationModels `@Generable`, gated
+on the existing availability check). It answers ONE question per candidate — what is this a
+number of — and may veto a candidate; it is never asked where anything is. **Why:** a language
+model asked for a span returns a confident wrong one, and a wrong span silently mislabels
+somebody's revenue number. **Batched by turn** (containing turn ± one, capped at 1 400 chars),
+**call cap 40 per session** (`FigureLabeller.maxCallsPerSession`), **confidence floor 0.5** —
+below it the figure is KEPT and the label nulled. Unavailable / not ready / throws / cap: every
+candidate survives unlabelled, `labelled=false` in the sidecar, **no banner** — a supported state.
+A re-extraction reuses every label the model already gave an identical candidate.
+
+**The three anchors** (`Figure`): a word-index range into `validWords` (what RENDERING uses),
+a character range into the SEGMENT'S text (export + the index, and the only anchor for a session
+with no word timings), and a time range from the words. **The character range is segment-
+relative, not a `transcript.md` offset — a deviation from the build prompt, on purpose:** a file
+offset dies on the first speaker rename, on the title landing (the file is renamed) and on every
+re-render, none of which touch the words. `raw` is the fingerprint every anchor is checked
+against.
+
+**The anchoring table** (`FigureOverlay.resolve`, every row in `--selftest-figures-anchor`):
+untouched → render · edit elsewhere in the turn → render, display range re-derived from the WORD
+anchor · edit inside the figure → **drop**, never partial, never re-detected inline, and the
+session is marked for re-extraction (`FigurePass.needsExtraction`) · whole-turn rewrite (words
+become nil) → drop · turn gone → drop · **re-transcription → the whole sidecar is invalid**
+(`transcriptFingerprint` = SHA-256 of the verbatim segments + engine record no longer matches) and
+is re-extracted from scratch, never re-anchored. A word anchor NEVER falls back to character
+offsets. Extraction runs over the EDITED view, so re-extracting after a correction finds the
+corrected figure; rendering resolves against whatever view is displayed, so Verbatim with edits
+simply drops what no longer matches there. Cleaned/Redacted rewrite words → no inline figures in
+those views; the rail still lists them.
+
+**The sidecar** `figures.json` (`FigureSidecar`, **schema 1**): `schemaVersion`,
+`transcriptFingerprint`, `engine`/`engineModel`, `extractedAt`, `labelled`, `labelCalls`,
+`figures[]`. Routed through `SessionIO` (encrypted at rest when that is on). **Optional in both
+directions:** absent → `.absent`; unknown schema, corrupt, or fingerprint mismatch → `.stale` →
+re-extract; never a throw, never an unopenable session. Rides inside `.said` like `edits.json`
+(the bundle stages the whole folder) with **no `formatVersion` bump** — a Phase 3 build extracts
+it and ignores it. Derived, so it is outside every byte-identity assertion (the bundle proof
+compares `transcript.md` and `session.json` fields, not archive bytes). An empty-figures sidecar
+is still written so "nothing said" is not re-run on every open.
+
+**Surfaces.** *Inline* (`FigureLineBody`/`InlineFigure`, Mac; `FigureTurnBody`, phone): **no
+hue** — amber is whoever is speaking, violet is a speaker, and a third colour would make the
+transcript a puzzle. A low-alpha INK wash (0.07, firming to 0.14 on hover/focus) under a dotted
+underline, which is what says "clickable" at rest. Hover/focus reveal the label as a trailing
+mono annotation. Each figure is a real `Button` (focusable, VoiceOver-labelled "Figure: raw,
+label, at mm:ss"); a line with figures drops the outer seek Button (same reason as edit mode) and
+keeps line-tap-to-seek as a gesture. **Density ceilings:** `FigureDensity.macCeilingPerHundredWords
+= 12` (one per eight words, the "financial review" density), `phoneCeilingPerHundredWords = 8`
+(a third the column width and no hover, so the wash has to stay rare to stay legible); above the
+ceiling the wash is dropped and the rail carries the turn; a single figure is always washed.
+*The rail* (`FiguresRail` / `FiguresTab`, the primary surface): every anchored figure in time
+order, grouped by class, collapsible, raw · label · `[mm:ss]` · speaker, click seeks through
+`goTo`; a sidebar row on the Mac and a fourth tab on the phone; "Find figures" / "Run again" when
+the session needs it. *Search:* `SearchIndex` adds the raw string AND the label to the term
+table (label terms are the part never spoken) and leads a hit with a figure snippet at the
+figure's `[mm:ss]`; the freshness stamp includes `figures.json` only while the flag is on.
+*Ask/Chat:* `Intelligence.figuresContext` — ONE block appended to the grounding context, `[mm:ss]
+raw — label` per line, so a cited figure goes through the existing citation path. No figures
+question type, no template.
+
+**iPhone** (§9): same `figures.json`, same rail; tap seeks, long-press shows the label; the
+post-save chain and the re-run affordance respect the thermal state — `.serious` → detect only
+(`FigurePass.Mode.detectOnly`), `.critical` → skip, `figuresSkippedForHeat`, and the tab offers a
+re-run rather than leaving a half-extracted session. `FiguresRoundTripTests` reads the committed
+Mac fixture and asserts no re-extraction, zero dropped anchors, and an element-for-element
+re-detection.
+
+**The session header** (Workstream R, `SessionHeader` / `SessionHeaderPhone`): one row. Left,
+the title — the title itself is the control (click/tap it; Enter commits, Escape reverts on the
+Mac; losing focus commits). Right, language · duration · a status that is a **dot AND a word**,
+drawn from state that already exists: `EngineStatus.finalizing/.error` for the session being
+finished, `AppModel.postSaveActivity` (a report the existing post-save chain writes at each step —
+Titling / Diarizing / Cleaning up / Finding figures — not a second state machine), the Viewer's
+own re-transcribe and figure runs. Colours are tokens: `ok` for Ready, `accent` for work in
+progress, the muted `pause` family for Failed (there is no red; the word does the work). **No
+actions in the row:** Export, Share, Re-transcribe, Reveal in Finder and Move to Trash live in an
+overflow menu; the video show/hide toggle moved to the transcript toolbar beside the view switch.
+The title truncates; the status never does.
+
+**Out of scope, on purpose:** charts of any kind, trend analysis across sessions, CSV or
+spreadsheet export, a dashboard, currency or unit conversion, arithmetic on figures, extraction of
+anything that is not a figure. Commitments and action items keep their Phase 3 path.
+`EntitlementProvider` still grants everything.
+
 ## Session identity & the `.said` bundle (Phase 1 — Sources: DocumentBuilder / SessionStore / SessionBundle / AppModel / SessionViewer)
 **A session is a thing you can hand over.** Until there is an account, moving a session between
 devices is a TRANSFER, not a sync — so the thing being moved is one obvious file.
@@ -1640,6 +1772,26 @@ Run the built binary (`.build/release/Transcriber` or the bundle's MacOS binary)
   still readable; the video-XOR-frames invariant resolves to video and logs; frames interleave into
   the markdown by time; a phrase only ever on a slide is found by `SearchIndex` and the hit carries
   the frame's `[mm:ss]`; and HTML export embeds the image with the OCR text on current tokens.
+- **The figures layer** — six PURE modes (no models — the labeller is a stub backend — no audio,
+  no permissions, temp dirs only): `--selftest-figures-detect` (the committed fixture: all three
+  forms of one money figure to the same value and unit, percentages in digits and words, every
+  "not figures" negative, overlap resolution, the three `.spellOut` traps, character/word/time
+  anchors, determinism, and the 90-minute performance budget — **1 157 segments / 11 481 words in
+  0.40 s against a 2 s budget** on this Mac), `--selftest-figures-label` (batching by turn, index
+  join, no offsets cross the seam, the confidence floor keeps-and-nulls, confident keep=false drops
+  and unconfident does not, the call cap, the throw path, unavailable ⇒ zero calls, an invented
+  index labels nothing, labelled candidates are not re-sent), `--selftest-figures-anchor` (every
+  row of the anchoring table, the word anchor never falling back to offsets, re-transcription
+  invalidating the sidecar, an edit under a figure marking the session), `--selftest-figures-
+  bundle [--write-fixture <dir>]` (transcript.md and session.json untouched by extraction; the
+  committed fixture reads as ready and re-detects exactly; a bundle without the sidecar opens as
+  `.absent`, one with it round-trips it byte-identically; unknown schema and corrupt files are
+  ignored; encryption ON keeps it off-plaintext; `formatVersion` stays 1), `--selftest-figures-
+  search` (flag off: label term unreachable; on: "CAC", "acquisition cost" and "240" all reach the
+  figure's `[mm:ss]`; off again with the sidecar on disk: results identical to before; the chat
+  context line only when on), `--selftest-figures-offswitch` (flag false by default; the pass
+  writes nothing; index tables, bundle file set, transcript.md, session.json and chat context all
+  identical; a sidecar on disk is inert). On iOS, `FiguresRoundTripTests`.
 - **Phase 1 (cross-platform core):**
   - `--selftest-bundle [dir]` — synthesizes a session (segments, an `images/` frame, a real
     `audio.m4a`, bookmarks, speaker names) with an id; exports to `.said`; imports into a FRESH root
@@ -1848,6 +2000,18 @@ Screen Recording grant + on-screen content — use `--selftest-screenrec-live` f
       ⌥⌘P from another app; the same device switch on Mic and Mic+System (only System Audio has been
       exercised); AirPods connect/disconnect mid-recording; a bookmark dropped after a long pause
       landing at the right place in playback.
+- [~] **The figures layer.** Detector (deterministic, AI-free, both platforms identical on the
+      committed fixture), labeller (FoundationModels `@Generable` behind a seam; degrades to
+      detector-only with no banner), `figures.json` sidecar (schema 1, optional both ways,
+      fingerprint-bound, rides in `.said` with no format bump), the anchoring table with an edit
+      under a figure dropping it and re-transcription invalidating the file, inline figures with
+      no hue + a dotted underline + density ceilings (Mac 12 / phone 8 per hundred words), the
+      Figures rail (Mac side panel + sidebar row; phone tab), search by raw string and label, one
+      figures block in Ask/chat context, thermal gating on the phone, and the rebuilt session
+      header (in-place title, dot+word status, actions in the overflow). **Default OFF and proven
+      inert.** **Build green on both platforms; the six new modes pass; the whole prior sweep is
+      unchanged; `--selftest-doc`'s case-1 md5 is unchanged.** **AWAITING human smoke-tests:**
+      the checklist below.
 - [~] **Phase 2 — the visual timeline (render-only on Mac).** Restored the frame/OCR model to
       SaidKit so Phase 3's iPhone slide capture has something to write into, and taught the Mac to
       read it: `FrameEvent` (three fields) on `SessionDoc`, a new and smaller `SlideOCR`, markdown
@@ -1911,6 +2075,31 @@ Screen Recording grant + on-screen content — use `--selftest-screenrec-live` f
       every window, amber-as-live, speaker 1 violet / speaker 2 amber, a `.said` round trip through
       Finder (including the second double-click saying "already in your library"), the pre-existing
       library intact, and an encrypted round trip.
+
+## The figures layer — human smoke-test checklist
+Self-tests cannot flip any of these. SKIP is not PASS.
+1. **The off switch.** With figures off, open three existing sessions: transcript, search results
+   and the bundle on disk unchanged. Turn it on; the same sessions extract on open without being
+   re-transcribed (the header says "Finding figures", then "Ready").
+2. **A real financial conversation.** Record or import something dense with numbers; count the
+   false positives. More than a handful and the threshold moves before this ships.
+3. **Spoken numbers.** Say "two point four million" and "eighteen percent"; both detect, both seek.
+4. **Edit under a figure.** Correct a word inside a figure's range: it disappears rather than
+   shifting; "Run again" (or the automatic re-extraction) brings back the corrected version.
+5. **Re-transcribe.** Switch engine on a session with figures: the old figures are gone, not
+   re-anchored, and the new extraction runs.
+6. **A long session.** A 90-minute lecture still reads as text; find a number through the rail
+   and through search, and time both.
+7. **Density.** A stretch where someone reads a table loses the wash; the rail keeps it.
+8. **Without Apple Intelligence.** Figures appear, labels are simply absent, nothing apologises.
+9. **Round trip.** Extract on the Mac, `.said` to the phone, open: identical. Then the reverse.
+10. **Backwards.** A figures-bearing bundle opens in the Phase 3 build and ignores the sidecar.
+11. **The header.** Rename by clicking the title mid-transcription: the rename holds, the status
+    keeps updating, Escape reverts cleanly.
+12. **Accessibility.** VoiceOver announces a figure with its label and it is reachable and
+    activatable by keyboard; Dynamic Type at XXL does not wreck the inline annotation.
+13. **Heat, on the phone.** Extract a long session on a warm device: it degrades per §9 and leaves
+    a re-run affordance rather than a half-extracted session.
 
 ## Phase 3 — human smoke-test checklist
 
@@ -2231,6 +2420,12 @@ CleanupPass, so session.json read-modify-writes can't race).
   a `Transcriber_Transcriber.bundle` from a pre-split build, and `build_app.sh` copies *every*
   `*.bundle` it finds. Harmless but it ships dead weight — `rm -rf` it (or clean the build dir).
   The live one is `Said_SaidKit.bundle` (SPM names it `<package>_<target>`).
+- **Figures are missing from a session that plainly has numbers.** Check, in order: the flag
+  (`Settings ▸ Figures`, default OFF); whether the number had a recognised UNIT (a bare "4
+  million" is not a figure by design); whether an edit landed inside it (dropped, "Run again"
+  restores it); whether the session was re-transcribed (the sidecar's fingerprint no longer
+  matches — it re-extracts on open). A LABEL missing is Apple Intelligence being unavailable, the
+  40-call cap, or the 0.5 confidence floor — all supported, none an error.
 - **`--selftest` output differs from a saved baseline.** Compare the transcript TEXT, not the whole
   line: the `RESULT (0.28s):` timing figure is wall-clock and changes with a warm vs cold model.
   `--selftest-doc`'s md5 has no such component and IS exactly comparable.

@@ -184,6 +184,8 @@ struct SettingsView: View {
 
             Section("Search") { SemanticSettingsSection() }
 
+            Section("Figures") { FiguresSettingsSection() }
+
             Section("Storage") { StorageSettingsSection() }
 
             Section("Vertical packs") {

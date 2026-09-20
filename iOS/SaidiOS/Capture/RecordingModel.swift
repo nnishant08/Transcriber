@@ -342,12 +342,24 @@ final class RecordingModel: ObservableObject {
         let wantDiarize = settings.diarizationEnabled && !thermallyThrottled
         let diarSamples: [Float] = wantDiarize ? engine.sink.snapshot() : []   // snapshot ON-MAIN
         let wantCleanup = settings.cleanupEnabled
+        // Figures respect the same thermal gate (§9): at `.serious` detection runs but labelling
+        // (the model calls) is skipped; at `.critical` nothing runs and the session is left
+        // unextracted, with the re-run affordance in the session's Figures tab.
+        let figureMode: FigurePass.Mode? = {
+            guard settings.figuresEnabled else { return nil }
+            switch ProcessInfo.processInfo.thermalState {
+            case .critical: return nil
+            case .serious: return .detectOnly
+            default: return .full
+            }
+        }()
         Task.detached(priority: .utility) {
             SearchIndex.shared.index(sessionDir: folder)
             SessionStore.ensureSessionID(dir: folder)
             await SessionStore.ensureTitle(dir: folder)
             if wantDiarize { await DiarizationPass.run(dir: folder, samples: diarSamples) }
             if wantCleanup { await CleanupPass.run(dir: folder) }
+            if let figureMode { await FigurePass.runIfEnabled(dir: folder, mode: figureMode) }
         }
 
         status = .idle

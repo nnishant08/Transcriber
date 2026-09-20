@@ -55,7 +55,9 @@ final class SessionViewerModel: ObservableObject {
     @Published var edits: [TranscriptEdit] = []
     /// Showing the Edited view. Distinct from `isEditing`: you can read the edited transcript
     /// without being in edit mode.
-    @Published var showEdited = false
+    @Published var showEdited = false {
+        didSet { if oldValue != showEdited { reloadFigures() } }
+    }
     /// Edit mode: words become individually selectable and correctable.
     @Published var isEditing = false
     /// `segments` with the overlay applied, recomputed only when the edits change — the transcript
@@ -78,6 +80,25 @@ final class SessionViewerModel: ObservableObject {
     /// Edits that no longer anchor — after a re-transcription reshaped the segments. Kept in the
     /// file, never deleted (§6.5); this is what tells the user.
     @Published var unanchoredEditCount = 0
+
+    // MARK: Figures (the figures wave)
+
+    /// The session's figures as read from `figures.json` — `[]` with the feature off.
+    @Published var figures: [Figure] = []
+    /// Figures that still anchor on the DISPLAYED text, keyed by segment index. Rebuilt by
+    /// `reloadFigures()` rather than resolved per render: a 90-minute session has ~900 of them.
+    @Published var figuresByRow: [Int: [ResolvedFigure]] = [:]
+    /// Figures dropped because an edit landed inside them (§P3). Never rendered; drives "Run again".
+    @Published var figuresDropped = 0
+    /// False when the last extraction could not label everything (no Apple Intelligence, the call
+    /// cap, a throw). A supported state, not a warning — it only enables the re-run affordance.
+    @Published var figuresLabelled = true
+    @Published var isExtractingFigures = false
+    /// Set by `RetranscribeSheet` while it runs, so the header can say "Transcribing".
+    @Published var isRetranscribing = false
+    /// Which side panel is showing: 0 Summary, 1 Studio, 2 Chat, 3 Figures. On the model rather
+    /// than the view so the session sidebar's Figures row can open the rail.
+    @Published var sidePanel = 0
 
     /// A pending "remember this voice?" offer, set when a speaker is renamed while cross-session
     /// voiceprints are on and this session's embeddings are still stashed. One at a time: the offer
@@ -108,6 +129,8 @@ final class SessionViewerModel: ObservableObject {
         segments = doc.segments
         frames = doc.frames
         refreshEditedSegments()
+        reloadFigures()
+        extractFiguresIfNeeded()
         objectWillChange.send()
     }
 
@@ -670,12 +693,12 @@ struct SessionViewer: View {
     /// Owned by `ShellModel` (the session sidebar and the shell drive the same instance), so this is
     /// observed rather than created here.
     @ObservedObject var lib: SessionViewerModel
-    @State private var panel = 0   // 0 = Summary, 1 = Studio, 2 = Chat
     /// The window's undo manager, handed to the model so ⌘Z on a correction behaves like ⌘Z
     /// anywhere else rather than driving a private stack (Phase 3, §6.3).
     @Environment(\.undoManager) private var undoManager
     @State private var showRetranscribe = false
     @State private var confirmVoiceprintExport = false
+    @State private var confirmTrash = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -696,6 +719,8 @@ struct SessionViewer: View {
         .onAppear {
             lib.undoManager = undoManager
             lib.reloadEdits()
+            lib.reloadFigures()
+            lib.extractFiguresIfNeeded()
         }
         .onChange(of: undoManager) { _, new in lib.undoManager = new }
         .sheet(isPresented: $showRetranscribe) { RetranscribeSheet(lib: lib) }
@@ -724,48 +749,57 @@ struct SessionViewer: View {
 
     // MARK: Header
 
+    /// Workstream R: one row that says what this session is. Title (editable in place) on the
+    /// left; language, duration and a dot+word status on the right; every ACTION in the overflow.
     private var header: some View {
-        HStack(alignment: .center, spacing: 12) {
-            // Back to the list this session was opened from (v3 screen 02's leading chevron).
-            ToolbarIcon(system: "chevron.left") { ShellModel.shared.closeSession() }
-                .help("Back to the Library (⌘[)")
-            VStack(alignment: .leading, spacing: 4) {
-                Text(lib.meta.title?.isEmpty == false ? lib.meta.title! : "Transcript")
-                    .font(Theme.ui(15, weight: .semibold)).lineLimit(1)
-                HStack(spacing: 7) {
-                    Text(Self.dateFmt.string(from: lib.meta.date)).font(Theme.mono(11)).foregroundStyle(Theme.text3)
-                    Dot(); Text(lib.meta.sourceLabel).font(Theme.ui(11.5)).foregroundStyle(Theme.text3)
-                    if lib.hasVideo {
-                        Dot()
-                        Label(videoLabel, systemImage: "play.rectangle").font(Theme.ui(11)).foregroundStyle(Theme.accentText)
-                    }
-                    if lib.hasAudio { Dot(); Label("audio", systemImage: "speaker.wave.2").font(Theme.ui(11)).foregroundStyle(Theme.accentText) }
-                    if let n = lib.meta.speakerCount, n > 1 { Dot(); Label("\(n) speakers", systemImage: "person.2").font(Theme.ui(11)).foregroundStyle(Theme.accentText) }
-                    if let lang = lib.meta.language { Dot(); Text(AppModel.languageName(lang)).font(Theme.ui(11)).foregroundStyle(Theme.text3) }
+        SessionHeader(lib: lib, app: AppModel.shared,
+                      onBack: { ShellModel.shared.closeSession() },
+                      overflow: AnyView(overflowMenu))
+    }
+
+    /// Re-transcribe, export and delete live here, one menu away — never one pixel from a view
+    /// toggle. Destroying work must not sit beside changing how it is shown.
+    private var overflowMenu: some View {
+        Menu {
+            Menu("Export") {
+                Button("Subtitles (.srt)") { lib.exportSubtitle(vtt: false) }
+                Button("Subtitles (.vtt)") { lib.exportSubtitle(vtt: true) }
+                Divider()
+                Button("Plain text (.txt)") { lib.exportText() }
+                Button("Rich text (.rtf)") { lib.exportRTF() }
+                Button("Web page (.html)") { lib.exportHTML() }
+                Button("PDF (.pdf)") { lib.exportPDF() }
+                if lib.hasRedacted {
+                    Divider()
+                    Button("Redacted text (.txt)") { lib.exportRedactedText() }
+                    Button("Redacted subtitles (.srt)") { lib.exportRedactedSubtitle(vtt: false) }
+                    Button("Redacted subtitles (.vtt)") { lib.exportRedactedSubtitle(vtt: true) }
                 }
-                if !lib.meta.tags.isEmpty {
-                    HStack(spacing: 5) {
-                        ForEach(lib.meta.tags.prefix(6), id: \.self) { tag in
-                            Text(tag).font(Theme.ui(10.5)).foregroundStyle(Theme.text2)
-                                .padding(.horizontal, 6).padding(.vertical, 1)
-                                .background(Capsule().fill(Color.primary.opacity(0.06)))
-                        }
-                    }
+                Divider()
+                Button("Send session… (.said)") { lib.exportBundle() }
+                if lib.canShareVoiceprints {
+                    Button("Send session with voice profiles… (.said)") { confirmVoiceprintExport = true }
                 }
             }
-            Spacer()
-            if lib.hasVideo {
-                ToolbarIcon(system: lib.videoVisible ? "rectangle.topthird.inset.filled" : "rectangle") {
-                    withAnimation(.easeInOut(duration: 0.18)) { lib.videoVisible.toggle() }
-                }
-                .help(lib.videoVisible ? "Hide the video" : "Show the video")
-            }
-            OnDeviceBadge()
-            exportMenu
-            ToolbarIcon(system: "folder") { lib.revealInFinder() }.help("Reveal in Finder")
+            Button("Share…") { lib.share() }
+            Button("Send to Obsidian vault") { lib.sendToObsidian() }
+            Divider()
+            Button("Re-transcribe…") { showRetranscribe = true }
+            Button("Reveal in Finder") { lib.revealInFinder() }
+            Divider()
+            Button("Move to Trash", role: .destructive) { confirmTrash = true }
+        } label: {
+            Image(systemName: "ellipsis.circle").font(.system(size: 15)).frame(width: 30, height: 30)
+                .foregroundStyle(Theme.text2).contentShape(Rectangle())
         }
-        .padding(.horizontal, 16).padding(.vertical, 11)
-        .background(Theme.titlebar)
+        .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+        .help("More")
+        .confirmationDialog("Move this session to the Trash?", isPresented: $confirmTrash) {
+            Button("Move to Trash", role: .destructive) { lib.moveToTrash() }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("The session folder goes to the Trash, where it can be put back.")
+        }
     }
 
     /// "1080p" when we know the encoded size, else a plain label.
@@ -836,6 +870,12 @@ struct SessionViewer: View {
                 .pickerStyle(.segmented).labelsHidden().fixedSize()
             }
             TranscriptEditControls(lib: lib)
+            if lib.hasVideo {
+                ToolbarIcon(system: lib.videoVisible ? "rectangle.topthird.inset.filled" : "rectangle") {
+                    withAnimation(.easeInOut(duration: 0.18)) { lib.videoVisible.toggle() }
+                }
+                .help(lib.videoVisible ? "Hide the video" : "Show the video")
+            }
             if lib.showRedacted {
                 Text("PII/PHI masked — best-effort, review before sharing. Saved transcript stays verbatim.")
                     .font(Theme.ui(10.5)).foregroundStyle(Theme.text3).lineLimit(1)
@@ -895,6 +935,8 @@ struct SessionViewer: View {
                                 let seg = lib.visibleSegment(at: i)
                                 TranscriptLine(index: i, seg: seg,
                                                text: lib.displayText(at: i),
+                                               figures: lib.isEditing ? [] : lib.figures(forRow: i),
+                                               onSeekFigure: { lib.goTo($0) },
                                                editing: lib.isEditing && lib.canEdit,
                                                onEditWord: { wordIndex, original, corrected in
                                                    lib.commitEdit(segmentIndex: i, wordIndex: wordIndex,
@@ -946,15 +988,17 @@ struct SessionViewer: View {
 
     private var sidePanel: some View {
         VStack(spacing: 0) {
-            Picker("", selection: $panel) {
+            Picker("", selection: $lib.sidePanel) {
                 Text("Summary").tag(0); Text("Studio").tag(1); Text("Chat").tag(2)
+                if FigureStore.isEnabled { Text("Figures").tag(3) }
             }
             .pickerStyle(.segmented).labelsHidden()
             .padding(10)
             Divider().overlay(Theme.hairline)
-            switch panel {
+            switch lib.sidePanel {
             case 0: summaryPanel
             case 1: studioPanel
+            case 3: FiguresRail(lib: lib)
             default: ChatPanel(lib: lib)
             }
         }
@@ -1227,6 +1271,9 @@ private struct TranscriptLine: View {
     let index: Int
     let seg: TranscriptSegment
     let text: String                        // verbatim / edited / cleaned / redacted, per the toggle
+    /// Figures that anchor on THIS text (the figures wave). Empty in edit mode and in derived views.
+    var figures: [ResolvedFigure] = []
+    var onSeekFigure: ((TimeInterval) -> Void)? = nil
     /// Edit mode is on AND this view is editable (Verbatim or Edited only — Phase 3, §6.3).
     var editing: Bool = false
     /// `(wordIndex, original, corrected)`. `wordIndex` is nil for a whole-line edit.
@@ -1245,10 +1292,25 @@ private struct TranscriptLine: View {
         if editing {
             content.padding(.vertical, 6).padding(.horizontal, 8)
                 .background(RoundedRectangle(cornerRadius: 7).fill(active ? Theme.accentSoft : .clear))
+        } else if showsInlineFigures {
+            // Same reason as edit mode: the figures are real Buttons, and an outer seek Button
+            // would swallow their clicks and their focus. A tap gesture on the line keeps
+            // "click the line to seek" without wrapping the controls.
+            seekableContent
+                .onTapGesture(perform: onTap)
+                .onHover { hover = $0 }
         } else {
             Button(action: onTap) { seekableContent }
                 .buttonStyle(.plain).onHover { hover = $0 }
         }
+    }
+
+    /// Inline figures render only under the density ceiling (§Q1); above it, the rail carries
+    /// them and the line stays a wall of text.
+    private var showsInlineFigures: Bool {
+        !figures.isEmpty && FigureDensity.washAllowed(figureCount: figures.count,
+                                                      wordCount: FigureDensity.wordCount(text),
+                                                      ceilingPerHundredWords: FigureDensity.macCeilingPerHundredWords)
     }
 
     private var seekableContent: some View {
@@ -1273,6 +1335,8 @@ private struct TranscriptLine: View {
                     }
                     if editing, let onEditWord {
                         EditableLineBody(seg: seg, text: text, onEditWord: onEditWord, onSeek: onTap)
+                    } else if showsInlineFigures, let onSeekFigure {
+                        FigureLineBody(text: text, figures: figures, active: active, onSeek: onSeekFigure)
                     } else {
                         Text(text).font(Theme.serif).lineSpacing(5)
                             .foregroundStyle(active ? Theme.text : Theme.text2)
@@ -1504,6 +1568,11 @@ struct SessionSidebar: View {
                 viewer.videoVisible = true
             }
             row("Speakers", "person.2", count: viewer.meta.speakerCount ?? 0, selected: false) {}
+            if FigureStore.isEnabled {
+                row("Figures", "number", count: viewer.railFigures.count, selected: viewer.sidePanel == 3) {
+                    viewer.sidePanel = 3
+                }
+            }
 
             Spacer(minLength: 8)
             OnDeviceBadge().padding(.top, 8)

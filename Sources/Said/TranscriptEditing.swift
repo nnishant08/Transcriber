@@ -91,6 +91,10 @@ extension SessionViewerModel {
             SearchIndex.shared.index(sessionDir: dir)
             await SemanticIndex.shared.index(sessionDir: dir)
         }
+        // A figure under the edit is dropped by `reloadFigures` (never re-anchored); the session
+        // is then re-extracted so the CORRECTED figure comes back (§P3, §13.4).
+        reloadFigures()
+        extractFiguresIfNeeded()
     }
 
     /// Discard every edit for this session.

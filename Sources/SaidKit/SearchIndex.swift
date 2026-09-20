@@ -187,6 +187,17 @@ public final class SearchIndex: @unchecked Sendable {
             for term in Self.tokenize(edit.corrected) { freq[term, default: 0] += 1 }
         }
 
+        // Figures (the figures wave, §Q3): the raw string AND the label, so "CAC", "acquisition
+        // cost" and "240" all reach the same moment. The label is the part that is otherwise
+        // unreachable — it was never spoken. `FigureStore.figures` is `[]` with the feature OFF
+        // (it does not even open the file), so an off-switch index is term-for-term what it was.
+        for figure in FigureStore.figures(dir: dir, doc: doc) {
+            for term in Self.tokenize(figure.raw) { freq[term, default: 0] += 1 }
+            if let label = figure.label {
+                for term in Self.tokenize(label) { freq[term, default: 0] += 1 }
+            }
+        }
+
         // Slide text, counted once per SPAN. `transcriptPlainText` above already contains the OCR
         // text once per captured FRAME — which is exactly the flooding problem: a slide left up for
         // ten minutes contributes its words dozens of times and drowns out the speech. Recording
@@ -252,6 +263,11 @@ public final class SearchIndex: @unchecked Sendable {
             // Fall back to the edited view — and only then, so an unedited session does exactly what
             // it always did, down to the same allocations.
             if snippets.isEmpty { snippets = Self.editedSnippets(dir: dir, terms: terms, limit: 3) }
+            // A figure hit leads with the figure itself — "$240 — customer acquisition cost" at its
+            // [mm:ss] — so the Library row, and Ask's receipts, can seek straight to it. Empty
+            // with the feature off, so an unedited, figure-less search does exactly what it did.
+            let figureSnips = Self.figureSnippets(dir: dir, terms: terms, limit: 2)
+            if !figureSnips.isEmpty { snippets = figureSnips + snippets.prefix(max(0, 3 - figureSnips.count)) }
             hits.append(SessionHit(dir: dir, meta: meta, score: score, matchCount: matchCount, snippets: snippets))
         }
         hits.sort { $0.score == $1.score ? $0.meta.date > $1.meta.date : $0.score > $1.score }
@@ -274,6 +290,22 @@ public final class SearchIndex: @unchecked Sendable {
             else { if cur.count >= 2 { out.append(cur) }; cur = "" }
         }
         if cur.count >= 2 { out.append(cur) }
+        return out
+    }
+
+    /// Snippets for figures whose raw string or label matches a query term. `[]` when the feature
+    /// is off or the session has no sidecar.
+    static func figureSnippets(dir: URL, terms: [String], limit: Int) -> [SearchSnippet] {
+        guard FigureStore.isEnabled else { return [] }
+        var out: [SearchSnippet] = []
+        for f in FigureStore.figures(dir: dir) {
+            var tokens = Set(tokenize(f.raw))
+            if let l = f.label { tokens.formUnion(tokenize(l)) }
+            guard terms.contains(where: { tokens.contains($0) }) else { continue }
+            let text = f.label.map { "\(f.raw) — \($0)" } ?? f.raw
+            out.append(SearchSnippet(timestamp: f.timestamp, text: text))
+            if out.count >= limit { break }
+        }
         return out
     }
 
@@ -350,8 +382,12 @@ public final class SearchIndex: @unchecked Sendable {
         }
         // The transcript has no fixed name (see SessionPaths); the edit overlay does.
         guard let transcript = mtime(SessionPaths.transcriptURL(in: dir)) else { return Date() }
-        guard let edits = mtime(dir.appendingPathComponent(EditStore.fileName)) else { return transcript }
-        return max(transcript, edits)
+        var stamp = transcript
+        if let edits = mtime(dir.appendingPathComponent(EditStore.fileName)) { stamp = max(stamp, edits) }
+        // The figure sidecar feeds the index too, but only while the feature is on — with it off
+        // the stamp is exactly the transcript-or-edits stamp it was.
+        if FigureStore.isEnabled, let figures = mtime(FigureStore.url(dir: dir)) { stamp = max(stamp, figures) }
+        return stamp
     }
 
     private func loadCache() {

@@ -25,6 +25,16 @@ final class SessionModel: ObservableObject {
     @Published private(set) var hasVideo = false
     @Published var scrollTarget: String?
 
+    // Figures (the figures wave). Same sidecar, same rules as the Mac; see `SessionFigures.swift`
+    // in the Mac target for the identical logic on the other side.
+    @Published private(set) var figures: [Figure] = []
+    @Published private(set) var figuresByRow: [Int: [ResolvedFigure]] = [:]
+    @Published private(set) var figuresDropped = 0
+    @Published private(set) var figuresLabelled = true
+    @Published private(set) var isExtractingFigures = false
+    /// Set when the last extraction was skipped for heat (§9): the tab offers a re-run.
+    @Published private(set) var figuresSkippedForHeat = false
+
     private var audio: AVAudioPlayer?
     private(set) var video: AVPlayer?
     private var ticker: Timer?
@@ -40,6 +50,93 @@ final class SessionModel: ObservableObject {
         // The video-XOR-frames invariant is resolved ONCE, by SessionDoc.visual.
         if case .frames(let f) = doc?.visual { self.frames = f.sorted { $0.time < $1.time } }
         setUpPlayback(doc: doc)
+        reloadFigures()
+        extractFiguresIfNeeded()
+    }
+
+    // MARK: Figures
+
+    var figuresEnabled: Bool { FigureStore.isEnabled }
+
+    func reloadFigures() {
+        guard FigureStore.isEnabled else { figures = []; figuresByRow = [:]; figuresDropped = 0; return }
+        let doc = SessionDoc(meta: meta, segments: segments, frames: frames)
+        let state = FigureStore.read(dir: dir, doc: doc)
+        figures = state.sidecar?.figures ?? []
+        figuresLabelled = state.sidecar?.labelled ?? true
+        // The phone shows the edited view when edits exist, exactly as the Mac defaults to it.
+        let displayed = EditStore.editedSegments(dir: dir, segments: segments)
+        let r = FigureOverlay.resolve(figures, in: displayed)
+        figuresDropped = r.dropped
+        var byRow: [Int: [ResolvedFigure]] = [:]
+        for f in r.resolved { byRow[f.figure.segmentIndex, default: []].append(f) }
+        figuresByRow = byRow
+    }
+
+    func figures(forRow i: Int) -> [ResolvedFigure] { figuresByRow[i] ?? [] }
+
+    var railFigures: [ResolvedFigure] {
+        figuresByRow.values.flatMap { $0 }.sorted { $0.figure.start < $1.figure.start }
+    }
+
+    var figuresNeedRerun: Bool {
+        guard FigureStore.isEnabled, !isExtractingFigures else { return false }
+        return figuresSkippedForHeat || figuresDropped > 0 || !figuresLabelled
+            || FigurePass.needsExtraction(dir: dir, doc: SessionDoc(meta: meta, segments: segments, frames: frames))
+    }
+
+    func extractFiguresIfNeeded() {
+        guard FigureStore.isEnabled, !isExtractingFigures,
+              FigurePass.needsExtraction(dir: dir, doc: SessionDoc(meta: meta, segments: segments, frames: frames))
+        else { return }
+        extractFigures()
+    }
+
+    /// The re-run affordance. Respects the thermal gate (§9): at `.serious` labelling is skipped,
+    /// at `.critical` nothing runs and the session stays unextracted rather than half-extracted.
+    func extractFigures() {
+        guard FigureStore.isEnabled, !isExtractingFigures else { return }
+        let mode: FigurePass.Mode
+        switch ProcessInfo.processInfo.thermalState {
+        case .critical: figuresSkippedForHeat = true; return
+        case .serious: mode = .detectOnly
+        default: mode = .full
+        }
+        figuresSkippedForHeat = false
+        isExtractingFigures = true
+        let dir = self.dir
+        Task.detached(priority: .utility) {
+            _ = await FigurePass.run(dir: dir, mode: mode)
+            await MainActor.run { [weak self] in
+                self?.isExtractingFigures = false
+                self?.reloadFigures()
+            }
+        }
+    }
+
+    // MARK: The header (Workstream R)
+
+    enum Status: Equatable {
+        case working(String), ready
+        var word: String { if case .working(let w) = self { return w }; return "Ready" }
+    }
+
+    /// The phone has no live finalize state to read once a session is open: the recording screen
+    /// owns that until it hands the folder over. What CAN still be running is this model's own
+    /// figure extraction, which is what the status reports.
+    var status: Status { isExtractingFigures ? .working("Finding figures") : .ready }
+
+    /// Rename in place — `meta.title` only, on a fresh read, plus the transcript file rename the
+    /// Mac's `ensureTitle` makes when a title lands.
+    func renameTitle(to newTitle: String) {
+        let title = newTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !title.isEmpty, title != meta.title, var doc = DocumentBuilder.readSession(dir) else { return }
+        doc.meta.title = title
+        DocumentBuilder.writeSessionJSON(doc, to: dir)
+        SessionPaths.renameTranscript(in: dir, toMatch: doc.meta)
+        meta = doc.meta
+        SearchIndex.shared.index(sessionDir: dir)
+        SessionStore.postSessionSaved(dir)
     }
 
     deinit {

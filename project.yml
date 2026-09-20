@@ -93,6 +93,11 @@ targets:
     platform: iOS
     sources:
       - path: iOS/SaidiOSTests
+      # The figures wave's cross-platform fixture, written by the Mac binary and committed. Copied
+      # in as a folder reference so the test reads the Mac's exact bytes.
+      - path: Fixtures/figures
+        type: folder
+        buildPhase: resources
     dependencies:
       - target: SaidiOS
       - package: SaidKit

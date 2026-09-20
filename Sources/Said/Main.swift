@@ -155,6 +155,17 @@ enum AppMain {
             SelfTest.runFrames(dir: positional(after: idx, in: args)); return
         }
         if args.contains("--selftest-theme") { SelfTest.runTheme(); return }
+        // The figures wave — all headless, all pure, temp dirs only.
+        if args.contains("--selftest-figures-detect") { SelfTest.runFiguresDetect(); return }
+        if args.contains("--selftest-figures-label") { SelfTest.runFiguresLabel(); return }
+        if args.contains("--selftest-figures-anchor") { SelfTest.runFiguresAnchor(); return }
+        if let idx = args.firstIndex(of: "--selftest-figures-bundle") {
+            let out = args.firstIndex(of: "--write-fixture").flatMap { args.count > $0 + 1 ? args[$0 + 1] : nil }
+            _ = idx
+            SelfTest.runFiguresBundle(fixtureOut: out); return
+        }
+        if args.contains("--selftest-figures-search") { SelfTest.runFiguresSearch(); return }
+        if args.contains("--selftest-figures-offswitch") { SelfTest.runFiguresOffswitch(); return }
         // LIVE screen recording against the real main display (needs the Screen Recording grant →
         // run the .app bundle's binary, not .build/release). The headless `--selftest-screenrec`
         // covers the encoder; this covers ScreenCaptureKit actually delivering frames.

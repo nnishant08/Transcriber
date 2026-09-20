@@ -291,7 +291,7 @@ public enum Intelligence {
     private static func groundingContext(dir: URL, question: String,
                                          semantic: [SemanticHit] = []) -> String {
         let full = SessionStore.timestampedTranscript(dir: dir, maxChars: 100_000)
-        if full.count <= 8_000 { return full }
+        if full.count <= 8_000 { return full + figuresContext(dir: dir) }
 
         var lines: [String] = []
         for hit in semantic where hit.chunk.sessionPath == dir.path {
@@ -302,8 +302,22 @@ public enum Intelligence {
         let passages = SearchIndex.extractSnippets(dir: dir, terms: terms, limit: 18)
         lines.append(contentsOf: passages.map { "[\($0.timestamp ?? "--:--")] \($0.text)" })
 
-        if lines.isEmpty { return String(full.prefix(8_000)) }
-        return lines.joined(separator: "\n")
+        if lines.isEmpty { return String(full.prefix(8_000)) + figuresContext(dir: dir) }
+        return lines.joined(separator: "\n") + figuresContext(dir: dir)
+    }
+
+    /// The figures wave's ONE line in context assembly (§Q4): the session's figures, each on its
+    /// own `[mm:ss]` line, so an answer that uses one cites it through the citation path that
+    /// already exists. No figures-specific question type, no template. Empty — and the context
+    /// byte-identical — with the feature off or nothing extracted.
+    public static func figuresContext(dir: URL) -> String {
+        let figures = FigureStore.figures(dir: dir)
+        guard !figures.isEmpty else { return "" }
+        var out = "\n\nFIGURES MENTIONED (number — what it refers to):\n"
+        for f in figures.prefix(120) {
+            out += "[\(f.timestamp)] \(f.raw)" + (f.label.map { " — \($0)" } ?? "") + "\n"
+        }
+        return out
     }
 
     private static func fallbackMessage(for error: Error) -> String {

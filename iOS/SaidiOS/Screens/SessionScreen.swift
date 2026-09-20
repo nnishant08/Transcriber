@@ -50,43 +50,15 @@ struct SessionScreen: View {
         }
     }
 
-    private var header: some View {
-        VStack(alignment: .leading, spacing: 7) {
-            Text(displayTitle)
-                .font(Theme.ui(27, weight: .semibold))
-                .lineLimit(2)
-            HStack(spacing: 7) {
-                if let n = model.meta.speakerCount, n > 0 {
-                    HStack(spacing: -7) {
-                        ForEach(1...min(n, 3), id: \.self) { SpeakerDot(slot: $0, size: 22) }
-                    }
-                }
-                Text(subtitle).font(Theme.ui(13)).foregroundStyle(Theme.text2)
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 20).padding(.bottom, 14)
-    }
-
-    private var displayTitle: String {
-        let raw = model.meta.title?.trimmingCharacters(in: .whitespaces) ?? ""
-        return raw.isEmpty ? TitleGenerator.fallbackTitle(transcript: "", date: model.meta.date) : raw
-    }
-
-    private var subtitle: String {
-        var parts: [String] = []
-        if let n = model.meta.speakerCount, n > 1 { parts.append("\(n) voices") }
-        if model.duration > 0 { parts.append(MonoTime.compact(model.duration)) }
-        if !model.frames.isEmpty { parts.append("\(model.frames.count) slides") }
-        if model.hasVideo { parts.append("screen recording") }
-        return parts.joined(separator: " · ")
-    }
+    /// Workstream R, collapsed for the phone: title + status, language and duration under it.
+    private var header: some View { SessionHeaderPhone(model: model) }
 
     private var tabs: some View {
         HStack(spacing: 7) {
             tabChip("Transcript", 0)
             tabChip("The gist", 1)
             tabChip("To do", 2, badge: model.meta.actionItems.count)
+            if model.figuresEnabled { tabChip("Figures", 3, badge: model.railFigures.count) }
             Spacer(minLength: 0)
         }
         .padding(.horizontal, 20).padding(.bottom, 12)
@@ -115,6 +87,7 @@ struct SessionScreen: View {
         switch tab {
         case 1: GistTab(model: model)
         case 2: TasksTab(model: model)
+        case 3: FiguresTab(model: model)
         default: transcriptTab
         }
     }
@@ -137,8 +110,10 @@ struct SessionScreen: View {
                             TurnRow(seg: seg,
                                     name: seg.speaker.map { model.speakerName($0) },
                                     slot: seg.speaker,
+                                    figures: model.figures(forRow: i),
                                     active: model.isActive(row),
                                     onTap: { model.goTo(seg.start) },
+                                    onSeekFigure: { model.goTo($0) },
                                     onRenameTap: { slot in
                                         renaming = slot
                                         renameText = model.speakerName(slot)
@@ -168,9 +143,14 @@ private struct TurnRow: View {
     let seg: TranscriptSegment
     let name: String?
     let slot: Int?
+    var figures: [ResolvedFigure] = []
     let active: Bool
     let onTap: () -> Void
+    var onSeekFigure: ((TimeInterval) -> Void)? = nil
     let onRenameTap: (Int) -> Void
+
+    /// Inline only under the phone's density ceiling (§9); above it the Figures tab carries them.
+    private var inline: Bool { !figures.isEmpty && phoneWashAllowed(figureCount: figures.count, text: seg.text) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
@@ -187,11 +167,16 @@ private struct TurnRow: View {
                 }
                 MonoTime(seconds: seg.start, color: active ? Palette.amberInk2 : Theme.text3)
             }
-            Text(seg.text)
-                .font(.system(size: 16, design: .serif))
-                .foregroundStyle(Theme.text)
-                .padding(.leading, 18)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            if inline, let onSeekFigure {
+                FigureTurnBody(text: seg.text, figures: figures, onSeek: onSeekFigure)
+                    .padding(.leading, 18)
+            } else {
+                Text(seg.text)
+                    .font(.system(size: 16, design: .serif))
+                    .foregroundStyle(Theme.text)
+                    .padding(.leading, 18)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
         }
         .padding(.vertical, 4)
         // Amber marks the line being played — the identity's one rule.
@@ -199,7 +184,7 @@ private struct TurnRow: View {
         .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
         .contentShape(Rectangle())
         .onTapGesture(perform: onTap)
-        .accessibilityElement(children: .combine)
+        .accessibilityElement(children: inline ? .contain : .combine)
         .accessibilityLabel("\(name ?? "") at \(MonoTime.spoken(seg.start)). \(seg.text)")
         .accessibilityHint("Double tap to play from here")
     }

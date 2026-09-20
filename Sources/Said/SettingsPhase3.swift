@@ -307,3 +307,22 @@ struct SemanticSettingsSection: View {
         }
     }
 }
+
+
+// MARK: - Figures (the figures wave)
+
+struct FiguresSettingsSection: View {
+    @EnvironmentObject var model: AppModel
+
+    var body: some View {
+        Toggle("Find the numbers people said", isOn: $model.figuresEnabled)
+        Text("Amounts, percentages, multipliers, counts and deadlines are picked out of each transcript, "
+             + "anchored to the moment they were said, and listed in the session's Figures rail — "
+             + "clickable in the transcript and searchable by what they refer to. Detection is "
+             + "deterministic and free; naming what each number is about uses Apple Intelligence when "
+             + "it is available, and is simply absent when it is not. Stores a small figures.json beside "
+             + "each transcript, which is never altered. Existing sessions are read again the next time "
+             + "you open them, not re-transcribed.")
+            .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+    }
+}

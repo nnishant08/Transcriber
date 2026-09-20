@@ -263,6 +263,26 @@ final class AppModel: ObservableObject {
             if !semanticSearchEnabled { SemanticIndex.shared.purgeCache() }
         }
     }
+    /// The figures layer. OFF by default (its prime directive #5): with it off no sidecar is read or
+    /// written, no search term is added and no context line is assembled, so every surface is
+    /// byte-for-byte what it was. Turning it on extracts on the next open of each session — the
+    /// transcript is never re-transcribed for it.
+    @Published var figuresEnabled: Bool {
+        didSet {
+            UserDefaults.standard.set(figuresEnabled, forKey: "figuresEnabled")
+            FigureStore.isEnabled = figuresEnabled
+            // The index carries label terms only while the feature is on, so flipping it either way
+            // means the term tables are wrong until the next rebuild — do it now, off-main.
+            Task.detached(priority: .utility) { SearchIndex.shared.rebuildFromDisk() }
+        }
+    }
+    /// What the post-save chain is doing to which session, for the Session Viewer's status word.
+    /// This is a REPORT on the existing chain (title → diarize → voiceprint → cleanup → figures →
+    /// semantic), not a second state machine: each step sets its name here and clears it after.
+    /// Keyed by session directory path; absent means "Ready" (or "Transcribing" while `status` is
+    /// `.finalizing` for `lastSessionDir`, and "Failed" while it is `.error`).
+    @Published var postSaveActivity: [String: String] = [:]
+
     /// Refuse every model download (§10.2). OFF by default — on a fresh install with no models yet,
     /// defaulting it on would brick the app. With it on, an already-downloaded model still LOADS;
     /// only fetching is refused, which is what makes airplane mode a working configuration.
@@ -499,6 +519,7 @@ final class AppModel: ObservableObject {
         neverDownloadModels = d.bool(forKey: "neverDownloadModels")
         voiceprintsEnabled = d.bool(forKey: "voiceprintsEnabled")
         semanticSearchEnabled = d.bool(forKey: "semanticSearchEnabled")
+        figuresEnabled = d.bool(forKey: "figuresEnabled")
         useProcessTap = (d.object(forKey: "useProcessTap") as? Bool) ?? true
         customVocabulary = (d.object(forKey: "customVocabulary") as? [String]) ?? []
         autoPauseEnabled = (d.object(forKey: "autoPauseEnabled") as? Bool) ?? true
@@ -1110,6 +1131,7 @@ final class AppModel: ObservableObject {
         // Voiceprints need diarization's embeddings, so the toggle only means anything alongside it.
         let wantVoiceprints = diarizationEnabled && voiceprintsEnabled
         let wantSemantic = semanticSearchEnabled
+        let wantFigures = figuresEnabled
         let diarSamples: [Float] = wantDiarize ? engine.sink.snapshot() : []   // capture BEFORE a new session resets the sink
         //
         //    **The pass ORDER is load-bearing and is stated here on purpose** (§7.4): three of these
@@ -1123,15 +1145,33 @@ final class AppModel: ObservableObject {
         Task.detached(priority: .utility) {
             SearchIndex.shared.index(sessionDir: dir)   // searchable immediately, before slow titling
             SessionStore.ensureSessionID(dir: dir)      // D1: no-op for a session that already has one
+            await Self.report(dir, "Titling")
             await SessionStore.ensureTitle(dir: dir)
             var embeddings: [Int: [[Float]]] = [:]
-            if wantDiarize { embeddings = await DiarizationPass.run(dir: dir, samples: diarSamples) }
+            if wantDiarize {
+                await Self.report(dir, "Diarizing")
+                embeddings = await DiarizationPass.run(dir: dir, samples: diarSamples)
+            }
             if wantVoiceprints { await VoiceprintPass.run(dir: dir, embeddings: embeddings) }
-            if wantCleanup { await CleanupPass.run(dir: dir) }
+            if wantCleanup { await Self.report(dir, "Cleaning up"); await CleanupPass.run(dir: dir) }
+            // Figures run after cleanup (which does not touch the verbatim segments the anchors
+            // are measured on, but does finish the chain's text passes) and before the semantic
+            // index, which is the last thing to look at the finished session. Off the save path:
+            // the session has been durable since the final save above.
+            if wantFigures { await Self.report(dir, "Finding figures"); await FigurePass.runIfEnabled(dir: dir) }
             // LAST, deliberately: the semantic index embeds the finished text, so it must run after
             // every pass that can still change it. Re-embedding after cleanup rewrote the segments
             // would otherwise leave the vectors describing a transcript that no longer exists.
             if wantSemantic { await SemanticIndex.shared.index(sessionDir: dir) }
+            await Self.report(dir, nil)
+        }
+    }
+
+    /// Record which post-save step `dir` is in (nil = done). The Viewer's header reads it.
+    static func report(_ dir: URL, _ step: String?) async {
+        await MainActor.run {
+            if let step { AppModel.shared.postSaveActivity[dir.path] = step }
+            else { AppModel.shared.postSaveActivity[dir.path] = nil }
         }
     }
 

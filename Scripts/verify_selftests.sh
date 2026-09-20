@@ -107,6 +107,15 @@ run "parakeet transcription"     900 --selftest-parakeet
 # --selftest-bias needs a purpose-made clip with a term a general model mishears; see §5.4 and the
 # mode's own SKIP message for how to make one. Not run unattended because it has no fixture.
 
+echo "=== The figures layer ==="
+# All six are pure: no models (the labeller is stubbed), no audio, no permissions, temp dirs only.
+run "figures: detector"           60 --selftest-figures-detect
+run "figures: labeller (stubbed)" 60 --selftest-figures-label
+run "figures: anchoring"          60 --selftest-figures-anchor
+run "figures: sidecar + bundle"  120 --selftest-figures-bundle
+run "figures: search parity"      60 --selftest-figures-search
+run "figures: off switch"        120 --selftest-figures-offswitch
+
 echo "=== Phase 1 (cross-platform core) ==="
 run ".said bundle round-trip"    180 --selftest-bundle
 run "portability seams"           60 --selftest-portability

@@ -112,6 +112,7 @@ struct RetranscribeSheet: View {
 
     private func run() {
         running = true
+        lib.isRetranscribing = true    // the header's status reads this (Workstream R)
         failure = nil
         let dir = lib.dir
         let preference = choice
@@ -133,6 +134,7 @@ struct RetranscribeSheet: View {
                 }
                 await MainActor.run {
                     running = false
+                    lib.isRetranscribing = false
                     lib.reload()
                     lib.reloadEdits()
                     if hasGenerated { lib.summariesAreStale = true }
@@ -141,6 +143,7 @@ struct RetranscribeSheet: View {
             } catch {
                 await MainActor.run {
                     running = false
+                    lib.isRetranscribing = false
                     failure = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
                 }
             }
@@ -199,6 +202,9 @@ enum Retranscriber {
 
         SearchIndex.shared.index(sessionDir: dir)
         await SemanticIndex.shared.index(sessionDir: dir)
+        // The old figures were anchored to the old engine's words: the fingerprint no longer
+        // matches, so the sidecar is invalid and is re-extracted from scratch — never re-anchored.
+        if FigureStore.isEnabled { progress("Finding figures…"); await FigurePass.runIfEnabled(dir: dir) }
         SessionStore.postSessionSaved(dir)
         progress("Done.")
     }
