@@ -11,7 +11,14 @@ struct TranscriptCanvas: View {
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
+                // LAZY, and that is load-bearing. A plain VStack made SwiftUI re-measure every
+                // segment's selectable serif Text on every live update — O(session length) per
+                // second. Sampled on a 16-minute recording (2026-09-16): the main thread spent
+                // 4015 of 4032 samples in NSHostingView.layout, so updates queued behind each
+                // other, the live text arrived late, a global hotkey waited for the backlog, and the
+                // final pass's decode threads fought a pegged core (3–4× slower than headless).
+                // A lazy stack measures only the rows on screen, so the cost stops growing.
+                LazyVStack(alignment: .leading, spacing: 18) {
                     ForEach(Array(model.displaySegments.enumerated()), id: \.offset) { _, seg in
                         SegmentRow(time: seg.start, text: seg.text)
                     }

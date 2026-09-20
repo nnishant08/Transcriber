@@ -76,7 +76,7 @@ struct SessionScreen: View {
     private var subtitle: String {
         var parts: [String] = []
         if let n = model.meta.speakerCount, n > 1 { parts.append("\(n) voices") }
-        if model.duration > 0 { parts.append("\(Int(model.duration / 60)) min") }
+        if model.duration > 0 { parts.append(MonoTime.compact(model.duration)) }
         if !model.frames.isEmpty { parts.append("\(model.frames.count) slides") }
         if model.hasVideo { parts.append("screen recording") }
         return parts.joined(separator: " · ")

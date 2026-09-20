@@ -41,7 +41,7 @@ struct GistTab: View {
                     .font(Theme.mono(10, weight: .medium)).tracking(1.1)
                     .foregroundStyle(Palette.amberInk2)
             }
-            Text(text)
+            MarkdownText(raw: text)
                 .font(.system(size: 15))
                 .foregroundStyle(Palette.amberInk)
                 .textSelection(.enabled)
@@ -95,7 +95,8 @@ struct TasksTab: View {
                             RoundedRectangle(cornerRadius: 5)
                                 .strokeBorder(.white, lineWidth: 2.5)
                                 .frame(width: 17, height: 17)
-                            Text(item).font(Theme.ui(13, weight: .medium)).foregroundStyle(.white)
+                            MarkdownText(raw: item)
+                                .font(Theme.ui(13, weight: .medium)).foregroundStyle(.white)
                             Spacer(minLength: 0)
                         }
                         .padding(.horizontal, 13).padding(.vertical, 11)

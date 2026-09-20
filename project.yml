@@ -83,6 +83,10 @@ targets:
         PRODUCT_NAME: Said
         GENERATE_INFOPLIST_FILE: NO
         TARGETED_DEVICE_FAMILY: "1"
+        # The icon and the launch background live in iOS/SaidiOS/Assets.xcassets, which the
+        # target's `sources` already sweeps up. Without this setting the catalog still compiles
+        # but nothing marks AppIcon as THE icon, and the app ships blank.
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
 
   SaidiOSTests:
     type: bundle.unit-test

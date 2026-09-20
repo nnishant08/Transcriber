@@ -170,4 +170,34 @@ struct MonoTime: View {
         if m == 0 { return "\(s) second\(s == 1 ? "" : "s")" }
         return "\(m) minute\(m == 1 ? "" : "s") \(s) second\(s == 1 ? "" : "s")"
     }
+
+    /// The compact written form for a subtitle line — "39 sec" / "2 min".
+    ///
+    /// Whole minutes ONLY once there is a whole minute: `Int(t / 60)` reads every sub-minute
+    /// session as "0 min", which is the one duration a recording can never actually have.
+    static func compact(_ t: TimeInterval) -> String {
+        let total = Int(max(0, t.rounded()))
+        return total < 60 ? "\(total) sec" : "\(total / 60) min"
+    }
+}
+
+/// Text from the on-device model, which routinely carries inline markdown (`**TL;DR:**`).
+///
+/// `Text(String)` renders those asterisks literally. Parsing is INLINE-ONLY and preserves
+/// whitespace, so the summary's own line breaks and `- ` bullets survive exactly as written —
+/// full-document parsing would collapse them into one paragraph. Unparseable input falls back
+/// to the raw string rather than showing nothing.
+struct MarkdownText: View {
+    let raw: String
+
+    var body: some View {
+        Text(Self.attributed(raw))
+    }
+
+    static func attributed(_ raw: String) -> AttributedString {
+        (try? AttributedString(
+            markdown: raw,
+            options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)))
+            ?? AttributedString(raw)
+    }
 }

@@ -7,7 +7,7 @@ import Foundation
 // natively rather than downscaled from 1024 — that is what keeps the 16pt and 32pt
 // menu-bar/dock renderings crisp.
 //
-// Usage: swift GenerateIcon.swift <output.png> [--size N] [--variant violet|ink|paper]
+// Usage: swift GenerateIcon.swift <output.png> [--size N] [--variant violet|ink|paper] [--bleed]
 
 // MARK: - Palette
 // sRGB conversions of the oklch tokens in the brand doc. Keep these two in sync:
@@ -49,6 +49,12 @@ let squircleExponent: CGFloat = 5.0      // superellipse power; ~Apple's continu
 /// icon uses it too and the mark is ONE drawing everywhere.
 /// "comma" = an earlier tapered exploration, kept for comparison (SHAPE=comma).
 var shape = "doc"
+/// FULL-BLEED, for iOS. macOS icons are drawn on Apple's 824/1024 grid with their own squircle
+/// and surrounding padding; an iOS icon is edge-to-edge and the OS applies the mask. Rendering
+/// the macOS drawing into an iOS slot leaves a small squircle floating in a transparent square.
+/// With `--bleed` the ground fills the canvas and the mark's ratios are taken against the icon
+/// EDGE — which is how the settled identity states them ("blob 27%, gap 7%") in the first place.
+var bleed = false
 var commaReach: CGFloat = 1.62           // tail tip distance, in bowl radii
 /// Tail direction in degrees. 225 = down-left (a closing quote / comma);
 /// 45 = up-right (an opening quote, the 180° rotation of the same form).
@@ -124,12 +130,16 @@ func render(size: CGFloat, variant: Variant) -> NSBitmapImageRep {
     ctx.shouldAntialias = true
     ctx.imageInterpolation = .high
 
-    let body = size * bodyRatio
+    let body = size * (bleed ? 1.0 : bodyRatio)
     let inset = (size - body) / 2
     let bodyRect = NSRect(x: inset, y: inset, width: body, height: body)
 
     variant.ground.setFill()
-    squirclePath(in: bodyRect, n: squircleExponent).fill()
+    if bleed {
+        NSBezierPath(rect: bodyRect).fill()
+    } else {
+        squirclePath(in: bodyRect, n: squircleExponent).fill()
+    }
 
     let blob = body * blobRatio
     let gap = body * gapRatio
@@ -167,6 +177,7 @@ while let arg = args.first {
     case "--tail":    tailFraction = CGFloat(Double(args.removeFirst()) ?? 0.104)
     case "--gap":     gapRatio = CGFloat(Double(args.removeFirst()) ?? 0.068)
     case "--shape":   shape = args.removeFirst()
+    case "--bleed":   bleed = true
     case "--reach":   commaReach = CGFloat(Double(args.removeFirst()) ?? 1.62)
     case "--angle":   commaAngle = CGFloat(Double(args.removeFirst()) ?? 225)
     default:          positional.append(arg)

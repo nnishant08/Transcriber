@@ -154,7 +154,7 @@ struct SessionRowCard: View {
 
     private var subtitle: String {
         var parts: [String] = []
-        if let d = info.meta.durationSeconds, d > 0 { parts.append("\(Int(d / 60)) min") }
+        if let d = info.meta.durationSeconds, d > 0 { parts.append(MonoTime.compact(d)) }
         if let n = info.meta.speakerCount, n > 1 { parts.append("\(n) voices") }
         if info.hasFrames { parts.append("\(info.frameCount) slides") }
         if info.hasVideo { parts.append("screen") }
